@@ -4063,20 +4063,36 @@ fn apply_env_overrides(config: &mut Config) {
             .ollama
             .base_url = Some(value);
     }
+    // The provider-specific `*_MODEL` vars write their own provider's
+    // slot. They used to write the legacy root slot, which `default_model()`
+    // reads for these providers only when theirs is empty — with a model in
+    // config.toml the var had no effect and nothing said so.
     if matches!(config.api_provider(), ApiProvider::Sglang)
         && let Ok(value) = std::env::var("SGLANG_MODEL")
     {
-        config.default_text_model = Some(value);
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .sglang
+            .model = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::Vllm)
         && let Ok(value) = std::env::var("VLLM_MODEL")
     {
-        config.default_text_model = Some(value);
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .vllm
+            .model = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::Ollama)
         && let Ok(value) = std::env::var("OLLAMA_MODEL")
     {
-        config.default_text_model = Some(value);
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .ollama
+            .model = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::Openai)
         && let Ok(value) = std::env::var("OPENAI_MODEL")
@@ -4100,7 +4116,11 @@ fn apply_env_overrides(config: &mut Config) {
     if matches!(config.api_provider(), ApiProvider::Atlascloud)
         && let Ok(value) = std::env::var("ATLASCLOUD_MODEL")
     {
-        config.default_text_model = Some(value);
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .atlascloud
+            .model = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::WanjieArk)
         && let Ok(value) = std::env::var("WANJIE_ARK_MODEL")
@@ -4145,16 +4165,22 @@ fn apply_env_overrides(config: &mut Config) {
             });
         utility.model = value;
     }
+    // Before the `CODESMITH_MODEL` handoff: both write the same slot
+    // now, and an explicit `--model` wins over the provider-specific var.
+    if matches!(config.api_provider(), ApiProvider::NvidiaNim)
+        && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .nvidia_nim
+            .model = Some(value);
+    }
     if let Ok(value) = codesmith_env_var("CODESMITH_MODEL") {
         // The CLI `--model` handoff always sets CODESMITH_MODEL, never the
         // provider-specific *_MODEL var. Slot selection lives in
         // [`Config::set_explicit_model_override`].
         config.set_explicit_model_override(value);
-    }
-    if matches!(config.api_provider(), ApiProvider::NvidiaNim)
-        && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
-    {
-        config.default_text_model = Some(value);
     }
     if let Ok(value) = app_env("SKILLS_DIR") {
         config.skills_dir = Some(value);
@@ -8893,6 +8919,55 @@ model = "qwen2.5-coder:7b"
         let config = Config::load(None, None)?;
         assert_eq!(config.api_provider(), ApiProvider::Vllm);
         assert_eq!(config.provider_base_url(), "http://vllm.remote:8000/v1");
+        Ok(())
+    }
+
+    /// Found in the review: `VLLM_MODEL` wrote the legacy root slot, which
+    /// `default_model()` reads only when the provider's own slot is empty
+    /// — with `[providers.vllm] model` set the var had no effect.
+    #[test]
+    fn provider_model_env_reaches_the_provider_slot() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-cli-provider-model-env-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("VLLM_MODEL", "env-model");
+            env::set_var("NVIDIA_NIM_MODEL", "nim-env-model");
+        }
+        let mut config = Config {
+            providers: Some(ProvidersConfig {
+                vllm: ProviderConfig {
+                    model: Some("file-model".to_string()),
+                    ..Default::default()
+                },
+                nvidia_nim: ProviderConfig {
+                    model: Some("nim-file-model".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        config.provider = Some("vllm".to_string());
+        apply_env_overrides(&mut config);
+        assert_eq!(config.default_model(), "env-model");
+
+        config.provider = Some("nvidia-nim".to_string());
+        config.providers.as_mut().unwrap().vllm.model = None;
+        apply_env_overrides(&mut config);
+        assert_eq!(config.default_model(), "nim-env-model");
         Ok(())
     }
 
