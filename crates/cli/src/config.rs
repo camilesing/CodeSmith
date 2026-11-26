@@ -1794,7 +1794,7 @@ impl Config {
         };
         config.unknown_keys = unknown_keys;
 
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config)?;
         apply_managed_overrides(&mut config)?;
         apply_requirements(&mut config)?;
         normalize_model_config(&mut config);
@@ -3754,7 +3754,7 @@ fn parse_env_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn apply_env_overrides(config: &mut Config) {
+fn apply_env_overrides(config: &mut Config) -> Result<()> {
     if let Ok(value) = codesmith_env_var("CODESMITH_PROVIDER") {
         config.provider = Some(value);
     }
@@ -4008,6 +4008,15 @@ fn apply_env_overrides(config: &mut Config) {
             .get_or_insert_with(ProvidersConfig::default)
             .vllm
             .base_url = Some(value);
+    }
+    // A malformed value is refused, not skipped: dropped silently, no
+    // header applied and the gateway's 401 pointed nowhere.
+    if let Ok(value) = app_env("HTTP_HEADERS")
+        && let Err(err) = parse_http_headers(&value)
+    {
+        return Err(err.context(format!(
+            "CODESMITH_HTTP_HEADERS is not in `Name=Value` form: {value:?}"
+        )));
     }
     if let Ok(value) = app_env("HTTP_HEADERS")
         && let Ok(headers) = parse_http_headers(&value)
@@ -4402,6 +4411,7 @@ fn apply_env_overrides(config: &mut Config) {
     }) {
         config.capacity = None;
     }
+    Ok(())
 }
 
 fn normalize_model_config(config: &mut Config) {
@@ -5930,7 +5940,7 @@ modle = "x"
         unsafe { env::set_var("CODESMITH_SEARCH_API_KEY", "search-env-key") };
         let mut config = Config::default();
 
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
 
         unsafe { EnvGuard::restore_var("CODESMITH_SEARCH_API_KEY", prev) };
         assert_eq!(
@@ -5952,7 +5962,7 @@ modle = "x"
             "default has no custom provider"
         );
 
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
 
         unsafe { EnvGuard::restore_var("CODESMITH_CUSTOM_PROVIDER", prev) };
         assert_eq!(config.custom_provider.as_deref(), Some("acme"));
@@ -5969,7 +5979,7 @@ modle = "x"
             ..Config::default()
         };
 
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
 
         unsafe { EnvGuard::restore_var("CODESMITH_CUSTOM_PROVIDER", prev) };
         // trimmed; env wins over the file selector.
@@ -5986,7 +5996,7 @@ modle = "x"
             ..Config::default()
         };
 
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
 
         unsafe { EnvGuard::restore_var("CODESMITH_CUSTOM_PROVIDER", prev) };
         // empty env value does not clobber the config-file selector.
@@ -7515,7 +7525,7 @@ modle = "x"
             api_key: Some("from-config-file".to_string()),
             ..Default::default()
         };
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
 
         assert_eq!(config.api_key.as_deref(), Some("from-config-file"));
         config.validate()?;
@@ -7541,7 +7551,7 @@ modle = "x"
             env::set_var("DEEPSEEK_API_KEY", "env-key");
         }
         let mut config = Config::default();
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
 
         assert_eq!(config.api_key, None);
         assert_eq!(config.provider_api_key()?, "env-key");
@@ -7944,6 +7954,14 @@ http_headers = { "X-Model-Provider-Id" = "from-file" }
                 .map(String::as_str),
             Some("from-env")
         );
+        // Found in the review: a malformed value was dropped silently —
+        // no header applied, nothing printed.
+        unsafe {
+            env::set_var("CODESMITH_HTTP_HEADERS", "Authorization: Bearer abc");
+        }
+        let err = Config::load(None, None).expect_err("a malformed header list fails loud");
+        let err = format!("{err:#}");
+        assert!(err.contains("Authorization: Bearer abc"), "{err}");
         unsafe {
             env::remove_var("CODESMITH_HTTP_HEADERS");
         }
@@ -8961,12 +8979,12 @@ model = "qwen2.5-coder:7b"
         };
 
         config.provider = Some("vllm".to_string());
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
         assert_eq!(config.default_model(), "env-model");
 
         config.provider = Some("nvidia-nim".to_string());
         config.providers.as_mut().unwrap().vllm.model = None;
-        apply_env_overrides(&mut config);
+        apply_env_overrides(&mut config).expect("env overrides apply");
         assert_eq!(config.default_model(), "nim-env-model");
         Ok(())
     }
