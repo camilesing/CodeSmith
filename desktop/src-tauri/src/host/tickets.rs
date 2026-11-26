@@ -123,14 +123,20 @@ fn task_row(ticket: &Ticket) -> Option<Value> {
         .attention
         .as_ref()
         .is_some_and(|attention| attention.resolved_at.is_none());
-    let (status, ready) = match last.map(|report| report.state.as_str()) {
-        // A ready report is complete work awaiting review.
-        Some("ready") => ("completed", true),
-        // Blocked/failed work and an open question need the human: the
-        // panel's warning glyph is the pending + not-ready state.
-        Some("blocked") | Some("failed") => ("pending", false),
-        _ if awaiting_answer => ("pending", false),
-        _ => ("in_progress", true),
+    // An open question outranks the report state, as the runtime's own
+    // board stages it (found in the desktop: a `ready` report carrying an
+    // unanswered question read as finished work).
+    let (status, ready) = if awaiting_answer {
+        ("pending", false)
+    } else {
+        match last.map(|report| report.state.as_str()) {
+            // A ready report is complete work awaiting review.
+            Some("ready") => ("completed", true),
+            // Blocked/failed work needs the human: the panel's warning glyph
+            // is the pending + not-ready state.
+            Some("blocked") | Some("failed") => ("pending", false),
+            _ => ("in_progress", true),
+        }
     };
     Some(task_json(ticket, status, ready))
 }
@@ -247,6 +253,18 @@ mod tests {
         let board = map_tickets(&[answered]).expect("visible row");
         assert_eq!(board["tasks"][0]["status"], json!("in_progress"));
         assert_eq!(board["tasks"][0]["ready"], json!(true));
+    }
+
+    /// Found in the desktop: a `ready` report carrying an unanswered
+    /// question read as finished work — the runtime's own board puts an open
+    /// attention first.
+    #[test]
+    fn an_open_question_outranks_a_ready_report() {
+        let mut asking = ticket("review", &[("ready", "also update the docs?")], None);
+        asking.attention = Some(Attention { resolved_at: None });
+        let board = map_tickets(&[asking]).expect("visible row");
+        assert_eq!(board["tasks"][0]["status"], json!("pending"));
+        assert_eq!(board["tasks"][0]["ready"], json!(false));
     }
 
     #[test]
