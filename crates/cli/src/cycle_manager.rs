@@ -50,7 +50,15 @@ impl StructuredState {
         plan_state: &SharedPlanState,
         subagents: Option<&SharedSubAgentManager>,
     ) -> Self {
-        let working_set_summary = working_set.summary_block(&workspace);
+        // The summary stats the repo's key files and lists the workspace
+        // root — filesystem work, run on the blocking pool.
+        let working_set_summary = {
+            let (working_set, workspace) = (working_set.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || working_set.summary_block(&workspace))
+                .await
+                .ok()
+                .flatten()
+        };
 
         let todo_snapshot = {
             let guard = todos.lock().await;

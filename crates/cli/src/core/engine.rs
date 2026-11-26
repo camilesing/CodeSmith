@@ -1996,6 +1996,9 @@ impl EngineConstruct for Engine {
 
     fn build_tool_context(&self, mode: AppMode, auto_approve: bool) -> ToolContext {
         let host = self.host_concrete();
+        // Test-only path: the trust file is read inline; the engine's own
+        // dispatch loads it on the blocking pool.
+        let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
         tool_setup::build_tool_context_for(
             host,
             &self.session,
@@ -2004,6 +2007,7 @@ impl EngineConstruct for Engine {
             auto_approve,
             self.cancel_token.clone(),
             &self.runtime_ui,
+            trusted.paths().to_vec(),
         )
     }
 

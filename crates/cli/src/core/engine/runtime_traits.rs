@@ -31,7 +31,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::tool_setup::{
-    build_tool_context_for, build_turn_tool_registry_builder_for, sandbox_policy_for_mode,
+    build_tool_context_for, build_turn_tool_registry_builder_for, load_trusted_external_paths,
+    sandbox_policy_for_mode,
 };
 use super::{
     Event, Op, TOOL_SEARCH_NAME, apply_tool_selection, build_model_tool_catalog,
@@ -160,6 +161,7 @@ impl HostServices for super::EngineHost {
     ) -> anyhow::Result<SubAgentSpawnResult> {
         // Sub-agents don't inherit YOLO mode — use Agent-mode defaults, same
         // as the pre-factory `Op::SpawnSubAgent` body did.
+        let trusted_external_paths = load_trusted_external_paths(&req.session.workspace).await;
         let tool_context = build_tool_context_for(
             self,
             req.session,
@@ -168,6 +170,7 @@ impl HostServices for super::EngineHost {
             req.session.auto_approve,
             req.cancel_token.clone(),
             req.runtime_ui,
+            trusted_external_paths,
         );
         // §F2c — `ProjectTrust` for the sub-agent context (symmetric with the
         // main turn's `build_turn_dispatcher`; distinct context — no
@@ -274,6 +277,7 @@ impl HostServices for super::EngineHost {
         let todo_list = config.todos.clone();
         let plan_state = config.plan_state.clone();
 
+        let trusted_external_paths = load_trusted_external_paths(&session.workspace).await;
         let tool_context = build_tool_context_for(
             self,
             session,
@@ -282,6 +286,7 @@ impl HostServices for super::EngineHost {
             auto_approve,
             req.cancel_token.clone(),
             req.runtime_ui,
+            trusted_external_paths,
         );
         // Sub-agent runtimes take the context BEFORE the progress sink is
         // attached: the sink dispatches `tool-execution-update` at the main

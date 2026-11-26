@@ -18,6 +18,20 @@ use crate::tools::todo::SharedTodoList;
 // the engine test module) keep resolving verbatim.
 pub(crate) use codesmith_agent_runtime::sandbox_policy_for_mode;
 
+/// The per-workspace trusted paths for [`build_tool_context_for`], read on
+/// the blocking pool. `load_for` already tolerates an unreadable file; a
+/// worker panic is treated the same way (no trusted paths).
+pub(super) async fn load_trusted_external_paths(workspace: &std::path::Path) -> Vec<PathBuf> {
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::workspace_trust::WorkspaceTrust::load_for(&workspace)
+            .paths()
+            .to_vec()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Build a [`ToolContext`] from explicit inputs rather than an `&Engine`
 /// borrow.
 ///
@@ -28,6 +42,8 @@ pub(crate) use codesmith_agent_runtime::sandbox_policy_for_mode;
 /// `Engine` struct + `impl Engine` blocks are still being migrated to
 /// `codesmith-agent-runtime` — the factory lives on `EngineHost` and cannot
 /// call `impl Engine` methods.
+// Eight inputs: the trusted-path list rides in from the blocking pool.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_tool_context_for(
     host: &EngineHost,
     session: &Session,
@@ -36,13 +52,15 @@ pub(super) fn build_tool_context_for(
     auto_approve: bool,
     cancel_token: CancellationToken,
     runtime_ui: &Arc<dyn RuntimeUi>,
+    trusted_external_paths: Vec<PathBuf>,
 ) -> ToolContext {
-    // Load the per-workspace trusted-paths list (#29) on every tool-context
-    // build. Cheap (a small JSON file) and always reflects the latest
-    // `/trust add` / `/trust remove` mutations without an explicit cache
-    // refresh hook.
-    let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&session.workspace);
-    let mut trusted_external_paths = trusted.paths().to_vec();
+    // The per-workspace trusted-paths list (#29) is reloaded for every
+    // tool-context build, so it always reflects the latest `/trust add` /
+    // `/trust remove` mutation without a cache refresh hook. Runtime callers
+    // take it from `load_trusted_external_paths`: the read is a file plus a
+    // `canonicalize`, and the per-turn dispatcher is built on the engine's
+    // op-loop task.
+    let mut trusted_external_paths = trusted_external_paths;
     let clipboard_images_dir = runtime_ui.clipboard_images_dir(&session.workspace);
     if !trusted_external_paths
         .iter()
