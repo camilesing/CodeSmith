@@ -298,7 +298,12 @@ impl ReplState {
             ..
         } = options;
 
-        let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        let settings = Settings::load().unwrap_or_else(|err| {
+            // Loud, not a silent default session: a hand edit gone wrong
+            // changed the model, the mode and the theme with nothing to say why.
+            crate::logging::warn(format!("could not load settings, using defaults: {err:#}"));
+            Settings::default()
+        });
         let memory_dir = config.memory_dir();
         let kod_enabled = config.kod_enabled();
         let mut provider = config.api_provider();
