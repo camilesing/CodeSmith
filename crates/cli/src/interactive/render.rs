@@ -448,8 +448,21 @@ const GROUPING_PART_SEPARATOR: &str = " + ";
 
 /// The parts of a `[a]` grant: a compound shell command names one family per
 /// top-level segment, everything else is a single part.
-fn grouping_parts(grouping_key: &str) -> Vec<&str> {
-    grouping_key.split(GROUPING_PART_SEPARATOR).collect()
+///
+/// A compound shell key joins bare family names (`shell:cargo build + git
+/// status` — only the first carries the prefix), so every part is returned in
+/// the `shell:<family>` shape the engine keys a single command by (and that
+/// `/permissions` writes): a later plain `git status` must match its part.
+fn grouping_parts(grouping_key: &str) -> Vec<String> {
+    let shell = grouping_key.starts_with("shell:");
+    grouping_key
+        .split(GROUPING_PART_SEPARATOR)
+        .map(|part| match (shell, part.strip_prefix("shell:")) {
+            (true, Some(bare)) => format!("shell:{bare}"),
+            (true, None) => format!("shell:{part}"),
+            (false, _) => part.to_string(),
+        })
+        .collect()
 }
 
 /// Record `[a]`: what the prompt promised this answer covers.
@@ -459,7 +472,7 @@ fn grouping_parts(grouping_key: &str) -> Vec<&str> {
 /// encodes), rather than needing a byte-identical chain.
 fn record_always_approved(approved: &mut HashSet<String>, grouping_key: &str) {
     for part in grouping_parts(grouping_key) {
-        approved.insert(part.to_string());
+        approved.insert(part);
     }
 }
 
@@ -478,7 +491,7 @@ fn approval_always_granted(
 ) -> bool {
     grouping_parts(grouping_key)
         .into_iter()
-        .all(|part| approved.contains(part) || grants.is_granted(workspace_key, part))
+        .all(|part| approved.contains(&part) || grants.is_granted(workspace_key, &part))
 }
 
 /// Whether a call is blocked by the session's denials: the exact key (what
@@ -488,18 +501,12 @@ fn approval_always_granted(
 ///
 /// The inverse of [`approval_always_granted`]: a grant needs every part
 /// approved, a denial vetoes when any family is denied — so `deny git status`
-/// also refuses a later `git status && cargo build`. A compound key joins
-/// bare family names (`shell:cargo build + git status` — only the first
-/// carries the prefix), so each family is re-prefixed before the lookup.
+/// also refuses a later `git status && cargo build`.
 fn approval_session_denied(denied: &HashSet<String>, exact_key: &str, grouping_key: &str) -> bool {
-    if denied.contains(exact_key) || denied.contains(grouping_key) {
-        return true;
-    }
-    grouping_key.strip_prefix("shell:").is_some_and(|families| {
-        families
-            .split(GROUPING_PART_SEPARATOR)
-            .any(|family| denied.contains(&format!("shell:{family}")))
-    })
+    denied.contains(exact_key)
+        || grouping_parts(grouping_key)
+            .into_iter()
+            .any(|family| denied.contains(&family))
 }
 
 /// What `[a]` actually covers for this tool, in the user's words.
@@ -3073,6 +3080,42 @@ mod tests {
         // chain), while `/permissions deny` writes the grouping key — matched
         // per part by `approval_session_denied`.
         assert_ne!(key_of("cargo build"), chain);
+    }
+
+    /// A compound key joins bare family names: each `[a]` part and each
+    /// persisted grant is keyed the way a single command is, so the chain
+    /// covers its non-leading families and two single-command grants cover
+    /// the chain.
+    #[test]
+    fn compound_grants_cover_each_family_under_its_own_key() {
+        use crate::approval_grants::ApprovalGrants;
+        use codesmith_agent_runtime::tools::approval_cache::build_approval_grouping_key;
+        use serde_json::json;
+
+        let key_of = |command: &str| {
+            build_approval_grouping_key("exec_shell", &json!({ "command": command })).0
+        };
+        let chain = key_of("cargo build && git status");
+        assert!(chain.contains(" + "), "{chain}");
+
+        let mut approved = HashSet::new();
+        record_always_approved(&mut approved, &chain);
+        assert!(
+            approved.contains(&key_of("git status")),
+            "the non-leading family is recorded under its own key: {approved:?}"
+        );
+        assert!(
+            approval_always_granted(&approved, &ApprovalGrants::default(), "/w", &chain),
+            "and the chain is still covered"
+        );
+
+        let mut grants = ApprovalGrants::default();
+        grants.grant("/w", &key_of("cargo build"));
+        grants.grant("/w", &key_of("git status"));
+        assert!(
+            approval_always_granted(&HashSet::new(), &grants, "/w", &chain),
+            "two persisted single-command grants cover the chain"
+        );
     }
 
     /// `[e]` and `/permissions deny` fill the same denial set through two key
