@@ -71,6 +71,11 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
     {
         cmd.arg("-c").arg(command);
     }
+    // The command leads its own process group, so a timeout kill takes
+    // what it spawned too (a dev server, a cargo-built binary): killing the
+    // shell alone orphaned those holding the pipes, and the reads below
+    // never reached EOF.
+    codesmith_agent_runtime::shell_manager::tokio_own_process_group(&mut cmd);
     let mut child = cmd
         .current_dir(cwd)
         .kill_on_drop(true)
@@ -83,14 +88,18 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
     // that prints gigabytes must not pin that much memory before the char
     // cap runs. Bytes beyond the cap are drained-and-counted so the child
     // never blocks on a full pipe.
-    let mut stdout = child.stdout.take().expect("stdout piped above");
-    let mut stderr = child.stderr.take().expect("stderr piped above");
-    let stdout_task = tokio::spawn(async move {
-        codesmith_agent_runtime::utils::read_capped(&mut stdout, MAX_OUTPUT_BYTES).await
-    });
-    let stderr_task = tokio::spawn(async move {
-        codesmith_agent_runtime::utils::read_capped(&mut stderr, MAX_OUTPUT_BYTES).await
-    });
+    let stdout = child.stdout.take().expect("stdout piped above");
+    let stderr = child.stderr.take().expect("stderr piped above");
+    // Announces the command's exit to the readers, which then bound their
+    // wait: a job the command backgrounded (`!npm run dev &`) keeps the
+    // pipes' write end, so EOF may never come.
+    let (exited_tx, exited_rx) = tokio::sync::watch::channel(None);
+    let stdout_task = tokio::spawn(read_until_closed(
+        stdout,
+        MAX_OUTPUT_BYTES,
+        exited_rx.clone(),
+    ));
+    let stderr_task = tokio::spawn(read_until_closed(stderr, MAX_OUTPUT_BYTES, exited_rx));
 
     // Bound the wait: a command that never exits on its own (`!tail -f`,
     // `!npm run dev`) used to wedge the interactive session forever with
@@ -100,8 +109,12 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
             status.map_err(|err| format!("{shell} failed to report its exit status: {err}"))?
         }
         Err(_) => {
+            // The whole group, not the shell alone.
+            codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
+            #[cfg(not(unix))]
             let _ = child.kill().await;
             let _ = child.wait().await;
+            let _ = exited_tx.send(Some(tokio::time::Instant::now() + DRAIN_TIMEOUT));
             let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
             let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
             let mut combined = String::from_utf8_lossy(&stdout_kept).into_owned();
@@ -124,6 +137,7 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
             ));
         }
     };
+    let _ = exited_tx.send(Some(tokio::time::Instant::now() + DRAIN_TIMEOUT));
     let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
     let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
 
@@ -157,6 +171,47 @@ const MAX_OUTPUT_BYTES: usize = MAX_OUTPUT_CHARS * 4;
 /// Wall-clock bound for a shell-mode command: long-running servers are a
 /// timeout result, not an interactive-session wedge.
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long the output readers keep waiting once the command itself has
+/// exited.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `utils::read_capped` with a bound: once `exited` names a deadline, a read
+/// that has not arrived by then ends the capture with what was read so far.
+async fn read_until_closed<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    cap: usize,
+    mut exited: tokio::sync::watch::Receiver<Option<tokio::time::Instant>>,
+) -> (Vec<u8>, usize) {
+    use tokio::io::AsyncReadExt as _;
+
+    let (mut kept, mut dropped) = (Vec::new(), 0usize);
+    let mut buf = [0u8; 8192];
+    loop {
+        // Copied out: a `watch::Ref` is not `Send` and must not live across the await.
+        let deadline = *exited.borrow_and_update();
+        let read = if let Some(deadline) = deadline {
+            // Past the bound the capture ends; a ready read still counts.
+            tokio::time::timeout_at(deadline, reader.read(&mut buf))
+                .await
+                .unwrap_or(Ok(0))
+        } else {
+            tokio::select! {
+                read = reader.read(&mut buf) => read,
+                _ = exited.changed() => continue,
+            }
+        };
+        match read {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                let room = cap.saturating_sub(kept.len());
+                kept.extend_from_slice(&buf[..read.min(room)]);
+                dropped += read.saturating_sub(room);
+            }
+        }
+    }
+    (kept, dropped)
+}
 
 /// Truncate to `max` chars, saying how much was dropped.
 #[must_use]
@@ -208,6 +263,24 @@ pub fn transcript_message(command: &str, status: &str, output: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Found in the review: a command that backgrounds a job left the orphan
+    /// holding the pipes, and the reader joins waited for its EOF — the
+    /// prompt never came back.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_backgrounded_job_does_not_hold_the_prompt() {
+        let cwd = std::env::temp_dir();
+        let (status, output) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run("sleep 30 & echo hi", &cwd),
+        )
+        .await
+        .expect("the prompt comes back")
+        .expect("the command runs");
+        assert!(output.contains("hi"), "{output:?}");
+        assert!(!status.contains("timed out"), "{status}");
+    }
+
     use super::*;
 
     #[test]
