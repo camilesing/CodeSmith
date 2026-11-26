@@ -26,7 +26,7 @@ const MAX_STEP_CHARS = 200;
 // Action-class tools only — reads/searches alone are not a reusable flow.
 const ACTION_TOOLS = [
     "write_file", "edit_file", "apply_patch", "exec_shell",
-    "exec_shell_wait", "exec_shell_interact", "run_tests", "worktree_enter",
+    "exec_shell_wait", "exec_shell_interact", "run_tests", "enter_worktree",
 ];
 
 fn is_action(name, tools) {

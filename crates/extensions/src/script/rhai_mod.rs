@@ -2457,16 +2457,24 @@ mod tests {
         rt.block_on(runner.load(&m)).expect("configure");
         runner.bind_core(Arc::new(PerModCtx));
 
-        // Three successful action-class calls, then a clean turn end.
+        // Three successful action-class calls — a worktree-based flow:
+        // `enter_worktree` is the registered name (the list once said
+        // `worktree_enter`, so the opening step fell out of the sequence
+        // and a three-step flow captured nothing) — then a clean turn end.
         for i in 0..3 {
+            let name = if i == 0 {
+                "enter_worktree"
+            } else {
+                "write_file"
+            };
             let _ = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
                 id: format!("c{i}"),
-                name: "write_file".into(),
+                name: name.into(),
                 input: serde_json::json!({"path": format!("f{i}.rs"), "content": "x"}),
             })));
             let _ = rt.block_on(runner.emit(ExtensionEvent::ToolResult(ToolResultEvent {
                 id: format!("c{i}"),
-                name: "write_file".into(),
+                name: name.into(),
                 result: Ok(ToolResult::success("written")),
             })));
         }
@@ -2485,6 +2493,12 @@ mod tests {
             skills.as_array().map(std::vec::Vec::len),
             Some(1),
             "captured: {skills}"
+        );
+        assert!(
+            skills[0]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("enter_worktree")),
+            "the worktree step is part of the captured flow: {skills}"
         );
 
         // A fresh load over the same KV re-registers the captured skill —
