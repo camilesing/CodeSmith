@@ -101,7 +101,8 @@ pub fn timing_to_rrule(timing: &Value) -> Result<String> {
             ))
         }
         "after" | "at" => bail!(
-            "CodeSmith automations are recurring (hourly or weekly); a one-shot              timing has no equivalent"
+            "CodeSmith automations are recurring (hourly or weekly); a one-shot \
+             timing has no equivalent"
         ),
         "cron" => cron_to_rule(timing),
         other => bail!("unsupported timing kind {other:?}"),
