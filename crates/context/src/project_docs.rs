@@ -546,6 +546,16 @@ fn load_project_context_with_parents_and_home(
         }
     }
 
+    // The tier loader IS the containment check: it refuses a file that
+    // resolves outside its tier root (an `AGENTS.md` symlinked to a file
+    // elsewhere) and one the excludes policy drops. The raw reads above
+    // accepted the same file through the link — when no tier resolved, that
+    // uncontained read must not become the answer by default. (The explicit
+    // generated-text fallback above sets no `source_path` and is untouched.)
+    if merged.is_empty() && ctx.source_path.is_some() {
+        ctx.instructions = None;
+        ctx.source_path = None;
+    }
     if !merged.is_empty() {
         ctx.instructions = Some(merged);
         // `source_path` prefers the most-specific project file (set above by
@@ -1061,6 +1071,28 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .contains("Parent instructions")
+        );
+    }
+
+    /// A workspace `AGENTS.md` that is a symlink to a file outside the
+    /// workspace: the tier loader refuses it, and the raw read must not be
+    /// the fallback when no tier resolved (it reached the system prompt).
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_instruction_file_outside_the_workspace_is_not_loaded() {
+        let tmp = tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).expect("mkdir ws");
+        let secret = tmp.path().join("secret.md");
+        fs::write(&secret, "PRIVATE_KEY_BODY").expect("write secret");
+        std::os::unix::fs::symlink(&secret, ws.join("AGENTS.md")).expect("symlink");
+
+        let ctx = load_project_context_with_parents_and_home(&ws, Some(tmp.path()));
+
+        let rendered = ctx.as_system_block().unwrap_or_default();
+        assert!(
+            !rendered.contains("PRIVATE_KEY_BODY"),
+            "the out-of-workspace file reached the prompt: {rendered}"
         );
     }
 
