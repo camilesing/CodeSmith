@@ -3747,6 +3747,10 @@ impl HostAgentExecutor {
         // Loop-guard state persists across steps within this run (one
         // `LoopGuard` per turn, matching the retired turn handler).
         let mut loop_guard = LoopGuard::default();
+        // The coordinator's ticket-board digest is one shot per run: step 0
+        // runs again after a reactive context recovery (`continue` without
+        // `step += 1`), and a second digest landed right behind the first.
+        let mut ticket_board_pushed = false;
         let mut step: u32 = 0;
         // Accumulate tool-call IDs issued this run (slice 33 §E) — feeds the
         // `CapacityGateProbe`'s `recent_tool_call_ids` observation input at
@@ -4023,6 +4027,7 @@ impl HostAgentExecutor {
             // never the frozen prefix — so the session journal records what
             // the model saw ("model-visible means logged").
             if step == 0
+                && !ticket_board_pushed
                 && self.turn_mode == AppMode::Coordinator
                 && let Some(note) = &self.open_tickets_note
                 && let Some(digest) = note.open_tickets_digest().await
@@ -4041,6 +4046,7 @@ impl HostAgentExecutor {
                         cache_control: None,
                     }],
                 });
+                ticket_board_pushed = true;
             }
 
             // The host's catalog is the request's tool surface when it wired one
@@ -12676,6 +12682,69 @@ mod tests {
         assert_eq!(mock.requests().len(), 2);
         // The transcript was compacted (10 seeded + user → a few messages).
         assert!(history.len() <= 6, "history len = {}", history.len());
+    }
+
+    /// The coordinator's ticket-board digest is pushed once per run. Step 0
+    /// runs again after a reactive context recovery, and the board used to
+    /// land a second time — the model read it twice and the journal carried
+    /// both copies.
+    #[tokio::test]
+    async fn ticket_board_digest_is_not_repeated_on_a_retried_first_step() {
+        struct FixedDigestNote;
+        #[async_trait]
+        // Qualified path on purpose: `scripts/capability-graph.py` counts an
+        // unqualified `impl Seam for` in any file, tests included.
+        impl crate::host_services::OpenTicketsNote for FixedDigestNote {
+            async fn open_tickets_digest(&self) -> Option<String> {
+                Some("T-1: open and unassigned".to_string())
+            }
+        }
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 10);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let ctx_len_msg = "This model's maximum context length is 128000 tokens, \
+                           however you requested 200000 tokens.";
+        let mock = Arc::new(
+            MockLlm::with_rounds(vec![
+                MockRound::StreamOpenErr(ctx_len_msg.to_string()),
+                MockRound::Events(end_call()),
+            ])
+            .with_compaction_summary("SUMMARY"),
+        );
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
+            None,
+            None,
+        )
+        .with_open_tickets_note(Some(Arc::new(FixedDigestNote)))
+        .with_turn_mode(AppMode::Coordinator);
+
+        executor
+            .run(&mut history, "route this".to_string())
+            .await
+            .expect("the turn recovers");
+        assert_eq!(
+            mock.requests().len(),
+            2,
+            "the rejected attempt, then the recovered one"
+        );
+        let boards = history
+            .messages()
+            .iter()
+            .filter(|m| format!("{:?}", m.content).contains("T-1: open and unassigned"))
+            .count();
+        assert_eq!(boards, 1, "one digest per run");
     }
 
     /// A non-context-length pre-stream error (timeout) is not recovered — it
