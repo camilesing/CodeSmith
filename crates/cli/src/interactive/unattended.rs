@@ -47,8 +47,7 @@
 //!   status lines); the full turn view belongs to `pump_turn`.
 
 use colored::Colorize;
-use std::sync::Arc;
-use tokio::sync::{Notify, watch};
+use tokio::sync::watch;
 
 use super::state::ReplState;
 use crate::core::engine::EngineHandle;
@@ -62,8 +61,8 @@ use codesmith_agent_runtime::utils::spawn_supervised;
 pub(crate) struct IdlePump {
     /// `true` = the main loop owns the event channel (pump parked).
     owned_tx: Option<watch::Sender<bool>>,
-    /// Fired by the pump each time it parks after a `hold`.
-    hold_acked: Arc<Notify>,
+    /// `true` = the pump is parked. A state, not an event — see [`hold`].
+    parked_rx: watch::Receiver<bool>,
 }
 
 impl IdlePump {
@@ -72,26 +71,28 @@ impl IdlePump {
     /// before the first readline).
     pub(crate) fn start(state: &ReplState) -> Self {
         let Some(engine) = state.engine.as_ref() else {
+            // No engine, no pump: the gate reads "parked", so `hold` is a
+            // no-op.
+            let (_owned_tx, parked_rx) = watch::channel(true);
             return Self {
                 owned_tx: None,
-                hold_acked: Arc::new(Notify::new()),
+                parked_rx,
             };
         };
         let engine = engine.clone();
         let (owned_tx, owned_rx) = watch::channel(true);
-        let pump = Self {
-            owned_tx: Some(owned_tx),
-            hold_acked: Arc::new(Notify::new()),
-        };
-        let hold_acked = pump.hold_acked.clone();
+        let (parked_tx, parked_rx) = watch::channel(true);
         spawn_supervised(
             "repl-idle-pump",
             std::panic::Location::caller(),
             async move {
-                run(engine, owned_rx, hold_acked).await;
+                run(engine, owned_rx, parked_tx).await;
             },
         );
-        pump
+        Self {
+            owned_tx: Some(owned_tx),
+            parked_rx,
+        }
     }
 
     /// Let the pump read events (call right before blocking in `readline`).
@@ -101,26 +102,53 @@ impl IdlePump {
         }
     }
 
-    /// Take the channel back from the pump. Returns once the pump has
-    /// parked (it acknowledged after finishing any event in flight), so
-    /// the caller becomes the sole reader before it pumps.
+    /// Take the channel back from the pump: returns once the pump is
+    /// parked, so the caller is the sole reader before it pumps.
     pub(crate) async fn hold(&self) {
-        if let Some(owned_tx) = &self.owned_tx
-            && !*owned_tx.borrow()
-        {
-            let _ = owned_tx.send(true);
-            self.hold_acked.notified().await;
+        if let Some(owned_tx) = &self.owned_tx {
+            hold(owned_tx, &self.parked_rx).await;
         }
     }
 }
 
-async fn run(engine: EngineHandle, mut owned_rx: watch::Receiver<bool>, hold_acked: Arc<Notify>) {
+/// Park while the main loop owns the channel; publish `false` ("reading")
+/// on the way out.
+///
+/// "Parked" is published on every entry. It has to be a state, not an
+/// event: a release and the next `hold` that both land before the pump is
+/// polled again leave it in this loop, where an ack sent only from the read
+/// loop never comes — `hold` waited forever and the REPL froze at its
+/// prompt. Stored as a state, the pump's parked flag releases that `hold`
+/// at once.
+async fn park_while_owned(
+    owned_rx: &mut watch::Receiver<bool>,
+    parked_tx: &watch::Sender<bool>,
+) -> Result<(), watch::error::RecvError> {
+    let _ = parked_tx.send(true);
+    while *owned_rx.borrow_and_update() {
+        owned_rx.changed().await?;
+    }
+    let _ = parked_tx.send(false);
+    Ok(())
+}
+
+/// Ask the pump to park and return once it has.
+async fn hold(owned_tx: &watch::Sender<bool>, parked_rx: &watch::Receiver<bool>) {
+    if !*owned_tx.borrow() {
+        let _ = owned_tx.send(true);
+        let mut parked = parked_rx.clone();
+        let _ = parked.wait_for(|parked| *parked).await;
+    }
+}
+
+async fn run(
+    engine: EngineHandle,
+    mut owned_rx: watch::Receiver<bool>,
+    parked_tx: watch::Sender<bool>,
+) {
     loop {
-        // Parked while the main loop owns the channel.
-        while *owned_rx.borrow_and_update() {
-            if owned_rx.changed().await.is_err() {
-                return;
-            }
+        if park_while_owned(&mut owned_rx, &parked_tx).await.is_err() {
+            return;
         }
         // Read events while the main loop is at the prompt.
         let mut assistant_buffer = String::new();
@@ -131,8 +159,8 @@ async fn run(engine: EngineHandle, mut owned_rx: watch::Receiver<bool>, hold_ack
                         return;
                     }
                     if *owned_rx.borrow_and_update() {
-                        // Main loop takes over; acknowledge and park.
-                        hold_acked.notify_one();
+                        // Main loop takes over: publish "parked" and park.
+                        let _ = parked_tx.send(true);
                         break;
                     }
                 }
@@ -141,9 +169,9 @@ async fn run(engine: EngineHandle, mut owned_rx: watch::Receiver<bool>, hold_ack
                     rx.recv().await
                 } => {
                     let Some(event) = event else {
-                        // Engine gone: ack a pending hold so the main loop
+                        // Engine gone: publish "parked" so a pending hold
                         // never waits on a dead pump, then stop.
-                        hold_acked.notify_one();
+                        let _ = parked_tx.send(true);
                         return;
                     };
                     handle_unattended(&engine, event, &mut assistant_buffer).await;
@@ -325,53 +353,89 @@ mod tests {
     /// before returning and `release` unparks it. This is the ownership
     /// handshake the real pump runs; here it is driven by a stand-in task
     /// so the ordering (ack strictly after parking) can be asserted.
-    #[tokio::test]
-    async fn gate_hold_waits_for_park_ack_and_release_resumes() {
-        // Created held, exactly like `IdlePump::start` — the pump's first
-        // poll parks in the hold loop before anything else runs.
+    /// A stand-in for `run`: the real park loop and the real park-on-hold
+    /// publish, with nothing to read in between — the reading arm just
+    /// waits for the next ownership change.
+    fn stand_in_pump() -> (
+        watch::Sender<bool>,
+        watch::Receiver<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let (owned_tx, mut owned_rx) = watch::channel(true);
-        let hold_acked: Arc<Notify> = Arc::new(Notify::new());
-        let ack = hold_acked.clone();
-        // Stand-in pump: mirrors `run`'s park/ack protocol.
-        let pump_task = tokio::spawn(async move {
+        let (parked_tx, parked_rx) = watch::channel(true);
+        let task = tokio::spawn(async move {
             loop {
-                while *owned_rx.borrow_and_update() {
-                    if owned_rx.changed().await.is_err() {
-                        return;
-                    }
+                if park_while_owned(&mut owned_rx, &parked_tx).await.is_err() {
+                    return;
                 }
-                // "Reading": a long-poll that is also watching for hold.
                 if owned_rx.changed().await.is_err() {
                     return;
                 }
                 if *owned_rx.borrow_and_update() {
-                    ack.notify_one();
+                    let _ = parked_tx.send(true);
                     break;
                 }
             }
         });
+        (owned_tx, parked_rx, task)
+    }
+
+    /// The gate alone (no engine, no pump): `hold` returns only once the
+    /// pump is parked and `release` unparks it — the ownership handshake
+    /// the real pump runs, driven by a stand-in task so the ordering can be
+    /// asserted.
+    #[tokio::test]
+    async fn gate_hold_waits_for_the_pump_to_park_and_release_resumes() {
+        let (owned_tx, parked_rx, pump_task) = stand_in_pump();
 
         // Release first (the main loop calls `release` before readline);
-        // the pump leaves its park loop and waits in the reading arm. In
-        // production the blocking readline is the await boundary between
-        // release and hold — here one yield stands in for it.
+        // the pump leaves its park loop and reads. In production the
+        // blocking readline is the await boundary between release and hold
+        // — here one yield stands in for it.
         owned_tx.send(false).expect("release");
         tokio::task::yield_now().await;
-        let mut probe = owned_tx.subscribe();
+        let probe = owned_tx.subscribe();
         assert!(!*probe.borrow());
-        // Hold: flips the flag and returns only after the pump acked.
-        owned_tx.send(true).expect("watch send");
-        hold_acked.notified().await;
-        assert!(*probe.borrow(), "pump parked before hold returns");
+        assert!(!*parked_rx.borrow(), "the pump published 'reading'");
+
+        // Hold: flips the flag and returns only once the pump is parked.
+        hold(&owned_tx, &parked_rx).await;
+        assert!(
+            *parked_rx.borrow(),
+            "the pump is parked before hold returns"
+        );
+
         // Release: reading resumes.
-        owned_tx.send(false).expect("watch send");
+        owned_tx.send(false).expect("release");
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while *probe.borrow_and_update() {
-                probe.changed().await.expect("watch alive");
-            }
+            let mut parked = parked_rx.clone();
+            let _ = parked.wait_for(|parked| !*parked).await;
         })
         .await
-        .expect("pump resumes reading after release");
+        .expect("the pump resumes reading after release");
+        pump_task.abort();
+    }
+
+    /// Found in the review: "parked" was an event — a `Notify` ack sent
+    /// only from the read loop. A release and the next hold that both land
+    /// before the pump is polled again (a buffered Enter: `readline`
+    /// returns at once) leave it in the park loop, where no ack is ever
+    /// sent: `hold` never returned, no prompt was drawn, and the session
+    /// had to be killed. Parked is a state now.
+    #[tokio::test]
+    async fn hold_returns_for_a_release_the_pump_never_saw() {
+        let (owned_tx, parked_rx, pump_task) = stand_in_pump();
+
+        // No await between the two: the pump is not polled in between, so
+        // it never leaves its park loop and never publishes "reading".
+        owned_tx.send(false).expect("release");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            hold(&owned_tx, &parked_rx),
+        )
+        .await
+        .expect("a release the pump never saw must not hang the next hold");
+
         pump_task.abort();
     }
 }
