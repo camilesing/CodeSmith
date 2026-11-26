@@ -844,7 +844,7 @@ impl HookExecutor {
                 // not fail silently.
                 Err(err) => {
                     tracing::warn!(
-                        target: "codesmith::hooks",
+                        target: "hooks",
                         "background hook '{cmd}' failed to spawn: {err}"
                     );
                     return;
@@ -866,7 +866,7 @@ impl HookExecutor {
                     // a trace — a hook dying this way must stay diagnosable.
                     Err(err) => {
                         tracing::warn!(
-                            target: "codesmith::hooks",
+                            target: "hooks",
                             "background hook '{cmd}' wait failed: {err}"
                         );
                         kill_hook_child(&mut child);
