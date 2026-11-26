@@ -5131,51 +5131,27 @@ pub fn provider_is_self_hosted(provider: ApiProvider) -> bool {
 /// prompt for a key inline.
 #[must_use]
 pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
-    let env_var = match provider {
-        ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
-        ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
-        ApiProvider::Openai => "OPENAI_API_KEY",
-        ApiProvider::Atlascloud => "ATLASCLOUD_API_KEY",
-        ApiProvider::WanjieArk => "WANJIE_ARK_API_KEY",
-        ApiProvider::Openrouter => "OPENROUTER_API_KEY",
-        ApiProvider::XiaomiMimo => "XIAOMI_MIMO_API_KEY",
-        ApiProvider::Novita => "NOVITA_API_KEY",
-        ApiProvider::Fireworks => "FIREWORKS_API_KEY",
-        ApiProvider::Siliconflow => "SILICONFLOW_API_KEY",
-        ApiProvider::Moonshot => "MOONSHOT_API_KEY",
-        ApiProvider::Sglang => "SGLANG_API_KEY",
-        ApiProvider::Vllm => "VLLM_API_KEY",
-        ApiProvider::Ollama => "OLLAMA_API_KEY",
-        ApiProvider::Volcengine => "VOLCENGINE_API_KEY",
-        ApiProvider::Anthropic => "ANTHROPIC_API_KEY",
-    };
-    if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
-        return true;
-    }
-    if matches!(provider, ApiProvider::NvidiaNim)
-        && std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+    // The env table the auth commands and the runtime resolver share
+    // (`crate::provider_env_vars`, cross-checked against
+    // `codesmith_secrets::env_for` by a test in lib.rs). This probe kept a
+    // shorter list of its own: a documented alias (`ARK_API_KEY`,
+    // `CODESMITH_API_KEY`) read as "no key", and a utility model on that
+    // provider was dropped for lack of one.
+    if codesmith_config::ProviderKind::parse(provider.as_str()).is_some_and(crate::provider_env_set)
     {
         return true;
     }
-    if matches!(provider, ApiProvider::WanjieArk)
-        && (std::env::var("WANJIE_API_KEY").is_ok_and(|k| !k.trim().is_empty())
-            || std::env::var("WANJIE_MAAS_API_KEY").is_ok_and(|k| !k.trim().is_empty()))
-    {
-        return true;
-    }
-    if matches!(provider, ApiProvider::XiaomiMimo)
-        && (std::env::var("XIAOMI_API_KEY").is_ok_and(|k| !k.trim().is_empty())
-            || std::env::var("MIMO_API_KEY").is_ok_and(|k| !k.trim().is_empty()))
-    {
-        return true;
-    }
-    if matches!(provider, ApiProvider::Moonshot)
-        && std::env::var("KIMI_API_KEY").is_ok_and(|k| !k.trim().is_empty())
-    {
-        return true;
-    }
-    if matches!(provider, ApiProvider::Anthropic)
-        && std::env::var("CLAUDE_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+    // A `[[providers.custom]]` entry carries its own key: it is the active
+    // route's credential when the caller asks about the provider its
+    // selector falls back to.
+    if config.custom_provider().is_some()
+        && provider == config.api_provider()
+        && config.custom_provider_entry().is_some_and(|entry| {
+            entry
+                .api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty())
+        })
     {
         return true;
     }
@@ -9652,6 +9628,42 @@ api_key = "moonshot-platform-key"
         assert!(has_api_key_for(&config, ApiProvider::Novita));
         assert!(has_api_key_for(&config, ApiProvider::Siliconflow));
         assert!(!has_api_key_for(&config, ApiProvider::Openrouter));
+
+        // Found in the review: a documented alias read as "no key" here.
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("ARK_API_KEY", "ark-alias");
+            env::set_var("CODESMITH_API_KEY", "app-key");
+        }
+        assert!(
+            has_api_key_for(&config, ApiProvider::Volcengine),
+            "ARK_API_KEY is a documented volcengine key"
+        );
+        assert!(
+            has_api_key_for(&config, ApiProvider::NvidiaNim),
+            "CODESMITH_API_KEY is an app-wide fallback for nvidia-nim"
+        );
+        unsafe {
+            env::remove_var("ARK_API_KEY");
+            env::remove_var("CODESMITH_API_KEY");
+        }
+        // The selected custom entry's own key is the active route's key —
+        // and nobody else's.
+        let mut custom = Config {
+            custom_provider: Some("acme".to_string()),
+            ..Default::default()
+        };
+        assert!(!has_api_key_for(&custom, custom.api_provider()));
+        custom.providers = Some(ProvidersConfig {
+            custom: vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                api_key: Some("sk-acme".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        assert!(has_api_key_for(&custom, custom.api_provider()));
+        assert!(!has_api_key_for(&custom, ApiProvider::Novita));
         Ok(())
     }
 
