@@ -256,10 +256,6 @@ impl McpServer {
                                 "model": {
                                     "type": "string",
                                     "description": "Optional model identifier (defaults to the configured default model)"
-                                },
-                                "cwd": {
-                                    "type": "string",
-                                    "description": "Optional working directory context"
                                 }
                             },
                             "required": ["prompt"]
@@ -911,6 +907,23 @@ mod tests {
             .map(|tool| tool["name"].as_str().expect("name"))
             .collect();
         assert_eq!(names, ["file_read", "codesmith", "codesmith-reply"]);
+        // The `codesmith` schema names only what its handler reads: a
+        // `cwd` property used to promise working-directory context that was
+        // dropped on the floor.
+        let codesmith = listed["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .find(|tool| tool["name"] == "codesmith")
+            .expect("codesmith is listed");
+        let mut properties: Vec<&str> = codesmith["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        properties.sort_unstable();
+        assert_eq!(properties, ["model", "prompt"]);
         // The native tools describe their thread contract.
         assert!(
             listed["tools"]
