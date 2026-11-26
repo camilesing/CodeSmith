@@ -41,7 +41,11 @@
 //!   fails at attach time; the per-message cap is checked when a message
 //!   resolves its attachments (send time), because staging outlives the
 //!   drafts that drop receipts — a receipt the page never cites is not
-//!   released, only evicted once it is among a session's oldest.
+//!   released, only evicted once it is among a session's oldest;
+//! - attachments ride the turn request as base64: a message whose files total
+//!   past the runtime's body budget (about 12 MB raw) is refused at send time
+//!   with a business error naming the budget. Raising that budget is the
+//!   runtime's decision; the bridge does not assume a larger one.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -62,6 +66,10 @@ pub const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 /// (`MAX_ATTACHMENTS_PER_MESSAGE`), enforced on the attachments one message
 /// resolves.
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
+
+/// The runtime's HTTP body limit for one turn request (`runtime_api.rs`'s
+/// `DefaultBodyLimit`); attachments ride the body as canonical base64.
+const MAX_MESSAGE_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Staged receipts kept per session: a bound on the bridge's memory. The
 /// newest stay and the oldest are evicted; refusing the upload instead (the
@@ -297,18 +305,35 @@ pub async fn resolve_prompt_attachments(
 /// Refuse a message that cannot travel as one turn request: more
 /// attachments than the runtime store admits for one message (found in the
 /// desktop: that cap was counted over the session's whole life at attach
-/// time instead).
+/// time instead), or base64 past the runtime's body limit — about 12 MB of
+/// files, which staged fine and then failed at send with a bare 413.
 pub fn check_message_attachments(attachments: &[Value]) -> Result<(), OpError> {
-    check_message_budget(attachments.len())
+    let body: usize = attachments
+        .iter()
+        .map(|attachment| attachment["data"].as_str().map_or(0, str::len))
+        .sum();
+    check_message_budget(attachments.len(), body)
 }
 
-/// The per-message limits on what one turn request carries.
-fn check_message_budget(count: usize) -> Result<(), OpError> {
+/// The per-message limits on what one turn request carries: the count the
+/// store admits, and the body the runtime's router accepts (each member
+/// carries a little JSON around its base64).
+fn check_message_budget(count: usize, body_bytes: usize) -> Result<(), OpError> {
     if count > MAX_ATTACHMENTS_PER_MESSAGE {
         return Err(op_error(
             "fileUploads/too-many-attachments",
             format!(
                 "one message carries at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments; this one names {count}"
+            ),
+        ));
+    }
+    // 4 base64 characters per 3 bytes: 16 MiB of body is about 12 MB of files.
+    if body_bytes + 100 * count >= MAX_MESSAGE_BODY_BYTES {
+        return Err(op_error(
+            "fileUploads/message-too-large",
+            format!(
+                "these attachments total {} MB as base64; one message carries at most about 12 MB of files — send fewer or smaller ones",
+                body_bytes / 1_000_000
             ),
         ));
     }
@@ -792,6 +817,26 @@ mod tests {
             .unwrap_or_else(|err| panic!("{}", err.message));
         let Err(err) = check_message_attachments(&attachments) else {
             panic!("nine attachments must be refused before the runtime is asked");
+        };
+        assert_eq!(err.code, "fileUploads/too-many-attachments");
+    }
+
+    /// Found in the desktop: attachments each under the per-file cap passed
+    /// staging and then failed at send with the runtime's bare 413 — four
+    /// 4 MB photos, or any ~12 MB of files in one message.
+    #[test]
+    fn a_message_past_the_runtime_body_budget_is_refused_before_it_is_sent() {
+        assert!(check_message_budget(0, 0).is_ok());
+        // One file at the per-file cap: 10 MiB is 13,981,016 base64 characters.
+        assert!(check_message_budget(1, 13_981_016).is_ok());
+        // Four 3.5 MB files: 18.7 MB of base64 for 14 MB of files.
+        let Err(err) = check_message_budget(4, 18_666_652) else {
+            panic!("a message the runtime's router would reject must be refused here");
+        };
+        assert_eq!(err.code, "fileUploads/message-too-large");
+        assert!(err.message.contains("12 MB"), "{}", err.message);
+        let Err(err) = check_message_budget(9, 0) else {
+            panic!("nine attachments are refused whatever their size");
         };
         assert_eq!(err.code, "fileUploads/too-many-attachments");
     }
