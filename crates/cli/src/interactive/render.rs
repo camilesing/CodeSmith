@@ -1857,19 +1857,9 @@ async fn handle_approval(
     // hand-approved or covered by an earlier `[a]` is not a record of what the
     // user agreed to; see `SavedSession::approvals` for what the record does
     // and does not cover.
-    if state.approval_mode == ApprovalMode::Auto {
-        log_approval(
-            state,
-            &id,
-            &tool_name,
-            &approval_key,
-            &approval_grouping_key,
-            "auto-mode",
-            None,
-        );
-        let _ = engine.approve_tool_call(id).await;
-        return;
-    }
+    // A session denial outranks every grant, the Auto posture included:
+    // `/permissions deny` is the only way to block a call in an auto session,
+    // and the gate used to approve before it looked at the deny set.
     if approval_session_denied(
         &state.approval_session_denied,
         &approval_key,
@@ -1885,6 +1875,19 @@ async fn handle_approval(
             None,
         );
         let _ = engine.deny_tool_call(id).await;
+        return;
+    }
+    if state.approval_mode == ApprovalMode::Auto {
+        log_approval(
+            state,
+            &id,
+            &tool_name,
+            &approval_key,
+            &approval_grouping_key,
+            "auto-mode",
+            None,
+        );
+        let _ = engine.approve_tool_call(id).await;
         return;
     }
     if approval_always_granted(
@@ -3972,6 +3975,26 @@ mod tests {
         assert_eq!(state.approvals.last().unwrap().decision, "auto-mode");
         assert!(!state.awaiting_approval);
 
+        // A session denial outranks the Auto posture too.
+        state
+            .approval_session_denied
+            .insert("shell:exec_shell:auto-denied".to_string());
+        handle_approval(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "call-auto-denied".to_string(),
+            "exec_shell".to_string(),
+            "Run a shell command.".to_string(),
+            serde_json::json!({ "command": "cargo build" }),
+            "shell:exec_shell:auto-denied".to_string(),
+            "shell:cargo build".to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(state.approvals.last().unwrap().decision, "session-deny");
+
         // A session denial vetoes before the prompt.
         state.approval_mode = ApprovalMode::Suggest;
         state
@@ -4013,7 +4036,7 @@ mod tests {
         .await;
         assert_eq!(state.approvals.last().unwrap().decision, "session-grant");
 
-        // Two approvals and one denial crossed the engine's channel.
+        // Two approvals and two denials crossed the engine's channel.
         let mut mock = mock;
         let mut approved = 0;
         let mut denied = 0;
@@ -4026,7 +4049,7 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!((approved, denied), (2, 1));
+        assert_eq!((approved, denied), (2, 2));
     }
 
     #[tokio::test]
