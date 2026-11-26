@@ -199,7 +199,10 @@ jobs:
           SRC
           sudo dpkg --add-architecture riscv64
           sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/riscv64.sources -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
-          sudo apt-get install -y libdbus-1-dev:riscv64
+          # Multi-Arch: same — the host and riscv64 copies must be the exact
+          # same version, so both go in ONE transaction (as nightly.yml does);
+          # split ones fail with "cannot be co-installed" when the mirrors lag.
+          sudo apt-get install -y libdbus-1-dev libdbus-1-dev:riscv64
       - name: Build
         shell: bash
         env:
