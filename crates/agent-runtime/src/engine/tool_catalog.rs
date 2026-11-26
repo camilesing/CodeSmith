@@ -371,12 +371,21 @@ fn tool_search_haystack(tool: &Tool) -> String {
 }
 
 fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usize) -> Vec<String> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(|term| term.trim().to_lowercase())
-        .filter(|term| !term.is_empty())
-        .collect();
-    if terms.is_empty() {
+    // A `+term` is required, as the tool's description promises: a tool that
+    // does not match it is out, whatever the other keywords score.
+    let mut required: Vec<String> = Vec::new();
+    let mut terms: Vec<String> = Vec::new();
+    for term in query.split_whitespace() {
+        let term = term.trim().to_lowercase();
+        if let Some(term) = term.strip_prefix('+') {
+            if !term.is_empty() {
+                required.push(term.to_string());
+            }
+        } else if !term.is_empty() {
+            terms.push(term);
+        }
+    }
+    if required.is_empty() && terms.is_empty() {
         return Vec::new();
     }
 
@@ -386,6 +395,9 @@ fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usi
             continue;
         }
         let hay = tool_search_haystack(tool);
+        if !required.iter().all(|term| hay.contains(term)) {
+            continue;
+        }
         let mut score = 0i64;
         for term in &terms {
             if hay.contains(term) {
@@ -764,5 +776,39 @@ mod apply_tool_selection_tests {
         let mut catalog = vec![tool("read_file"), tool(MULTI_TOOL_PARALLEL_NAME)];
         apply_tool_selection(&mut catalog, Some(&[]), &[]);
         assert_eq!(names(&catalog), vec![MULTI_TOOL_PARALLEL_NAME]);
+    }
+
+    fn described(name: &str, description: &str) -> Tool {
+        Tool {
+            description: description.to_string(),
+            ..tool(name)
+        }
+    }
+
+    /// `+term` requires the term, as the description promises: a required term
+    /// filters, the other keywords only rank.
+    #[test]
+    fn plus_prefixed_terms_are_required() {
+        let catalog = vec![
+            described("git_diff", "Show the diff of a commit"),
+            described("apply_patch", "Apply a diff hunk to a file"),
+        ];
+        let mut active = HashSet::new();
+        let mut found = |query: &str| {
+            execute_tool_search(&serde_json::json!({"query": query}), &catalog, &mut active)
+                .expect("search")
+                .metadata
+                .expect("metadata")["tool_references"]
+                .clone()
+        };
+        // Both mention "diff"; only `git_diff` carries "git".
+        assert_eq!(found("+git diff"), serde_json::json!(["git_diff"]));
+        // A required term nothing matches finds nothing.
+        assert_eq!(found("+nosuchword diff"), serde_json::json!([]));
+        // Without a required term the keywords rank both.
+        assert_eq!(
+            found("diff"),
+            serde_json::json!(["git_diff", "apply_patch"])
+        );
     }
 }
