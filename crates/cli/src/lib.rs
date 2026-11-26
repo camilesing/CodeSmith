@@ -2120,6 +2120,49 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// Found in the review: `/logout` once stripped `api_key` lines from
+    /// config.toml by text, which took the Tavily/Bocha `[search]` key and
+    /// the `[vision_model]` key with it (web search and image analysis
+    /// stopped after the user only signed out of the chat provider) and
+    /// missed a provider key written in dotted form. The clearing is
+    /// structural now; this pins what it must and must not touch.
+    #[test]
+    fn logout_clears_chat_provider_keys_only() {
+        let path = temp_store_path("logout-scope");
+        std::fs::write(
+            &path,
+            concat!(
+                "api_key = \"sk-root\"\n",
+                "providers.openai.api_key = \"sk-openai-dotted\"\n",
+                "[search]\n",
+                "api_key = \"tvly-search\"\n",
+                "[vision_model]\n",
+                "model = \"gpt-4o-mini\"\n",
+                "api_key = \"sk-vision\"\n",
+            ),
+        )
+        .unwrap();
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+
+        run_logout_command_with_secrets(&mut store, &no_keyring_secrets())
+            .expect("logout should succeed");
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("sk-root"), "{after}");
+        assert!(
+            !after.contains("sk-openai-dotted"),
+            "a dotted provider key is cleared too: {after}"
+        );
+        assert!(
+            after.contains("tvly-search"),
+            "the search key is not the chat provider's: {after}"
+        );
+        assert!(
+            after.contains("sk-vision"),
+            "the vision key is not the chat provider's: {after}"
+        );
+    }
+
     #[test]
     fn auth_migrate_moves_plaintext_keys_into_keyring_and_strips_file() {
         use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
