@@ -333,9 +333,16 @@ pub async fn run_repl(
     loop {
         if let Some(text) = pending_submit.take() {
             idle_pump.hold().await;
-            if let Err(err) = submit(&mut state, text).await {
-                println!("{} {err}", "✗".red());
-                break;
+            // A message a `message_submit` hook blocked starts no turn.
+            let dispatched = match submit_with_images(&mut state, text, Vec::new()).await {
+                Ok(dispatched) => dispatched,
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
+            };
+            if !dispatched {
+                continue;
             }
             match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
@@ -358,9 +365,21 @@ pub async fn run_repl(
                 "▶ plan approved — continuing into implementation".dimmed()
             );
             idle_pump.hold().await;
-            if let Err(err) = submit(&mut state, PLAN_IMPLEMENTATION_KICKOFF.to_string()).await {
-                println!("{} {err}", "✗".red());
-                break;
+            let dispatched = match submit_with_images(
+                &mut state,
+                PLAN_IMPLEMENTATION_KICKOFF.to_string(),
+                Vec::new(),
+            )
+            .await
+            {
+                Ok(dispatched) => dispatched,
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
+            };
+            if !dispatched {
+                continue;
             }
             match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
@@ -379,9 +398,16 @@ pub async fn run_repl(
             let text = state.queued_messages.remove(0);
             println!("{}", "▶ sending the queued message".dimmed());
             idle_pump.hold().await;
-            if let Err(err) = submit(&mut state, text).await {
-                println!("{} {err}", "✗".red());
-                break;
+            // A message a `message_submit` hook blocked starts no turn.
+            let dispatched = match submit_with_images(&mut state, text, Vec::new()).await {
+                Ok(dispatched) => dispatched,
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
+            };
+            if !dispatched {
+                continue;
             }
             match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
@@ -586,9 +612,17 @@ pub async fn run_repl(
         // a shell line never reaches the slash-command table.
         if let Some(command) = shell_mode::command_from_line(trimmed) {
             idle_pump.hold().await;
-            if let Err(err) = run_shell_mode(&mut state, command).await {
-                println!("{} {err}", "✗".red());
-                break;
+            let dispatched = match run_shell_mode(&mut state, command).await {
+                Ok(dispatched) => dispatched,
+                Err(err) => {
+                    println!("{} {err}", "✗".red());
+                    break;
+                }
+            };
+            // No turn was started: pumping would wait for a completion that
+            // cannot come, and only Ctrl+C twice would leave the prompt.
+            if !dispatched {
+                continue;
             }
             match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
@@ -623,9 +657,16 @@ pub async fn run_repl(
             }
         }));
         idle_pump.hold().await;
-        if let Err(err) = submit_with_images(&mut state, content, images).await {
-            println!("{} {err}", "✗".red());
-            break;
+        let dispatched = match submit_with_images(&mut state, content, images).await {
+            Ok(dispatched) => dispatched,
+            Err(err) => {
+                println!("{} {err}", "✗".red());
+                break;
+            }
+        };
+        // A message a `message_submit` hook blocked starts no turn.
+        if !dispatched {
+            continue;
         }
         match pump_to_idle(&mut state, &idle_pump).await {
             Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
@@ -990,14 +1031,16 @@ pub(crate) fn btw_request_messages(
 /// The command runs unsandboxed because the user typed it (the approval
 /// surface gates what the model runs); `respond_to_shell_commands = false`
 /// makes the run report itself without starting a turn.
-async fn run_shell_mode(state: &mut ReplState, command: &str) -> Result<()> {
+/// `Ok(false)` when no turn was started (the command failed, or
+/// `respond_to_shell_commands = false`): the caller must not then pump.
+async fn run_shell_mode(state: &mut ReplState, command: &str) -> Result<bool> {
     println!("{}", format!("$ {command}").dimmed());
     let (status, output) =
         match super::interactive::shell_mode::run(command, &state.workspace).await {
             Ok(result) => result,
             Err(err) => {
                 println!("{} {err}", "✗".red());
-                return Ok(());
+                return Ok(false);
             }
         };
     if !output.is_empty() {
@@ -1013,11 +1056,12 @@ async fn run_shell_mode(state: &mut ReplState, command: &str) -> Result<()> {
             "respond_to_shell_commands = false: the output is in the transcript but no turn was started"
                 .dimmed()
         );
-        return Ok(());
+        return Ok(false);
     }
-    submit(
+    submit_with_images(
         state,
         super::interactive::shell_mode::transcript_message(command, &status, &output),
+        Vec::new(),
     )
     .await
 }
@@ -1606,14 +1650,18 @@ const PLAN_IMPLEMENTATION_KICKOFF: &str = "Plan approved by the user — impleme
 
 /// Submit a plain user message (auto-model routing resolved per request).
 pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<()> {
-    submit_with_images(state, content, Vec::new()).await
+    submit_with_images(state, content, Vec::new())
+        .await
+        .map(|_| ())
 }
 
+/// `Ok(false)` when nothing was sent (a `message_submit` hook blocked the
+/// message): the caller must not then pump for a turn.
 async fn submit_with_images(
     state: &mut ReplState,
     mut content: String,
     images: Vec<crate::media::PendingAttachment>,
-) -> Result<()> {
+) -> Result<bool> {
     // message_submit hooks transform or block the submitted text before it
     // reaches routing, session history, or the model — the transformed text
     // is what the model sees. Runs on `spawn_blocking`: the executor spawns
@@ -1629,7 +1677,7 @@ async fn submit_with_images(
         match outcome {
             Ok(MessageSubmitOutcome::Blocked { reason }) => {
                 println!("{} submission blocked: {reason}", "✗".red());
-                return Ok(());
+                return Ok(false);
             }
             Ok(outcome) => {
                 if let MessageSubmitOutcome::Replaced { text, .. } = &outcome {
@@ -1745,7 +1793,9 @@ async fn submit_with_images(
     if send_result.is_ok() {
         state.context_references.extend(intake.references);
     }
-    send_result.context("failed to send message to engine")
+    send_result
+        .context("failed to send message to engine")
+        .map(|()| true)
 }
 
 /// Whether the REPL's turn pump is parked in its event `select!` — the
@@ -1803,6 +1853,19 @@ mod coverage_tests {
             initial_input: None,
         };
         ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// Found in the review: `run_repl` pumped for a turn after paths that
+    /// started none — every `!cmd` under `respond_to_shell_commands = false`
+    /// left the REPL in `Working · 0s` until Ctrl+C twice ended the session.
+    #[tokio::test]
+    async fn a_shell_command_that_starts_no_turn_says_so() {
+        let mut state = test_repl_state();
+        state.settings.respond_to_shell_commands = false;
+        let dispatched = run_shell_mode(&mut state, "true")
+            .await
+            .expect("the command runs");
+        assert!(!dispatched, "no turn was started, so nothing is pumped");
     }
 
     /// Found in the review: every multi-line prompt was rebuilt from
