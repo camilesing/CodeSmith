@@ -692,15 +692,18 @@ mod tests {
     /// the row's edge, so a paragraph was cut mid-word at every full row.
     #[test]
     fn a_paragraph_folds_at_its_last_space_not_through_a_word() {
+        // At this width the first row fills through "laz" — a width where it
+        // happens to end at a word boundary pins nothing (the first version
+        // of this test passed with the fold removed).
         let rows = render_plan_at_width(
             "The quick brown fox jumps over the lazy dog and runs away",
-            36,
+            40,
         );
         let plain: Vec<String> = rows.iter().map(|row| strip_ansi(row)).collect();
         assert!(plain[0].trim_end().ends_with("the"), "{}", plain[0]);
         assert!(plain[1].trim_start().starts_with("lazy"), "{}", plain[1]);
         for row in &plain {
-            assert!(row.width() <= 36, "row exceeds 36 columns: {row:?}");
+            assert!(row.width() <= 40, "row exceeds 40 columns: {row:?}");
         }
     }
 
