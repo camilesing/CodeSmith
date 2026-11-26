@@ -1112,10 +1112,7 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
         ),
         Action::StashHint => println!("{}", "— nothing stashed yet".dimmed()),
         Action::DraftCleared => println!("{}", "— draft cleared (Up recalls it)".dimmed()),
-        Action::ExitHint => println!(
-            "{}",
-            "— press Ctrl+D again within a second to quit".dimmed()
-        ),
+        Action::ExitHint => println!("{}", "— press Ctrl+D again within 800 ms to quit".dimmed()),
         Action::StopAllHint => println!(
             "{}",
             "— press Ctrl+X Ctrl+K again within 3 seconds to stop all background work".dimmed()
