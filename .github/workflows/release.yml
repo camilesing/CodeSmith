@@ -444,13 +444,13 @@ jobs:
           body: |
             ## Install
 
-            ### Recommended — npm (one command, both binaries)
+            ### Recommended — npm (one command, one binary)
 
             ```bash
             npm install -g codesmith
             ```
 
-            The wrapper downloads both binaries from this Release and places them in the same directory.
+            The wrapper downloads the platform binary from this Release (`codes` is an alias of the same install).
 
             ### Docker / GHCR
 
@@ -566,5 +566,5 @@ jobs:
 # npm publish is intentionally not automated. The npm account requires 2FA OTP
 # on every publish, and a granular automation token that bypasses 2FA has not
 # been provisioned. Release the npm wrapper manually from a developer machine
-# after the GitHub Release has been created — see CLAUDE.md "Releases" for the
-# exact commands.
+# after the GitHub Release has been created — see docs/RELEASE_RUNBOOK.md,
+# "npm Wrapper Release", for the exact commands.

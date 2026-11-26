@@ -62,7 +62,7 @@ readonly BASE_URL="https://github.com/camilesing/CodeSmith/releases/download/${T
 
 cat > "${FORMULA_FILE}" << EOF
 class Codesmith < Formula
-  desc "Terminal-native coding agent for DeepSeek V4"
+  desc "Terminal coding agent for open-weight coding models"
   homepage "https://github.com/camilesing/CodeSmith"
   version "${VERSION}"
   license "MIT"
