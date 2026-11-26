@@ -795,8 +795,9 @@ mod tests {
         run_skill(&mut fresh(), Some("trust")).await; // usage
         run_skill(&mut fresh(), Some("uninstall ghost")).await;
         run_skill(&mut fresh(), Some("trust ghost")).await;
-        // Unparseable install source: refuses before any network I/O.
-        run_skill(&mut fresh(), Some("install :://bad-source")).await;
+        // An install source the parser rejects: fails before any network
+        // I/O. (A bare word is a registry key and does reach the network.)
+        run_skill(&mut fresh(), Some("install github:")).await;
     }
 
     #[tokio::test]
