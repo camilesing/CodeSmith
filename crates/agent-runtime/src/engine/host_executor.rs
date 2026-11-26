@@ -2183,9 +2183,12 @@ impl HostAgentExecutor {
                 folded: true,
             };
         } else {
+            // `folded` stays as it is: a slot that already holds a fold
+            // subsuming the session carrier keeps REPLACING it. Flipping it
+            // back made the host append a summary the fold had absorbed —
+            // the carrier growth the replace branch exists to prevent.
             let current = guard.prompt.take();
             guard.prompt = crate::compaction::merge_system_prompts(current.as_ref(), summary);
-            guard.folded = false;
         }
     }
 
@@ -10344,6 +10347,35 @@ mod tests {
             }),
             "the fold payload must not repeat the already-folded carrier: \
              {bodies:?}"
+        );
+    }
+
+    /// A non-folded summary recorded after a folded one keeps the slot in
+    /// "replaces" mode: the fold already subsumes the session carrier, and
+    /// the host would otherwise re-append what the fold absorbed.
+    #[test]
+    fn a_later_summary_does_not_unfold_the_pending_slot() {
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![])),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        executor.record_compaction_summary(Some(SystemPrompt::Text("FOLDED".to_string())), true);
+        // The recovery path records its summary unconditionally — even `None`.
+        executor.record_compaction_summary(None, false);
+        assert!(
+            executor.take_pending_compaction_summary().folded,
+            "the slot still replaces the carrier"
         );
     }
 
