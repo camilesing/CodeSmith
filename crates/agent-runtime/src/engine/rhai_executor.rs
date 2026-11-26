@@ -45,9 +45,9 @@
 //!   compaction step service on demand, but unlike the builtin loop there
 //!   is no automatic pre-request preflight — the script calls
 //!   `compact_now()` where its shape needs one (typically before each
-//!   `llm_request`). No LSP flush, capacity gates, steer flush,
-//!   sub-agent hold or `TurnStopping` steer seam inside a script loop —
-//!   the builtin loop keeps those.
+//!   `llm_request`). No LSP flush, capacity gates, sub-agent hold or
+//!   `TurnStopping` steer seam inside a script loop — the builtin loop
+//!   keeps those.
 //! - Plan-mode reminders and the thinking-only status tail are builtin
 //!   behaviors a script loop does not inherit.
 //! - **Sub-agent fan-out is one level in v1** (`spawn_child`): children
@@ -1081,6 +1081,13 @@ impl RhaiTurnExecutor {
                 content: content.clone(),
             });
         }
+        // Mid-stream steers were acknowledged as queued while the model
+        // streamed: land them in the transcript now, as the builtin loop
+        // does after the stream.
+        self.host
+            .flush_pending_steers(&mut pending_steers, history)
+            .await;
+
         // Speculatively-started early tasks the script does not dispatch
         // are aborted by `EarlyToolTask`'s own `Drop` — dropping the map is
         // the cleanup.
@@ -2552,6 +2559,105 @@ mod tests {
         assert!(
             format!("{:?}", requests[1].system).contains("SUMMARY"),
             "the second attempt carries the compaction summary in its system prompt"
+        );
+    }
+
+    /// A steer typed while the model streams is acknowledged as queued; the
+    /// script loop must land it in the transcript like the builtin loop does
+    /// (it used to drop the buffer when the round returned).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mid_stream_steer_lands_in_the_transcript() {
+        /// Pushes a steer the moment the stream opens — after the round-top
+        /// drain, so only the mid-stream intake can catch it.
+        struct SteerOnStreamLlm(mpsc::Sender<SteerInput>);
+        impl LlmClient for SteerOnStreamLlm {
+            fn provider_name(&self) -> &'static str {
+                "mock"
+            }
+            fn model(&self) -> &str {
+                "mock-v0"
+            }
+            fn create_message(
+                &self,
+                _request: MessageRequest,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = anyhow::Result<codesmith_agent::models::MessageResponse>>
+                        + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async { anyhow::bail!("mock does not implement create_message") })
+            }
+            fn create_message_stream(
+                &self,
+                _request: MessageRequest,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>>
+            {
+                let tx = self.0.clone();
+                Box::pin(async move {
+                    let _ = tx.try_send(SteerInput::from("STEER-ME-MID-STREAM"));
+                    let mut events = text_block(0, "done");
+                    events.extend(finish("end_turn"));
+                    Ok(
+                        Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
+                            as StreamEventBox,
+                    )
+                })
+            }
+        }
+
+        let (tx_steer, rx_steer) = mpsc::channel::<SteerInput>(8);
+        let client = Arc::new(SteerOnStreamLlm(tx_steer));
+        let host = Arc::new(HostAgentExecutor::new(
+            client.clone(),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(Arc::new(tokio::sync::Mutex::new(rx_steer))),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "test-loop-mod",
+            "Test Loop",
+            "0.1.0",
+            r#"register_loop("main"); fn main() { let r = llm_request(); }"#.to_string(),
+            codesmith_extensions::script::kv::ModKvStore::ephemeral(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("loop mod compiles");
+        let executor = RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(rhai_mod),
+            entry: "main".to_string(),
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(client, None, 3),
+        };
+
+        let mut history = VecChatHistory::new();
+        executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("the scripted turn runs");
+
+        let landed = history.messages().iter().any(|m| {
+            m.role == "user"
+                && m.content.iter().any(|b| match b {
+                    ContentBlock::Text { text, .. } => text.contains("STEER-ME-MID-STREAM"),
+                    _ => false,
+                })
+        });
+        assert!(
+            landed,
+            "the acknowledged steer reaches the transcript: {:?}",
+            history.messages()
         );
     }
 }
