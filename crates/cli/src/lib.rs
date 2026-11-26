@@ -668,18 +668,18 @@ fn provider_env_set(provider: ProviderKind) -> bool {
 
 fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
-        ProviderKind::Deepseek => &["DEEPSEEK_API_KEY"],
+        ProviderKind::Deepseek => &["CODESMITH_API_KEY", "DEEPSEEK_API_KEY"],
         ProviderKind::Openrouter => &["OPENROUTER_API_KEY"],
         ProviderKind::XiaomiMimo => &["XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY", "MIMO_API_KEY"],
         ProviderKind::Novita => &["NOVITA_API_KEY"],
-        ProviderKind::NvidiaNim => &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"],
+        ProviderKind::NvidiaNim => &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "CODESMITH_API_KEY"],
         ProviderKind::Fireworks => &["FIREWORKS_API_KEY"],
         ProviderKind::Siliconflow => &["SILICONFLOW_API_KEY"],
         ProviderKind::Moonshot => &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
         ProviderKind::Sglang => &["SGLANG_API_KEY"],
         ProviderKind::Vllm => &["VLLM_API_KEY"],
         ProviderKind::Ollama => &["OLLAMA_API_KEY"],
-        ProviderKind::Anthropic => &["ANTHROPIC_API_KEY"],
+        ProviderKind::Anthropic => &["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
         ProviderKind::Openai => &["OPENAI_API_KEY"],
         ProviderKind::Atlascloud => &["ATLASCLOUD_API_KEY"],
         ProviderKind::Volcengine => &[
@@ -2282,7 +2282,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l.contains("env var: DEEPSEEK_API_KEY (unset)")),
+                .any(|l| l.contains("env var: CODESMITH_API_KEY/DEEPSEEK_API_KEY (unset)")),
             "{lines:?}"
         );
 
@@ -2334,6 +2334,38 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Found in the review: three rows of the CLI's env table disagreed
+    /// with the resolver the runtime actually uses
+    /// (`codesmith_secrets::env_for`): `auth status` reported "env unset"
+    /// with `CODESMITH_API_KEY` exported, and "set" for nvidia-nim with
+    /// only `DEEPSEEK_API_KEY`. Every var the CLI reads must be one the
+    /// resolver reads.
+    #[test]
+    fn the_env_table_agrees_with_the_runtime_resolver() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        for provider in PROVIDER_LIST {
+            let vars = provider_env_vars(provider);
+            let _removed: Vec<_> = vars
+                .iter()
+                .map(|&var| codesmith_agent_runtime::test_support::EnvVarGuard::remove(var))
+                .collect();
+            for &var in vars {
+                let value = format!("via-{var}");
+                let _set = codesmith_agent_runtime::test_support::EnvVarGuard::set(var, &value);
+                assert_eq!(
+                    provider_env_value(provider).map(|(name, _)| name),
+                    Some(var),
+                    "{provider:?}: the CLI must read {var}"
+                );
+                assert_eq!(
+                    codesmith_secrets::env_for(provider.as_str()).as_deref(),
+                    Some(value.as_str()),
+                    "{provider:?}: the runtime resolver must read {var}"
+                );
+            }
+        }
     }
 
     #[test]
