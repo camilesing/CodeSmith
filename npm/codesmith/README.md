@@ -64,20 +64,21 @@ Prebuilt binaries for the GitHub release are downloaded automatically:
 
 - Linux x64
 - Linux arm64 (v0.8.8+)
+- Linux riscv64
 - macOS x64 / arm64
 - Windows x64
 
-Other platform/architecture combinations (musl, riscv64, FreeBSD, …) aren't
-shipped as prebuilts. Unsupported platforms, checksum failures, and glibc
+Other platform/architecture combinations (musl, FreeBSD, …) aren't shipped
+as prebuilts. Unsupported platforms, checksum failures, and glibc
 compatibility problems still fail with a clear error pointing you at
-`cargo install codesmith-cli codesmith --locked` and the full
+`cargo install codesmith-cli --locked` and the full
 [docs/INSTALL.md](https://github.com/camilesing/CodeSmith/blob/main/docs/INSTALL.md)
 build-from-source guide.
 
 ## Configuration
 
 - Default binary version comes from `codesmithBinaryVersion` in `package.json`
-  (with `deepseekBinaryVersion` as a backward-compat fallback).
+  (falling back to the package `version`).
 - Set `CODESMITH_VERSION` to override the release version.
 - Set `CODESMITH_GITHUB_REPO` to override the source repo (defaults to `camilesing/CodeSmith`).
 - Set `CODESMITH_RELEASE_BASE_URL` to use an internal or mirrored
