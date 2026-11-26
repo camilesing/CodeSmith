@@ -62,6 +62,12 @@ struct FakeRuntime {
     preset_applies: Arc<StdMutex<Vec<Value>>>,
     /// Fork POSTs so far; the child `thr_fork` lists once one landed.
     forks: Arc<AtomicUsize>,
+    /// Test gate for `GET /v1/threads` (the first read of a `workspace/follow`
+    /// baseline): while `gated` is set the handler signals `entered` and
+    /// waits for `release`.
+    gated: Arc<std::sync::atomic::AtomicBool>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 impl FakeRuntime {
@@ -86,6 +92,9 @@ impl FakeRuntime {
             watchers: Default::default(),
             preset_applies: Default::default(),
             forks: Default::default(),
+            gated: Default::default(),
+            entered: Default::default(),
+            release: Default::default(),
         }
     }
 
@@ -128,6 +137,10 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         .route(
             "/v1/threads",
             get(|State(fake): State<FakeRuntime>| async move {
+                if fake.gated.load(Ordering::SeqCst) {
+                    fake.entered.notify_one();
+                    fake.release.notified().await;
+                }
                 let mut threads =
                     vec![json!({ "id": "thr_a", "workspace": fake.workspace.to_string_lossy() })];
                 if fake.forked() {
@@ -1536,6 +1549,42 @@ async fn session_follow_snapshots_the_journal_and_streams_live_status() {
     );
     let ended = wait_emit(&mut events_ws, "api-session/status").await;
     assert_eq!(ended["value"]["args"], json!(["thr_a", false]));
+    drop(home);
+}
+
+/// Found in the desktop: a parked stream registered its live sink only
+/// after its baseline was drawn, so an increment pushed in between (a
+/// settled turn, a model switch, a queue update) reached every other stream
+/// but this one, and the client held the baseline's values until the next
+/// push.
+#[tokio::test]
+async fn a_push_during_a_streams_baseline_follows_that_baseline() {
+    let (home, _client, base, fake, host, _ws) = spawn_stack("sink-race").await;
+    fake.gated.store(true, Ordering::SeqCst);
+    let mut ws = open_mux_stream(&base, "w1", "workspace/follow", json!({})).await;
+    // The baseline is parked on the fake's thread list.
+    fake.entered.notified().await;
+    host.push_live(
+        "workspace/follow",
+        json!({ "type": "replace", "mark": "during" }),
+    )
+    .await;
+    fake.release.notify_one();
+    let baseline = next_frame(&mut ws).await;
+    assert_eq!(baseline["value"]["type"], json!("baseline"), "{baseline}");
+    // A second push lands with the sink registered in either ordering: the
+    // baseline must be followed by the first one, not skipped to the second.
+    host.push_live(
+        "workspace/follow",
+        json!({ "type": "replace", "mark": "after" }),
+    )
+    .await;
+    let next = next_frame(&mut ws).await;
+    assert_eq!(
+        next["value"]["mark"],
+        json!("during"),
+        "the push made during the baseline: {next}"
+    );
     drop(home);
 }
 

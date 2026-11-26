@@ -616,32 +616,47 @@ pub async fn open_stream(
         "terminal/attach" => terminal::attach(host, args_of(payload), &tx, uplink).await,
         "terminal/retain" => terminal::retain(host, args_of(payload), &tx).await,
         _ => {
-            let frames = stream_baseline(host, endpoint)
-                .await
-                .map_err(|err| stream_failure("gateway/method-unavailable", err.to_string()))?;
-            for frame in frames {
-                if tx.send(frame).await.is_err() {
-                    return Ok(());
-                }
-            }
-            // Follow semantics: park, pumping live increments, until the
-            // consumer goes away — ending would read as a stream failure.
+            // The live sink registers BEFORE the baseline is drawn: an
+            // increment pushed in between (a settled turn, a model switch, a
+            // queue update) queues on the channel and follows the baseline
+            // instead of reaching every other stream but this one (found in
+            // the desktop: the client held the baseline's values until the
+            // session's next push).
             let (live_tx, mut live_rx) = mpsc::channel::<Value>(16);
             let sink_id = uuid::Uuid::new_v4().to_string();
             host.live_sinks
                 .lock()
                 .await
                 .insert(sink_id.clone(), (endpoint.to_string(), live_tx));
-            loop {
-                let frame = tokio::select! {
-                    frame = live_rx.recv() => match frame {
-                        Some(frame) => frame,
-                        None => break,
-                    },
-                    _ = tx.closed() => break,
-                };
-                if tx.send(frame).await.is_err() {
-                    break;
+            let frames = match stream_baseline(host, endpoint).await {
+                Ok(frames) => frames,
+                Err(err) => {
+                    host.live_sinks.lock().await.remove(&sink_id);
+                    return Err(stream_failure(
+                        "gateway/method-unavailable",
+                        err.to_string(),
+                    ));
+                }
+            };
+            'follow: {
+                for frame in frames {
+                    if tx.send(frame).await.is_err() {
+                        break 'follow;
+                    }
+                }
+                // Follow semantics: park, pumping live increments, until the
+                // consumer goes away — ending would read as a stream failure.
+                loop {
+                    let frame = tokio::select! {
+                        frame = live_rx.recv() => match frame {
+                            Some(frame) => frame,
+                            None => break,
+                        },
+                        _ = tx.closed() => break,
+                    };
+                    if tx.send(frame).await.is_err() {
+                        break;
+                    }
                 }
             }
             host.live_sinks.lock().await.remove(&sink_id);
