@@ -2252,7 +2252,13 @@ fn provider_preserves_custom_base_url_model(provider: ProviderKind, base_url: &s
     base_url_is_custom_for_provider(provider, base_url)
 }
 
-fn should_skip_secret_store_for_provider(
+/// Whether the runtime reads `provider`'s key from config or the
+/// environment alone, never from the secret store: the local runtimes
+/// (SGLang, vLLM, Ollama) and any loopback base URL, unless `auth_mode`
+/// opts into API keys. Public so the auth commands can apply the same rule
+/// — a key moved into the store for one of these is a key the runtime
+/// cannot see.
+pub fn should_skip_secret_store_for_provider(
     provider: ProviderKind,
     base_url: &str,
     auth_mode: Option<&str>,

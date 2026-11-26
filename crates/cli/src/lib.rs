@@ -568,11 +568,37 @@ fn write_provider_api_key_to_keyring(
         }
     }
 }
+/// Whether the runtime reads the secret store for `provider` as it is
+/// configured in this file (no CLI or environment override in play).
+fn config_reads_secret_store(store: &ConfigStore, provider: ProviderKind) -> bool {
+    let provider_cfg = store.config.providers.for_provider(provider);
+    let base_url = provider_cfg
+        .base_url
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            (provider == ProviderKind::Deepseek)
+                .then(|| store.config.base_url.clone())
+                .flatten()
+        })
+        .unwrap_or_default();
+    let auth_mode = provider_cfg
+        .auth_mode
+        .clone()
+        .or_else(|| store.config.auth_mode.clone());
+    !codesmith_config::should_skip_secret_store_for_provider(
+        provider,
+        &base_url,
+        auth_mode.as_deref(),
+    )
+}
+
 /// Move plaintext keys from config.toml into the configured secret store.
 /// Hidden in v0.8.8 because the normal setup path is config/env only.
 fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -> Result<()> {
     let mut migrated: Vec<(ProviderKind, &'static str)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut kept: Vec<&'static str> = Vec::new();
 
     for provider in PROVIDER_LIST {
         let slot = provider_slot(provider);
@@ -589,6 +615,14 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
             .filter(|v| !v.trim().is_empty());
         let value = from_provider_block.or(from_root);
         let Some(value) = value else { continue };
+
+        // The runtime reads some providers' keys from config or the
+        // environment only; a key moved into the store for one of those
+        // was moved out of its only readable source.
+        if !config_reads_secret_store(store, provider) {
+            kept.push(slot);
+            continue;
+        }
 
         if let Ok(Some(existing)) = secrets.get(slot)
             && existing == value
@@ -619,7 +653,7 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
     }
 
     println!("secret store backend: {}", secrets.backend_name());
-    if migrated.is_empty() {
+    if migrated.is_empty() && kept.is_empty() {
         println!("nothing to migrate (config.toml has no plaintext api_key entries)");
     } else {
         println!(
@@ -635,6 +669,14 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
                 "config.toml at {} no longer contains api_key entries for migrated providers.",
                 store.path().display()
             );
+        }
+    }
+    if !kept.is_empty() {
+        println!(
+            "kept in config.toml — the runtime reads these keys from config or the environment, never from the secret store:"
+        );
+        for slot in &kept {
+            println!("  - {slot}");
         }
     }
     for w in warnings {
@@ -779,6 +821,10 @@ fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
         Ok(key) => (key, None),
         Err(err) => (None, Some(err)),
     };
+    // The runtime never consults the store for a provider whose key comes
+    // from config or the environment: a key sitting there is not a source.
+    let store_consulted = config_reads_secret_store(store, provider);
+    let keyring_key = keyring_key.filter(|_| store_consulted);
     let env_key = provider_env_value(provider);
 
     let active_source = if config_key.is_some() {
@@ -814,7 +860,12 @@ fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
             store.config.auth_mode.as_deref().unwrap_or("api_key")
         ),
         format!("active source: {active_label}"),
-        "lookup order: config -> secret store -> env".to_string(),
+        if store_consulted {
+            "lookup order: config -> secret store -> env".to_string()
+        } else {
+            "lookup order: config -> env (the runtime does not read the secret store for this provider)"
+                .to_string()
+        },
         format!(
             "config file: {} ({})",
             store.path().display(),
@@ -823,10 +874,14 @@ fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
         format!(
             "secret store: {} ({})",
             secrets.backend_name(),
-            keyring_error
-                .as_ref()
-                .map(|err| format!("error: {err:#}"))
-                .unwrap_or_else(|| source_status(keyring_key.as_deref(), "missing"))
+            if !store_consulted {
+                "not consulted for this provider".to_string()
+            } else {
+                keyring_error
+                    .as_ref()
+                    .map(|err| format!("error: {err:#}"))
+                    .unwrap_or_else(|| source_status(keyring_key.as_deref(), "missing"))
+            }
         ),
         format!("env var: {env_var_label} ({env_status})"),
     ]
@@ -1941,6 +1996,67 @@ mod tests {
         assert!(
             lines.iter().any(|l| l
                 .contains("secret store: system keyring (error: could not read the deepseek key")),
+            "{lines:?}"
+        );
+    }
+
+    /// Found in the review: `auth migrate` moved a vLLM key into the
+    /// secret store and deleted it from config.toml — and the runtime does
+    /// not read the store for vLLM, so from then on the request went out
+    /// with no key at all.
+    #[test]
+    fn auth_migrate_keeps_a_key_the_runtime_would_not_find_in_the_store() {
+        use codesmith_secrets::{InMemoryKeyringStore, KeyringStore};
+
+        let mut store = ConfigStore::load(Some(temp_store_path("migrate-local"))).expect("store");
+        store.config.provider = ProviderKind::Vllm;
+        store
+            .config
+            .providers
+            .for_provider_mut(ProviderKind::Vllm)
+            .api_key = Some("local-gateway-key".to_string());
+        let inner = std::sync::Arc::new(InMemoryKeyringStore::new());
+        let secrets = Secrets::new(inner.clone());
+
+        run_auth_command_with_secrets(
+            &mut store,
+            AuthCommand::Migrate { dry_run: false },
+            &secrets,
+        )
+        .expect("migrate should succeed");
+
+        assert_eq!(
+            store
+                .config
+                .providers
+                .for_provider(ProviderKind::Vllm)
+                .api_key
+                .as_deref(),
+            Some("local-gateway-key"),
+            "the key stays where the runtime reads it"
+        );
+        assert_eq!(
+            inner.get("vllm").unwrap(),
+            None,
+            "nothing moved into the store"
+        );
+
+        // The status block does not name the store as a source for it.
+        store
+            .config
+            .providers
+            .for_provider_mut(ProviderKind::Vllm)
+            .api_key = None;
+        inner.set("vllm", "invisible-to-the-runtime").expect("seed");
+        let lines = auth_status_lines(&store, &secrets);
+        assert!(
+            lines.iter().any(|l| l.contains("active source: missing")),
+            "a key the runtime cannot read is not an active source: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("secret store") && l.contains("not consulted")),
             "{lines:?}"
         );
     }
