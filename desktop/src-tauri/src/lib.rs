@@ -20,6 +20,21 @@ use host::{serve_bridge, HostState};
 /// Bridge port; overridable for parallel dev instances.
 const BRIDGE_PORT: u16 = 1421;
 
+/// The bridge port: the documented dev override
+/// `CODESMITH_DESKTOP_BRIDGE_PORT`, else the default. An unusable value is an
+/// error, never a silent fallback (a typo collided with the default instance;
+/// `0` bound an ephemeral port the page can never reach).
+fn bridge_port(value: Option<&str>) -> Result<u16, String> {
+    match value {
+        None => Ok(BRIDGE_PORT),
+        Some(value) => value
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| format!("CODESMITH_DESKTOP_BRIDGE_PORT={value:?} is not a usable port")),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -28,10 +43,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let codesmith_path = std::env::var_os("CODESMITH_DESKTOP_CODESMITH").map(PathBuf::from);
-            let port = std::env::var("CODESMITH_DESKTOP_BRIDGE_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(BRIDGE_PORT);
+            let port = match bridge_port(
+                std::env::var("CODESMITH_DESKTOP_BRIDGE_PORT")
+                    .ok()
+                    .as_deref(),
+            ) {
+                Ok(port) => port,
+                Err(err) => {
+                    // Fail loud at load: a self-contained misconfiguration.
+                    eprintln!("codesmith desktop: {err}");
+                    std::process::exit(1);
+                }
+            };
             // The UI reads this global to reach the bridge, so an env-pinned
             // port reaches the webview instead of being silently ignored.
             let inject = format!("window.__CODESMITH_BRIDGE_PORT__ = {port};");
@@ -120,4 +143,21 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Found in the desktop: an unusable `CODESMITH_DESKTOP_BRIDGE_PORT` fell
+    /// back to the default port without a word, and `0` bound an ephemeral
+    /// port the page can never reach.
+    #[test]
+    fn the_bridge_port_override_must_be_a_usable_port() {
+        assert_eq!(bridge_port(None), Ok(BRIDGE_PORT));
+        assert_eq!(bridge_port(Some("2421")), Ok(2421));
+        for bad in ["1421x", "1421 ", "", "0", "70000"] {
+            assert!(bridge_port(Some(bad)).is_err(), "{bad:?}");
+        }
+    }
 }
