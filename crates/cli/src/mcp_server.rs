@@ -15,7 +15,6 @@ use crate::config::Config;
 use crate::models::{ContentBlock, Message, MessageRequest};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
-use codesmith_session::store::FileSessionStore;
 
 #[derive(Debug, Default, Deserialize)]
 struct McpServerConfigFile {
@@ -117,7 +116,6 @@ fn resolve_llm_backend() -> Result<LlmBackend, RpcError> {
 }
 
 struct McpServer {
-    workspace: PathBuf,
     registry: crate::tools::ToolRegistry,
     exposed_tools: Vec<ExposedTool>,
     require_approval: bool,
@@ -149,11 +147,10 @@ impl McpServer {
             builder = builder.with_shell_tools();
         }
 
-        let context = ToolContext::new(workspace.clone());
+        let context = ToolContext::new(workspace);
         let registry = builder.build(context);
 
         Ok(Self {
-            workspace,
             registry,
             exposed_tools,
             require_approval: settings.require_approval,
@@ -228,7 +225,9 @@ impl McpServer {
                     Err(err) => respond_error(id.as_ref(), err.code, err.message),
                 }
             }
-            "resources/list" => respond(id.as_ref(), self.list_resources_response()),
+            // Resources are not advertised: every resource the server once
+            // listed answered -32601 when opened (there was no
+            // `resources/read`). A capability and its reader land together.
             "ping" => respond(id.as_ref(), json!({})),
             "notifications/initialized" => None,
             _ => respond_error(id.as_ref(), -32601, format!("Method not found: {method}")),
@@ -303,31 +302,6 @@ impl McpServer {
             }
         }
         json!({ "tools": tools, "nextCursor": Value::Null })
-    }
-
-    fn list_resources_response(&self) -> Value {
-        let mut resources = Vec::new();
-        resources.push(json!({
-            "uri": format!("file://{}", self.workspace.display()),
-            "name": "workspace",
-            "description": "Workspace root",
-            "mimeType": "inode/directory",
-        }));
-
-        if let Ok(manager) = FileSessionStore::default_location()
-            && let Ok(sessions) = manager.list_sessions()
-        {
-            for session in sessions {
-                resources.push(json!({
-                    "uri": format!("codesmith://session/{}", session.id),
-                    "name": session.title,
-                    "description": format!("{} messages", session.message_count),
-                    "mimeType": "application/json",
-                }));
-            }
-        }
-
-        json!({ "resources": resources, "nextCursor": Value::Null })
     }
 
     fn call_tool(
@@ -710,7 +684,6 @@ fn initialize_response() -> Value {
         },
         "capabilities": {
             "tools": {},
-            "resources": {},
         }
     })
 }
@@ -946,27 +919,31 @@ mod tests {
         );
     }
 
+    /// Found in the review: the server advertised `resources` and listed
+    /// the workspace root and every session, but had no `resources/read` —
+    /// each listed resource answered -32601 when a client opened it.
     #[test]
-    fn list_resources_leads_with_the_workspace_root() {
-        let _guard = lock_test_env();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let _home = EnvVarGuard::set("CODESMITH_HOME", dir.path().join("home"));
-        let server = McpServer::new(
-            dir.path().to_path_buf(),
-            McpServerSettings {
-                expose_tools: default_expose_tools(),
-                require_approval: false,
-            },
-        )
-        .expect("server");
+    fn resources_are_not_advertised() {
+        let (mut server, runtime, _dir) = approval_server(false);
 
-        let resources = server.list_resources_response();
-        let first = &resources["resources"][0];
-        assert_eq!(first["name"], "workspace");
+        let init = server
+            .handle_message(
+                &runtime,
+                json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }),
+            )
+            .expect("initialize answers");
         assert!(
-            first["uri"].as_str().unwrap().starts_with("file://"),
-            "got: {first}"
+            init["result"]["capabilities"].get("resources").is_none(),
+            "resources are not a capability: {init}"
         );
+
+        let listed = server
+            .handle_message(
+                &runtime,
+                json!({ "jsonrpc": "2.0", "id": 2, "method": "resources/list" }),
+            )
+            .expect("a request always gets a response");
+        assert_eq!(listed["error"]["code"], json!(-32601), "{listed}");
     }
 
     #[test]
