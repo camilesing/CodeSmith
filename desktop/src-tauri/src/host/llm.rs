@@ -171,7 +171,7 @@ pub fn namespace_view(revision: u64, has_secret: &dyn Fn(&str) -> bool) -> Resul
     namespace_view_at(&config_path()?, revision, has_secret)
 }
 
-fn namespace_view_at(
+pub(super) fn namespace_view_at(
     path: &Path,
     revision: u64,
     has_secret: &dyn Fn(&str) -> bool,

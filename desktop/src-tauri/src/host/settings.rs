@@ -289,7 +289,7 @@ pub async fn open_document(host: &HostState) -> Result<Value> {
 /// credential store for custom-route key presence; the caller runs this
 /// whole read on a blocking thread (store and file I/O).
 pub fn describe(home: &std::path::Path) -> Result<Value> {
-    describe_with(home, &llm::credential_probe())
+    describe_with(home, &llm::config_path()?, &llm::credential_probe())
 }
 
 /// The new-session permission default (`permission.defaultPreset`), read from
@@ -312,11 +312,17 @@ pub fn default_permission_preset(home: &std::path::Path) -> String {
     permissions::normalize_preset(stored).to_string()
 }
 
-fn describe_with(home: &std::path::Path, has_secret: &dyn Fn(&str) -> bool) -> Result<Value> {
+/// The config path is a parameter: the tests pass a scratch file instead
+/// of exporting `CODESMITH_CONFIG_PATH` from parallel threads.
+fn describe_with(
+    home: &std::path::Path,
+    config_path: &std::path::Path,
+    has_secret: &dyn Fn(&str) -> bool,
+) -> Result<Value> {
     let document = load_document(home)?;
     let mut namespaces: Vec<Value> = specs().iter().map(|spec| document.view(spec)).collect();
     namespaces.push(
-        llm::namespace_view(document.revision_of(llm::NS), has_secret)
+        llm::namespace_view_at(config_path, document.revision_of(llm::NS), has_secret)
             .with_context(|| "read the provider config for settings/describe")?,
     );
     Ok(json!({
@@ -527,7 +533,7 @@ mod tests {
         let path = document_path(&home);
         std::fs::write(&path, "{ not json").unwrap();
         assert!(
-            describe_with(&home, &|_| false).is_err(),
+            describe_with(&home, &home.join("no-config.toml"), &|_| false).is_err(),
             "a corrupt document is an error, not a reset"
         );
         let written = fold(
@@ -562,9 +568,7 @@ mod tests {
             "[providers.openai]\nbase_url = \"https://g.example/v1\"\n",
         )
         .unwrap();
-        std::env::set_var("CODESMITH_CONFIG_PATH", &config);
-        let value = describe_with(&home, &|_| false).expect("describe");
-        std::env::remove_var("CODESMITH_CONFIG_PATH");
+        let value = describe_with(&home, &config, &|_| false).expect("describe");
         let namespaces = value["namespaces"].as_array().unwrap();
         let ids: Vec<&str> = namespaces
             .iter()
@@ -697,9 +701,7 @@ mod tests {
         // The document survives a reload.
         let config = home.join("scratch-config.toml");
         std::fs::write(&config, "").unwrap();
-        std::env::set_var("CODESMITH_CONFIG_PATH", &config);
-        let reloaded = describe_with(&home, &|_| false).expect("describe");
-        std::env::remove_var("CODESMITH_CONFIG_PATH");
+        let reloaded = describe_with(&home, &config, &|_| false).expect("describe");
         assert_eq!(reloaded["namespaces"][0]["value"]["fontSize"], 18);
         assert_eq!(reloaded["namespaces"][4]["value"]["preference"], "zh-CN");
         assert_eq!(reloaded["namespaces"][5]["value"]["enabled"], false);
