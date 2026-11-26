@@ -9,7 +9,11 @@ User=codesmith
 Group=codesmith
 WorkingDirectory=/opt/whalebro
 EnvironmentFile=/etc/codesmith/runtime.env
-ExecStart=/home/codesmith/.cargo/bin/codesmith serve --http --host 127.0.0.1 --port ${CODESMITH_RUNTIME_PORT} --workers ${CODESMITH_RUNTIME_WORKERS} --auth-token ${CODESMITH_RUNTIME_TOKEN}
+# No --auth-token here: `serve` reads CODESMITH_RUNTIME_TOKEN from the
+# EnvironmentFile above. On the command line the bearer — the credential for
+# every /v1/* agent call on this box — sat in the process argv, readable
+# through /proc/<pid>/cmdline and printed by `systemctl status`.
+ExecStart=/home/codesmith/.cargo/bin/codesmith serve --http --host 127.0.0.1 --port ${CODESMITH_RUNTIME_PORT} --workers ${CODESMITH_RUNTIME_WORKERS}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
