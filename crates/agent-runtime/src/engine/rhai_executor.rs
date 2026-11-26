@@ -495,6 +495,10 @@ impl RhaiTurnExecutor {
         // aborted at serve exit when the script never evaluated them.
         let mut children: HashMap<u64, tokio::task::JoinHandle<ChildTurnOutcome>> = HashMap::new();
         let mut next_handle: u64 = 0;
+        // One guard for the whole serve (run_inner keeps one per run): every
+        // `run_tools` batch counts against the same repeated-call and
+        // consecutive-failure thresholds.
+        let mut loop_guard = LoopGuard::default();
 
         let script = self.spawn_script_thread(tx, Arc::clone(&aborted));
 
@@ -553,6 +557,7 @@ impl RhaiTurnExecutor {
                                 &mut context_recovery_attempts,
                                 &mut children,
                                 &mut next_handle,
+                                &mut loop_guard,
                             )
                             .await;
                         if let Some(stop) = answered {
@@ -594,6 +599,7 @@ impl RhaiTurnExecutor {
         context_recovery_attempts: &mut u8,
         children: &mut HashMap<u64, tokio::task::JoinHandle<ChildTurnOutcome>>,
         next_handle: &mut u64,
+        loop_guard: &mut LoopGuard,
     ) -> Option<StopReason> {
         match call {
             LoopCall::Llm { prompt } => {
@@ -652,7 +658,10 @@ impl RhaiTurnExecutor {
             }
             LoopCall::RunTools { calls } => {
                 stats.tool_calls += u32::try_from(calls.len()).unwrap_or(0);
-                match self.tools_round(history, extension, calls).await {
+                match self
+                    .tools_round(history, extension, calls, loop_guard)
+                    .await
+                {
                     Ok(round) => {
                         let _ = reply.send(LoopReply::Tools(round));
                         None
@@ -1132,17 +1141,17 @@ impl RhaiTurnExecutor {
     }
 
     /// One tool batch — `execute_tool_batches` with the same step locals
-    /// `run_inner` passes, plus the loop guard the script loop owns.
+    /// `run_inner` passes, plus the serve's loop guard.
     async fn tools_round(
         &self,
         history: &mut dyn ChatHistory,
         extension: &Option<Arc<codesmith_extensions::ExtensionRunner>>,
         calls: Vec<(String, String, serde_json::Value)>,
+        loop_guard: &mut LoopGuard,
     ) -> anyhow::Result<ToolsRound> {
         let tools = self.host.tool_set();
         let callback = self.host.callback_handle();
         let mut early_tasks: HashMap<String, EarlyToolTask> = HashMap::new();
-        let mut loop_guard = LoopGuard::default();
         let mut step_error_count: usize = 0;
         let mut step_error_envelopes: Vec<ErrorEnvelope> = Vec::new();
         let intent_summary: Option<String> = None;
@@ -1153,7 +1162,7 @@ impl RhaiTurnExecutor {
                 calls,
                 None,
                 &mut early_tasks,
-                &mut loop_guard,
+                loop_guard,
                 &tools,
                 &callback,
                 extension,
@@ -2836,6 +2845,33 @@ mod tests {
             *tool_calls.lock().unwrap(),
             vec![1],
             "the model issued one tool call; TurnEnd counts it once"
+        );
+    }
+
+    /// `run_tools` batches of one serve share the turn's loop guard, as the
+    /// builtin loop's steps do: the third identical call of the turn is
+    /// blocked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_call_across_batches_hits_the_turn_loop_guard() {
+        let source = r#"
+            fn main() {
+                for i in 0..3 {
+                    let c = #{id: "same", name: "echo", input: #{text: "again"}};
+                    run_tools([c]);
+                }
+            }
+        "#;
+        let executor = scripted_executor(source, vec![], None, 3);
+
+        let mut history = VecChatHistory::new();
+        executor
+            .run(&mut history, "again and again".to_string())
+            .await
+            .expect("the scripted turn runs");
+        assert!(
+            format!("{:?}", history.messages()).contains("has already been made 3 times"),
+            "the third identical call is blocked: {:?}",
+            history.messages()
         );
     }
 }
