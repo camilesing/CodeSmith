@@ -244,20 +244,30 @@ pub fn remove(state: &mut ReplState, command: &str) {
     let grant = shell_grant_key(&rule);
     let existed = state.approval_grants.revoke(&key, &grant);
     state.approval_session_approved.remove(&grant);
+    // A session denial goes with the grant: left in place, the command kept
+    // auto-denying for the rest of the session while this reported a removal.
+    let was_denied = state.approval_session_denied.remove(&grant);
+    let outcome = if existed {
+        format!("removed {grant}")
+    } else if was_denied {
+        format!("lifted the session denial for {grant}")
+    } else {
+        format!("{grant} was not granted (it is now recorded as removed)")
+    };
     match approvals_toml_path() {
         Some(path) => match state.approval_grants.save(&path) {
-            Ok(()) => println!(
-                "{}",
-                if existed {
-                    format!("removed {grant}")
-                } else {
-                    format!("{grant} was not granted (it is now recorded as removed)")
-                }
-                .dimmed()
-            ),
+            Ok(()) => println!("{}", outcome.dimmed()),
             Err(err) => println!("{} could not save the removal: {err}", "✗".red()),
         },
-        None => println!("{}", format!("cleared {grant} for this session").dimmed()),
+        None => println!(
+            "{}",
+            if was_denied {
+                format!("lifted the session denial for {grant}")
+            } else {
+                format!("cleared {grant} for this session")
+            }
+            .dimmed()
+        ),
     }
 }
 
@@ -482,6 +492,17 @@ mod tests {
                 .approval_session_denied
                 .contains(&shell_grant_key("cargo test")),
             "allow lifts the session denial for the same key"
+        );
+        // Found in the review: `remove` lifted the grant but not the
+        // session denial — `cargo test` kept auto-denying while the command
+        // reported a removal.
+        deny(&mut state, "cargo test");
+        remove(&mut state, "cargo test");
+        assert!(
+            !state
+                .approval_session_denied
+                .contains(&shell_grant_key("cargo test")),
+            "remove lifts the session denial too"
         );
         list(&state); // seeded
 
