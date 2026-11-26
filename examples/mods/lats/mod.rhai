@@ -30,15 +30,18 @@ fn score_of(t) {
     let s = text_of(t);
     let parts = s.split("SCORE:");
     if parts.len() < 2 { return -1; }
-    let tail = parts[parts.len() - 1].trim();
+    // Rhai's `trim` mutates in place and returns `()`: bind, then trim.
+    let tail = parts[parts.len() - 1];
+    tail.trim();
     let digits = "";
     for ch in tail.chars() {
         if ch >= '0' && ch <= '9' { digits += ch; }
         else if digits.len() > 0 { break; }
     }
     if digits.len() == 0 { return -1; }
-    if digits.parse_int().is_ok() { return digits.parse_int().unwrap(); }
-    -1
+    // `parse_int` returns the number (a Rhai `INT` carries no `is_ok`);
+    // only digits were collected, so the raise path is unreachable.
+    digits.parse_int()
 }
 
 fn best_index_of(frontier) {
@@ -73,7 +76,8 @@ fn search_round(frontier, width, beam, round) {
     let lines = x.text.split("\n");
     let batch = [];
     for line in lines {
-        let t = line.trim();
+        let t = line;
+        t.trim();
         if t.len() > 0 && batch.len() < width { batch.push(t); }
     }
 

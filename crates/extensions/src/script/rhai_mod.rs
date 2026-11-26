@@ -2500,11 +2500,14 @@ mod tests {
         );
     }
 
-    /// The LATS example is a LOOP exemplar: its rot guard is the load
-    /// (compile + register_loop) — the driving surface is covered by the
-    /// engine's fan-out equivalence tests (`rhai_executor` tests).
+    /// The LATS example is a LOOP exemplar. Its rot guard was the load
+    /// alone (compile + register_loop) — and it rotted: nothing executed
+    /// the script, so `trim()`/`parse_int()` used as value-returning turned
+    /// every turn into "Function not found" after two paid LLM calls. This
+    /// drives the scoring and one search round off stub capabilities — the
+    /// same named functions `main` calls.
     #[test]
-    fn example_lats_compiles_and_declares_the_loop() {
+    fn example_lats_scores_and_searches_off_stub_capabilities() {
         let source = include_str!("../../../../examples/mods/lats/mod.rhai");
         let m = RhaiMod::load_source(
             "lats",
@@ -2516,6 +2519,70 @@ mod tests {
         )
         .expect("load lats example");
         assert_eq!(m.loop_entry(), Some("main"));
+        let ast = m.loop_ast();
+
+        // score_of: a trailing "SCORE: N" parses; an unscored reply is -1.
+        // One call per engine: `call_fn` runs the AST's top level first,
+        // and `register_loop` admits one entry per engine.
+        let score_of = |text: &str| -> i64 {
+            m.engine_for_loop(|_| {})
+                .call_fn(
+                    &mut rhai::Scope::new(),
+                    &ast,
+                    "score_of",
+                    (text.to_string(),),
+                )
+                .expect("score_of runs")
+        };
+        assert_eq!(score_of("ran fine SCORE: 85"), 85);
+        assert_eq!(score_of("ran fine"), -1);
+
+        // search_round: the expansion's lines come back trimmed, every
+        // candidate is simulated on a child and scored, the beam prunes.
+        let engine = m.engine_for_loop(|engine| {
+            engine.register_fn("llm_request", move |_: rhai::Map| -> rhai::Dynamic {
+                rhai::serde::to_dynamic(serde_json::json!({
+                    "text": "  alpha  \n\n beta \n gamma",
+                    "interrupted": false,
+                    "tool_uses": [],
+                }))
+                .expect("round")
+            });
+            engine.register_fn("spawn_child", move |_: rhai::Map| -> rhai::INT { 1 });
+            engine.register_fn(
+                "eval_child",
+                move |_: rhai::INT, _: rhai::INT| -> rhai::Dynamic {
+                    rhai::serde::to_dynamic(serde_json::json!({
+                        "status": "completed",
+                        "final_text": "done SCORE: 70",
+                        "steps": 1,
+                    }))
+                    .expect("eval")
+                },
+            );
+            engine.register_fn("note", move |_: &str| {});
+        });
+        let seed = rhai::serde::to_dynamic(serde_json::json!([
+            { "approach": "seed", "result": "", "score": -1 }
+        ]))
+        .expect("seed");
+        let frontier: rhai::Array = engine
+            .call_fn(
+                &mut rhai::Scope::new(),
+                &ast,
+                "search_round",
+                (seed, 3_i64, 2_i64, 0_i64),
+            )
+            .expect("search_round runs");
+        let out: serde_json::Value =
+            rhai::serde::from_dynamic(&rhai::Dynamic::from(frontier)).expect("json");
+        let approaches: Vec<&str> = out
+            .as_array()
+            .expect("frontier")
+            .iter()
+            .map(|entry| entry["approach"].as_str().expect("approach"))
+            .collect();
+        assert_eq!(approaches, ["alpha", "beta"], "{out}");
     }
 
     // === register_compaction_strategy (the pluggable compaction seam) ========
