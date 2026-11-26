@@ -45,10 +45,13 @@ RUN case "${TARGETPLATFORM}" in \
       *)            echo "Unsupported platform: ${TARGETPLATFORM}" >&2; exit 1 ;; \
     esac
 
-RUN rustup target add "$(cat /rust-target)"
-
 WORKDIR /build
 COPY . .
+
+# After `COPY . .`: the build context brings rust-toolchain.toml, and every
+# later cargo/rustc proxy call resolves that pin — not the image's default
+# toolchain the target was added to above.
+RUN rustup target add "$(cat /rust-target)"
 
 # Build both workspace binaries (the CLI and its app-server companion).
 # --locked ensures
