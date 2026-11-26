@@ -5195,6 +5195,10 @@ async fn coordinator_spawn_defaults_to_coordinator_worker() {
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    // These spawns really start children: give them a client that never
+    // answers, or they run on `stub_runtime()`'s real provider client and
+    // open a model request to the network while the test polls them.
+    runtime.client = Arc::new(HangingClient);
     let manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         4,
@@ -5225,6 +5229,7 @@ async fn coordinator_spawn_defaults_to_coordinator_worker() {
     // Agent context, no explicit type → stays general.
     let mut runtime_agent = stub_runtime();
     runtime_agent.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime_agent.client = Arc::new(HangingClient);
     let manager_agent = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         4,
@@ -5254,6 +5259,7 @@ async fn coordinator_spawn_defaults_to_coordinator_worker() {
     let mut runtime_worker = stub_runtime();
     runtime_worker.spawn_depth = 1;
     runtime_worker.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime_worker.client = Arc::new(HangingClient);
     let manager_worker = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         4,
