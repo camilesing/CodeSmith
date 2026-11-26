@@ -1,9 +1,9 @@
 //! Bounded, cached workspace index behind `@path` completion.
 //!
 //! rustyline calls completion synchronously on the render thread, so the walk
-//! is capped on both ends: at most `limit` candidate paths are kept, at most
-//! [`MAX_VISITED`] entries are visited, and one walk runs at most
-//! [`MAX_WALK_TIME`]. A rebuild happens at most once
+//! is capped on both ends: at most [`MAX_VISITED`] entries are visited and
+//! one walk runs at most [`MAX_WALK_TIME`]; a query returns at most `limit`
+//! candidates. A rebuild happens at most once
 //! per [`TTL`], and only when the user actually asks for a path completion.
 //!
 //! Known limitations (recorded beside the behaviour it owns):
