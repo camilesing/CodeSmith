@@ -29,6 +29,8 @@ interface SlotsService {
 interface LocaleService {
   register: (ns: string, locale: string, dict: Record<string, string>) => unknown
   bind?: (ns: string) => (key: string, params?: Record<string, string | number>) => string
+  /** The active locale — the same source the bound translate function reads. */
+  getSnapshot: () => { active: string }
 }
 
 interface PluginContext {
@@ -227,13 +229,6 @@ function installStyles(): void {
   document.head.appendChild(style)
 }
 
-function isZh(): boolean {
-  const language = String(
-    (globalThis as { navigator?: { language?: string } }).navigator?.language ?? 'en',
-  )
-  return language.toLowerCase().startsWith('zh')
-}
-
 /** Render `key = value` lines for the string-map editor. */
 function mapToText(value: unknown): string {
   if (value === null || typeof value !== 'object') return ''
@@ -324,6 +319,10 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
         const text = bound(key, params)
         return text === key ? EN[key] ?? key : text
       }
+      // The label language follows the app locale — the same source `t()`
+      // reads. It is the Settings → General → Language choice, which need
+      // not match the OS language `navigator.language` reports.
+      const isZh = (): boolean => ctx.locale.getSnapshot().active.toLowerCase().startsWith('zh')
 
       function Switch(props: { on: boolean; disabled?: boolean; onChange: (next: boolean) => void; label: string }) {
         return React.createElement('button', {
@@ -638,7 +637,6 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
           return React.createElement('div', { className: 'cds-pc-section' }, React.createElement('p', { className: 'cds-pc-notice' }, t('loading')))
         }
 
-        const zh = isZh()
         const deviatedPaths = new Set(snap.selection.deviated)
         const groups: { id: string; title: string }[] = [
           { id: 'session', title: t('groupSession') },
