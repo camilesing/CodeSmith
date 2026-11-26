@@ -5587,11 +5587,31 @@ pub(crate) fn merge_project_config(config: &mut Config, workspace: &Path) {
         .join("config.toml");
     let raw = match std::fs::read_to_string(&path) {
         Ok(r) => r,
-        Err(_) => return,
+        // No file is the ordinary case; anything else (permissions, a
+        // directory) is a config the user wrote and this session will not
+        // see.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            eprintln!(
+                "warning: ignoring project config {} — {err}",
+                path.display()
+            );
+            return;
+        }
     };
     let project: toml::Value = match toml::from_str(&raw) {
         Ok(v) => v,
-        Err(_) => return,
+        // A typo (a missing quote) dropped the whole file without a word:
+        // the session started on the user's global policy while the
+        // project's sandbox tightening and model override only looked
+        // applied.
+        Err(err) => {
+            eprintln!(
+                "warning: ignoring project config {} — {err}",
+                path.display()
+            );
+            return;
+        }
     };
     let table = match project.as_table() {
         Some(t) => t,
@@ -5691,6 +5711,33 @@ pub(crate) fn merge_project_config(config: &mut Config, workspace: &Path) {
             .filter(|s| !s.trim().is_empty())
             .collect();
         config.instructions = Some(entries);
+    }
+
+    // A misspelled key (`approval_polcy`) is never visited above; diagnose it
+    // here rather than leave it silently unset. The four deny-listed keys
+    // already drew their own, more specific warning.
+    const DIAGNOSED_PROJECT_KEYS: &[&str] = &[
+        "model",
+        "reasoning_effort",
+        "notes_path",
+        "personality",
+        "approval_policy",
+        "sandbox_mode",
+        "max_subagents",
+        "allow_shell",
+        "instructions",
+        "api_key",
+        "base_url",
+        "provider",
+        "mcp_config_path",
+    ];
+    for key in table.keys() {
+        if !DIAGNOSED_PROJECT_KEYS.contains(&key.as_str()) {
+            eprintln!(
+                "warning: project config {}: unknown key `{key}` is ignored",
+                path.display()
+            );
+        }
     }
 }
 
