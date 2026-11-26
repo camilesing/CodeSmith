@@ -5328,6 +5328,43 @@ mod tests {
             out.outcome,
             codesmith_agent::extension::HandlerOutcome::Continue
         ));
+
+        // Anchor mode (no `search`) proceeds by decision, not through the
+        // fail-open path: the closure itself must return a value — a raise
+        // (`split` on `()`) is turned into Continue with a spurious
+        // "handler failed" warning on every anchored edit.
+        let anchored = serde_json::json!({
+            "path": "a.rs", "search_start": "fn f() {", "search_end": "}", "replace": "// replaced"
+        });
+        let out = runner
+            .emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t4".into(),
+                name: "edit_file".into(),
+                input: anchored.clone(),
+            }))
+            .await;
+        assert!(matches!(
+            out.outcome,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+        let callback = m
+            .registrations()
+            .iter()
+            .find_map(|reg| match reg {
+                ScriptRegistration::Handler { callback, .. } => Some(callback),
+                _ => None,
+            })
+            .expect("edit-input-guard registers a tool-call handler");
+        let engine = m.engine_for_loop(|_| {});
+        let ast = m.loop_ast();
+        let payload = event_to_dynamic(&ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "t4".into(),
+            name: "edit_file".into(),
+            input: anchored,
+        }));
+        let _ = callback
+            .call::<rhai::Dynamic>(&engine, &ast, (payload,))
+            .expect("anchor mode must not raise");
     }
 
     /// reject-templates: the destructive shell patterns deny with the

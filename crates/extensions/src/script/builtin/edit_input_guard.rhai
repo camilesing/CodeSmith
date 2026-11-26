@@ -19,6 +19,12 @@ on("tool-call", |e| {
     }
     let search = e.input.get("search");
     let replace = e.input.get("replace");
+    // No `search` is the documented anchor mode (`search_start` +
+    // `search_end` — the remedy the block below prescribes): there is no
+    // span to measure against, so the edit proceeds.
+    if search == () {
+        return proceed();
+    }
     if search != "" && search == replace {
         return block("edit_file: `search` and `replace` are identical — that edits nothing. NEVER retry the same call; if you meant to verify content, use read_file instead.");
     }
