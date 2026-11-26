@@ -925,25 +925,31 @@ mod tests {
     async fn non_member_and_inactive_member_are_denied() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
-        let mut tf = make_team("auth-test");
+        // worker1 is the deactivated ex-member; worker2 stays active and is
+        // the recipient, so only the sender can be the reason for a refusal.
+        // (Addressed to the inactive worker1, the recipient check refused the
+        // call with the same phrase and the sender branch was never read.)
+        let mut tf = make_wide_team("auth-test");
         tf.members[0].is_active = false;
         create_team_file(&tf).expect("team");
         let (tool, _ctx) = setup().await;
 
-        for sender in ["stranger".to_string(), "worker1".to_string()] {
+        for sender in ["stranger", "worker1"] {
             let err = tool
                 .execute(
                     json!({
-                        "to": "worker1",
+                        "to": "worker2",
                         "message": {"type": "sandbox_permission_request", "tool_name": "t"}
                     }),
-                    &context_with_sender(Some(sender)),
+                    &context_with_sender(Some(sender.to_string())),
                 )
                 .await
                 .expect_err("non-member/inactive must be denied");
             assert!(
-                err.to_string().contains("not an active member"),
-                "got: {err}"
+                err.to_string().contains(&format!(
+                    "Sender '{sender}' is not an active member of team 'auth-test'"
+                )),
+                "the sender authorization must be the branch that refused, got: {err}"
             );
         }
     }
