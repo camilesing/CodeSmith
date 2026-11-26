@@ -13,7 +13,9 @@ use crate::tools::team::protocol_handlers::{
     handle_plan_approval_auto_approve, handle_plan_approval_rejection, handle_shutdown_rejection,
     handle_shutdown_request,
 };
-use crate::tools::team::teammate_mailbox::{parse_structured_protocol_from, read_mailbox};
+use crate::tools::team::teammate_mailbox::{
+    is_structured_protocol_message, parse_structured_protocol_from, read_mailbox,
+};
 use crate::tools::team::{
     SharedTeamContext, StructuredProtocolMessage, TeammateMessage, find_member_by_name,
     read_team_file, team_lead_name, write_to_mailbox,
@@ -82,11 +84,14 @@ fn authorize_protocol_action(action: &str, sender: &str, team_name: &str) -> Res
     // runtime injects the agent NAME as `team_sender`). A teammate spawned
     // with the display name "team-lead" would pass `is_lead` above and
     // gain every lead-only action — shutdowns, plan approvals, permission
-    // grants. The real lead is not a roster member (its identity lives in
-    // `lead_agent_id`), so any roster entry carrying the lead name is a
-    // squatter: the name no longer proves lead identity, and we refuse
-    // rather than guess which "team-lead" is real.
-    if is_lead && find_member_by_name(&team_file, team_lead_name()).is_some() {
+    // grants. `team_create` registers the lead itself as a roster member
+    // under that name, so the entry is a squatter only when it belongs to
+    // a different agent than `lead_agent_id`; reading the lead's own entry
+    // as one refused the real lead every lead-only action.
+    if is_lead
+        && find_member_by_name(&team_file, team_lead_name())
+            .is_some_and(|member| member.agent_id != team_file.lead_agent_id)
+    {
         return Err(ToolError::invalid_input(format!(
             "a roster member of team '{team_name}' is named 'team-lead'; the lead name no \
              longer proves lead identity — refusing lead authorization"
@@ -304,11 +309,27 @@ impl ToolSpec for SendMessageTool {
             .get("message")
             .ok_or_else(|| ToolError::missing_field("message"))?;
 
-        // Plain text string — write as regular TeammateMessage.
-        if message_val.is_string() {
-            let text = message_val.as_str().unwrap().to_string();
-            return self.send_plain_text(&recipient, &team_name, &sender_name, &text, summary);
-        }
+        // Plain text string — write as regular TeammateMessage. A string
+        // that IS a protocol document takes the protocol path below: the
+        // recipient's inbox scan parses it as one either way, and the string
+        // form used to skip every authorization and binding check (a
+        // non-lead's `shutdown_request` went through as text).
+        let parsed_document;
+        let message_val = if message_val.is_string() {
+            let text = message_val.as_str().unwrap();
+            if !is_structured_protocol_message(text) {
+                let text = text.to_string();
+                return self.send_plain_text(&recipient, &team_name, &sender_name, &text, summary);
+            }
+            parsed_document = serde_json::from_str::<serde_json::Value>(text).map_err(|e| {
+                ToolError::invalid_input(format!(
+                    "Message parses as a protocol document but is not valid JSON: {e}"
+                ))
+            })?;
+            &parsed_document
+        } else {
+            message_val
+        };
 
         // Structured protocol — dispatch to handler.
         let obj = message_val
@@ -750,6 +771,76 @@ mod tests {
             "to": "worker1",
             "message": {"type": "shutdown_request", "reason": "done"}
         })
+    }
+
+    /// A protocol document passed as a STRING used to take the plain-text
+    /// route — no authorization, no binding check — while the recipient's
+    /// inbox parsed it as the protocol message anyway.
+    #[tokio::test]
+    async fn a_string_protocol_document_takes_the_authorized_path() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        let document = serde_json::to_string(&json!({
+            "type": "shutdown_request",
+            "request_id": "r1",
+            "from": "worker1",
+            "reason": "x",
+            "timestamp": "t"
+        }))
+        .expect("serialize");
+        let err = tool
+            .execute(
+                json!({"to": "worker1", "message": document}),
+                &context_with_sender(Some("worker1".to_string())),
+            )
+            .await
+            .expect_err("a member cannot send a lead-only action, in either form");
+        assert!(err.to_string().contains("lead-only"), "{err}");
+        assert!(
+            !read_mailbox("worker1", "auth-test")
+                .expect("mailbox")
+                .iter()
+                .any(|m| is_structured_protocol_message(&m.text)),
+            "nothing protocol-shaped was delivered"
+        );
+    }
+
+    /// `team_create` registers the lead itself as a roster member named
+    /// `team-lead`; the squatting guard read that entry as a squatter and
+    /// refused the real lead every lead-only action.
+    #[test]
+    fn the_lead_registered_as_a_roster_member_keeps_lead_authority() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let mut team = make_team("auth-test");
+        team.members.push(TeamMember {
+            agent_id: format_lead_agent_id("auth-test"),
+            name: team_lead_name().to_string(),
+            agent_type: None,
+            model: None,
+            prompt: None,
+            color: None,
+            joined_at: 1234567890,
+            cwd: "/tmp".to_string(),
+            worktree_path: None,
+            session_id: None,
+            is_active: true,
+        });
+        create_team_file(&team).expect("team");
+
+        authorize_protocol_action("shutdown_request", team_lead_name(), "auth-test")
+            .expect("the lead's own roster entry is not a squatter");
+
+        // Another agent under the lead name still is.
+        team.members.last_mut().expect("lead member").agent_id = "squatter@t".to_string();
+        create_team_file(&team).expect("rewrite team");
+        assert!(
+            authorize_protocol_action("shutdown_request", team_lead_name(), "auth-test").is_err(),
+            "a squatter is refused"
+        );
     }
 
     #[tokio::test]
