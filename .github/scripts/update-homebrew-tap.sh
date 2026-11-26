@@ -105,7 +105,9 @@ EOF
 # passed via git's environment config (GIT_CONFIG_*) rather than a `-c`
 # argument: argv is visible to other local users via `ps` for the lifetime
 # of the clone/push, and base64 is trivially reversible.
-AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${TOKEN}" | base64)"
+# `tr -d '\n'`: GNU base64 (ubuntu-latest) wraps at 76 columns, and a
+# fine-grained PAT (95 chars) leaves an embedded LF in the header.
+AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${TOKEN}" | base64 | tr -d '\n')"
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
 export GIT_CONFIG_VALUE_0="${AUTH_HEADER}"
