@@ -63,15 +63,9 @@ interface CatalogEntry {
   label?: string
 }
 
-interface SubagentTiming {
-  settledMs: number
-  active?: { since: number; through: number }
-  lastTurnCompleted?: boolean
-}
-
 interface CatalogProps {
   sessionId: string
-  useProjection: (key: string) => CatalogEntry[] | SubagentTiming | undefined
+  useProjection: (key: string) => CatalogEntry[] | undefined
   t: (key: string, params?: Record<string, string | number>) => string
 }
 

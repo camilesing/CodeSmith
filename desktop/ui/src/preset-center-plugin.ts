@@ -287,7 +287,7 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
     inject: ['slots', 'locale'],
     apply(ctx) {
       const React = load('react') as any
-      const { useState, useEffect, useCallback, useMemo } = React
+      const { useState, useEffect, useCallback } = React
       installStyles()
 
       const transport = (

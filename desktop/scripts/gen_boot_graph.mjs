@@ -31,7 +31,7 @@ const BUILTIN_ROWS = [
   // The coordinator ticket board reads the bridged `agentTeam` projection;
   // it borrows React and the client primitives through the loader table.
   { id: '@codesmith/desktop-ticket-board', entry: 'client.js', inject: [], immediately: false },
-  // The subagent catalog reads `subagentCatalog`/`subagentTiming` and opens
+  // The subagent catalog reads the `subagentCatalog` projection and opens
   // a child through `uiWorkspace.openSession(address)`.
   { id: '@codesmith/desktop-subagent-catalog', entry: 'client.js', inject: [], immediately: false },
   // The preset center registers the Settings modal's「Presets」section over
