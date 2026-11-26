@@ -401,11 +401,13 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         .route(
             "/v1/automations/{id}/runs",
             get(|| async move {
+                // The runtime's real `AutomationRunRecord`: no prompt, and
+                // the run's own thread id.
                 Json(json!([{
                     "id": "run_1",
                     "scheduled_for": "2026-11-15T09:00:00Z",
                     "ended_at": "2026-11-15T09:00:04Z",
-                    "prompt": "daily report",
+                    "thread_id": "thr_a",
                 }]))
             }),
         )
@@ -1321,7 +1323,15 @@ async fn schedule_run_and_history_map_onto_automations() {
     let records = history["value"]["records"].as_array().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["messageId"], json!("run_1"));
-    assert_eq!(records[0]["prompt"], json!("daily report"));
+    assert_eq!(
+        records[0]["targetSessionId"],
+        json!("thr_a"),
+        "the run's session"
+    );
+    assert!(
+        records[0].get("prompt").is_none(),
+        "no prompt to show is an absent field, never null: {records:?}"
+    );
     drop(home);
 }
 

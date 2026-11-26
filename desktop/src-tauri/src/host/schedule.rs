@@ -806,6 +806,11 @@ pub async fn history(host: &HostState, request: &Value) -> Result<Value> {
         .get(&format!("/v1/automations/{id}/runs?limit=100"))
         .await
         .with_context(|| format!("runs of automation {id}"))?;
+    // A run record carries no prompt (it belongs to the automation, which an
+    // edit can change after a run), so the optional `prompt` is left out —
+    // never answered `null`, which the page rendered as an empty saved
+    // prompt. The session a run posted in is its `thread_id` (found in the
+    // desktop: a hard-coded empty id left "open session" disabled).
     let records: Vec<Value> = runs
         .iter()
         .map(|run| {
@@ -814,8 +819,7 @@ pub async fn history(host: &HostState, request: &Value) -> Result<Value> {
                 "deliveredAt": run.get("ended_at").or_else(|| run.get("started_at")).cloned()
                     .unwrap_or_else(|| run.get("created_at").cloned().unwrap_or_default()),
                 "messageId": run.get("id").cloned().unwrap_or_default(),
-                "targetSessionId": "",
-                "prompt": run.get("prompt").cloned().unwrap_or_default(),
+                "targetSessionId": run.get("thread_id").and_then(Value::as_str).unwrap_or_default(),
             })
         })
         .collect();
