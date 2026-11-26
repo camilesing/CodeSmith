@@ -510,11 +510,19 @@ pub async fn retry(state: &mut ReplState) {
         return;
     }
     println!("retrying: {}", truncate_for_display(&input, 50));
-    // The previous exchange is drained — a failed resubmission restores it
-    // (locally and in the engine) instead of losing it permanently.
-    if let Err(err) = super::super::submit(state, input).await {
-        println!("{} retry failed: {err}", "✗".red());
-        restore_exchange(state, removed).await;
+    // The previous exchange is drained — a resubmission that fails, or that
+    // a `message_submit` hook blocks, restores it (locally and in the
+    // engine) instead of losing it permanently.
+    match super::super::submit(state, input).await {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("{}", "↩ the previous exchange is back".dimmed());
+            restore_exchange(state, removed).await;
+        }
+        Err(err) => {
+            println!("{} retry failed: {err}", "✗".red());
+            restore_exchange(state, removed).await;
+        }
     }
 }
 
@@ -744,6 +752,44 @@ mod tests {
         state.api_messages = Arc::new(vec![user_message("   ")]);
         retry(&mut state).await; // whitespace-only user turn → nothing to retry
         assert_eq!(state.api_messages.len(), 1);
+    }
+
+    /// A `message_submit` hook that blocks the resubmission must not cost
+    /// the drained exchange: `submit` reports that nothing was sent, and
+    /// `/retry` puts the exchange back.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn retry_restores_the_exchange_when_a_hook_blocks_the_resubmission() {
+        use codesmith_agent_runtime::hooks::HookEvent;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("block.sh");
+        std::fs::write(&script, "exit 2\n").expect("hook script");
+        let mut state = test_repl_state();
+        state.hooks = crate::hooks::HookExecutor::new(
+            crate::hooks::HooksConfig {
+                hooks: vec![crate::hooks::Hook::new(
+                    HookEvent::MessageSubmit,
+                    &format!("sh {}", script.display()),
+                )],
+                enabled: true,
+                default_timeout_secs: None,
+                working_dir: None,
+            },
+            dir.path().to_path_buf(),
+        );
+        state.api_messages = Arc::new(vec![
+            user_message("the question"),
+            assistant_message("the answer"),
+        ]);
+
+        retry(&mut state).await;
+
+        assert_eq!(
+            state.api_messages.len(),
+            2,
+            "a blocked resubmission must not lose the exchange"
+        );
     }
 
     #[test]

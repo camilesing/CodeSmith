@@ -1653,10 +1653,10 @@ async fn append_memory_entry(state: &ReplState, entry: &str) {
 const PLAN_IMPLEMENTATION_KICKOFF: &str = "Plan approved by the user — implement it now.";
 
 /// Submit a plain user message (auto-model routing resolved per request).
-pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<()> {
-    submit_with_images(state, content, Vec::new())
-        .await
-        .map(|_| ())
+/// `Ok(false)` when nothing was sent — a `message_submit` hook blocked the
+/// message — so a caller that already changed local state can undo that.
+pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<bool> {
+    submit_with_images(state, content, Vec::new()).await
 }
 
 /// `Ok(false)` when nothing was sent (a `message_submit` hook blocked the
