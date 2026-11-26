@@ -277,6 +277,45 @@ pub async fn read(host: &HostState, args: &Value) -> Value {
     }
 }
 
+/// One page of a text file as `(text, total lines, eof)`, reading the
+/// file as a stream — one line in memory at a time, never the whole file
+/// (found in the desktop: every page loaded and split the entire file, the
+/// one file route without a cap). A trailing '\n' terminates the last line
+/// rather than starting an empty one (the wire contract's line model); an
+/// empty file is one empty line. Bytes that are not UTF-8 decode lossily.
+fn read_page(
+    mut reader: impl std::io::BufRead,
+    offset: usize,
+    limit: usize,
+) -> std::io::Result<(String, usize, bool)> {
+    let start = offset.saturating_sub(1);
+    let mut total = 0usize;
+    let mut page: Vec<String> = Vec::new();
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            // An empty file is one empty line (the contract's own edge).
+            if total == 0 {
+                total = 1;
+                if start == 0 && page.len() < limit {
+                    page.push(String::new());
+                }
+            }
+            break;
+        }
+        let text = String::from_utf8_lossy(&line[..read - usize::from(line[read - 1] == b'\n')])
+            .into_owned();
+        if total >= start && page.len() < limit {
+            page.push(text);
+        }
+        total += 1;
+    }
+    let eof = start + page.len() >= total;
+    Ok((page.join("\n"), total, eof))
+}
+
 async fn read_inner(host: &HostState, args: &Value) -> Result<Value, FileError> {
     let session_id = session_arg(args)
         .ok_or_else(|| FileError::new("gateway/arguments-invalid", "read without session"))?;
@@ -303,26 +342,18 @@ async fn read_inner(host: &HostState, args: &Value) -> Result<Value, FileError> 
     // Blocking file read; the caller runs on the async runtime, so park it.
     let target_cl = target.clone();
     let (page, total_lines, eof) = tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(&target_cl).unwrap_or_default();
-        let content = String::from_utf8_lossy(&bytes);
-        let lines: Vec<&str> = content.split('\n').collect();
-        // A trailing '\n' terminates the last line rather than starting an
-        // empty one (the wire contract's line model).
-        let total = if content.ends_with('\n') {
-            lines.len().saturating_sub(1)
-        } else {
-            lines.len()
-        };
-        let start = offset.saturating_sub(1);
-        if start >= total {
-            return (String::new(), total, true);
-        }
-        let end = (start + limit).min(total);
-        // eof: the page includes the file's last line.
-        (lines[start..end].join("\n"), total, end >= total)
+        read_page(
+            std::io::BufReader::new(std::fs::File::open(&target_cl)?),
+            offset,
+            limit,
+        )
     })
     .await
-    .map_err(|err| FileError::new("gateway/internal", format!("read join: {err}")))?;
+    .map_err(|err| FileError::new("gateway/internal", format!("read join: {err}")))?
+    // A failed open or read is an error, never an empty page served beside
+    // the file's real size (found in the desktop: an unreadable file
+    // previewed as blank).
+    .map_err(|err| FileError::new("workspace-file/not-found", format!("read {path}: {err}")))?;
 
     // How many lines the served page holds (0 when the offset lies past the
     // last line; 1 for a single empty line — the contract's own edge).
@@ -727,20 +758,57 @@ mod tests {
         assert!(resolve_base_relative("docs/a.md", "C:\\x").is_err());
     }
 
+    /// The wire's line model, on the read path's own paging: a trailing
+    /// newline starts no further line and an offset past the last line
+    /// serves an empty, EOF page.
     #[test]
     fn a_trailing_newline_terminates_rather_than_starts_a_line() {
-        // The wire's line model, on the read path's own arithmetic.
-        let content = "one\ntwo\nthree\n";
-        let lines: Vec<&str> = content.split('\n').collect();
-        let total = if content.ends_with('\n') {
-            lines.len() - 1
-        } else {
-            lines.len()
+        let page = |bytes: &[u8], offset: usize, limit: usize| {
+            read_page(std::io::Cursor::new(bytes), offset, limit).unwrap()
         };
-        assert_eq!(total, 3, "a trailing newline starts no fourth line");
-        assert_eq!(lines[0..2].join("\n"), "one\ntwo");
-        // An offset past the last line serves an empty, EOF page.
-        let start = 5usize.saturating_sub(1);
-        assert!(start >= total);
+        assert_eq!(
+            page(b"one\ntwo\nthree\n", 1, 2000),
+            ("one\ntwo\nthree".into(), 3, true)
+        );
+        assert_eq!(
+            page(b"one\ntwo\nthree\n", 2, 2),
+            ("two\nthree".into(), 3, true)
+        );
+        assert_eq!(page(b"one\ntwo\nthree\n", 2, 1), ("two".into(), 3, false));
+        assert_eq!(
+            page(b"one\ntwo\nthree\n", 4, 2000),
+            (String::new(), 3, true)
+        );
+        assert_eq!(page(b"one\ntwo", 1, 2000), ("one\ntwo".into(), 2, true));
+        assert_eq!(page(b"a\n\n", 1, 2000), ("a\n".into(), 2, true));
+        assert_eq!(
+            page(b"", 1, 2000),
+            (String::new(), 1, true),
+            "an empty file is one empty line"
+        );
+        // Bytes that are not UTF-8 decode lossily, as the whole-file read did.
+        assert_eq!(page(b"a\xFFb\n", 1, 2000).0, "a\u{FFFD}b");
+    }
+
+    /// Found in the desktop: a file the process cannot read (permission
+    /// denied) was served as a successful empty document beside the file's
+    /// real size.
+    #[test]
+    fn a_failed_read_is_an_error_never_an_empty_page() {
+        struct Unreadable;
+        impl std::io::Read for Unreadable {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("permission denied"))
+            }
+        }
+        impl std::io::BufRead for Unreadable {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                Err(std::io::Error::other("permission denied"))
+            }
+            fn consume(&mut self, _amount: usize) {}
+        }
+        let refused =
+            read_page(Unreadable, 1, 2000).expect_err("a read that fails must not answer a page");
+        assert_eq!(refused.to_string(), "permission denied");
     }
 }
