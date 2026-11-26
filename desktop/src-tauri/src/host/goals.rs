@@ -1319,31 +1319,9 @@ mod tests {
         assert_eq!(changed.token_budget, None);
     }
 
-    /// The projection's journal path is pure over the overlay: a persisted
-    /// pause shows as paused after an engine eviction, and a persisted clear
-    /// hides the replayed goal. Both are exercised through the pure pieces
-    /// (the HTTP path needs a fake runtime; the dispatch tests cover it).
-    #[test]
-    fn journal_fallback_applies_the_persisted_pause_and_clear() {
-        let detail = json!({
-            "items": [goal_item("item_create", "create_goal", json!({
-                "objective": "ship it", "status": "active", "blocker": null,
-            }))],
-        });
-        let journal = journal_goal(&detail, "thr_1").expect("goal");
-        let mut overlay = Overlay {
-            paused: true,
-            paused_goal_id: Some(journal.id.clone()),
-            ..Overlay::default()
-        };
-        let mut snapshot = journal.snapshot.clone();
-        if overlay.paused_goal_id.as_deref() == Some(journal.id.as_str()) {
-            snapshot["status"] = json!("paused");
-        }
-        assert_eq!(snapshot["status"], "paused");
-        overlay.paused = false;
-        overlay.cleared = true;
-        overlay.cleared_goal_id = Some(journal.id.clone());
-        assert!(overlay.cleared);
-    }
+    // The persisted pause and clear are asserted through the projection in
+    // `host/mod.rs`'s dispatch tests (`desktop_goal_pause_survives_a_reload…`,
+    // the `goals/clear` sequence) against a fake runtime. A bridge-free unit
+    // test of them was removed: it copied the production branch into its own
+    // body and asserted its own writes.
 }
