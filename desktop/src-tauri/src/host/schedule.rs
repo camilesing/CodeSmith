@@ -208,16 +208,39 @@ fn validate_automation_rule(rule: &str) -> Result<String> {
             Ok(joined)
         }
         "WEEKLY" => {
-            if keys
-                .iter()
-                .any(|key| !["FREQ", "BYDAY", "BYHOUR", "BYMINUTE"].contains(&key.as_str()))
-            {
-                bail!("CodeSmith WEEKLY automations allow only FREQ,BYDAY,BYHOUR,BYMINUTE");
+            if keys.iter().any(|key| {
+                !["FREQ", "INTERVAL", "BYDAY", "BYHOUR", "BYMINUTE"].contains(&key.as_str())
+            }) {
+                bail!(
+                    "CodeSmith WEEKLY automations allow only FREQ,INTERVAL,BYDAY,BYHOUR,BYMINUTE"
+                );
             }
-            if !keys.iter().any(|key| key == "BYDAY") {
-                bail!("CodeSmith WEEKLY automations require BYDAY");
+            let field = |name: &str| {
+                joined
+                    .split(';')
+                    .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            };
+            let days = field("BYDAY").context("CodeSmith WEEKLY automations require BYDAY")?;
+            // The task page's guided Weekly/Weekdays presets (found failing in
+            // the desktop) post an INTERVAL and keep their clock on the
+            // DTSTART stamp alone. A step of one is every week and is
+            // dropped; another step has no equivalent.
+            match field("INTERVAL") {
+                None | Some("1") => {}
+                Some(step) => bail!(
+                    "CodeSmith WEEKLY automations run every week; every {step} weeks has no equivalent"
+                ),
             }
-            Ok(joined)
+            match (field("BYHOUR"), field("BYMINUTE")) {
+                (Some(hour), Some(minute)) => Ok(format!(
+                    "FREQ=WEEKLY;BYDAY={days};BYHOUR={hour};BYMINUTE={minute}"
+                )),
+                (None, None) => {
+                    let (hour, minute) = dtstart_clock(rule)?;
+                    Ok(format!("FREQ=WEEKLY;BYDAY={days};BYHOUR={hour};BYMINUTE={minute}"))
+                }
+                _ => bail!("CodeSmith WEEKLY automations need both BYHOUR and BYMINUTE, or a DTSTART clock"),
+            }
         }
         // The task page's "every day" arrives as FREQ=DAILY;INTERVAL=1 at a
         // fixed clock — the same schedule as every weekday at that clock.
@@ -248,6 +271,24 @@ fn validate_automation_rule(rule: &str) -> Result<String> {
             bail!("CodeSmith automations support FREQ=HOURLY and FREQ=WEEKLY only (got {other:?})")
         }
     }
+}
+
+/// The clock of a rule's `DTSTART…:YYYYMMDDTHHMMSS[Z]` stamp, where the
+/// task page's guided Weekly preset keeps it (its RRULE carries no
+/// BYHOUR/BYMINUTE). Seconds truncate to the minute, as the grammar has none.
+fn dtstart_clock(rule: &str) -> Result<(u32, u32)> {
+    let time = rule
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("DTSTART"))
+        .and_then(|line| line.rsplit_once(':'))
+        .map(|(_, stamp)| stamp.trim_end_matches('Z'))
+        .and_then(|stamp| stamp.split_once('T'))
+        .map(|(_, time)| time)
+        .filter(|time| time.len() == 6 && time.bytes().all(|byte| byte.is_ascii_digit()))
+        .context("CodeSmith WEEKLY automations need a clock: BYHOUR/BYMINUTE or a DTSTART stamp")?;
+    let (hour, minute, _) = parse_hms(&format!("{}:{}:{}", &time[..2], &time[2..4], &time[4..]))?;
+    Ok((hour, minute))
 }
 
 /// A `DTSTART;TZID=<zone>:…` line must keep the machine's clock, and a `…Z`
@@ -921,6 +962,30 @@ mod tests {
         assert!(stepped.is_err(), "every other day has no equivalent");
         let daily = timing_to_rrule(&json!({ "kind": "rrule", "rrule": "FREQ=DAILY" }));
         assert!(daily.is_err(), "DAILY is outside the automation grammar");
+        // The task page's guided Weekly/Weekdays presets (found failing in
+        // the desktop): the clock rides the DTSTART stamp and the rule posts
+        // INTERVAL. A step of one compiles; another one has no equivalent.
+        let preset = timing_to_rrule(&json!({
+            "kind": "rrule",
+            "rrule": "DTSTART:20261127T093045\nRRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR",
+        }))
+        .unwrap();
+        assert_eq!(
+            preset,
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=30"
+        );
+        let stepped = timing_to_rrule(&json!({
+            "kind": "rrule",
+            "rrule": "DTSTART:20261127T093000\nRRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO",
+        }));
+        assert!(stepped.is_err(), "every other week has no equivalent");
+        let clockless = timing_to_rrule(&json!({
+            "kind": "rrule", "rrule": "RRULE:FREQ=WEEKLY;BYDAY=MO",
+        }));
+        assert!(
+            clockless.is_err(),
+            "a weekly rule without a clock must not reach the runtime"
+        );
         let with_seconds = timing_to_rrule(&json!({
             "kind": "rrule", "rrule": "FREQ=WEEKLY;BYDAY=MO;BYSECOND=30"
         }));
