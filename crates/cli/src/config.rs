@@ -2381,10 +2381,15 @@ impl Config {
             && let Some(provider_headers) = entry.http_headers.as_ref()
         {
             headers.extend(provider_headers.clone());
-        } else if let Some(provider_headers) = self
-            .provider_config()
-            .and_then(|provider| provider.http_headers.as_ref())
+        } else if self.custom_provider().is_none()
+            && let Some(provider_headers) = self
+                .provider_config()
+                .and_then(|provider| provider.http_headers.as_ref())
         {
+            // Builtin routes only: the fallback table (`[providers.deepseek]`
+            // or whichever `api_provider()` falls back to) is scoped to that
+            // provider, and its headers — an `Authorization` entry included
+            // — must not travel to a custom gateway.
             headers.extend(provider_headers.clone());
         }
         headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
@@ -7904,6 +7909,29 @@ http_headers = { "X-Model-Provider-Id" = "tongyi" }
         assert_eq!(
             headers.get("X-Shared").map(String::as_str),
             Some("provider")
+        );
+
+        // Found in the review: with a custom entry selected, the fallback
+        // table's headers were merged in and sent to the other endpoint.
+        let custom = Config {
+            custom_provider: Some("gw".to_string()),
+            providers: Some(ProvidersConfig {
+                deepseek: ProviderConfig {
+                    http_headers: Some(HashMap::from([("X-Dept".to_string(), "a".to_string())])),
+                    ..Default::default()
+                },
+                custom: vec![CustomProviderConfig {
+                    id: "gw".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            !custom.http_headers().contains_key("X-Dept"),
+            "a custom gateway does not inherit the builtin table's headers: {:?}",
+            custom.http_headers()
         );
     }
 
