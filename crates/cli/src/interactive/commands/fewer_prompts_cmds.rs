@@ -225,6 +225,7 @@ mod tests {
 
     fn options(workspace: std::path::PathBuf) -> crate::app_state::InteractiveOptions {
         crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace,
             config_path: None,

@@ -542,20 +542,38 @@ impl PresetCatalog {
                     // rather than ignore — the values are still applied,
                     // but never silently.
                     if matches!(source, PresetSource::Project) {
-                        if definition.approval_policy.is_some() || definition.sandbox_mode.is_some()
-                        {
+                        // `app_mode` is the strongest dial of all — it can
+                        // pick YOLO — so it and `sandbox_enabled` are named too.
+                        let dials: Vec<&str> = [
+                            ("approval_policy", definition.approval_policy.is_some()),
+                            ("sandbox_mode", definition.sandbox_mode.is_some()),
+                            ("app_mode", definition.app_mode.is_some()),
+                            ("sandbox_enabled", definition.sandbox_enabled.is_some()),
+                        ]
+                        .into_iter()
+                        .filter_map(|(dial, set)| set.then_some(dial))
+                        .collect();
+                        if !dials.is_empty() {
                             self.warnings.push(format!(
-                                "project preset '{name}' sets approval_policy/sandbox_mode; \
-                                 workspace presets are untrusted — verify before relying on them"
+                                "project preset '{name}' sets {}; \
+                                 workspace presets are untrusted — verify before relying on them",
+                                dials.join("/")
                             ));
                         }
-                        if self.presets.get(&name).is_some_and(|existing| {
-                            matches!(existing.source, PresetSource::BuiltIn)
-                        }) {
-                            self.warnings.push(format!(
-                                "project preset '{name}' shadows the built-in tier of the \
-                                 same name from the opened workspace"
-                            ));
+                        match self.presets.get(&name) {
+                            Some(existing) if matches!(existing.source, PresetSource::BuiltIn) => {
+                                self.warnings.push(format!(
+                                    "project preset '{name}' shadows the built-in tier of the \
+                                     same name from the opened workspace"
+                                ));
+                            }
+                            Some(existing) if matches!(existing.source, PresetSource::User) => {
+                                self.warnings.push(format!(
+                                    "project preset '{name}' shadows the user preset of the \
+                                     same name from the opened workspace"
+                                ));
+                            }
+                            _ => {}
                         }
                     }
                     self.presets.insert(
@@ -1041,6 +1059,37 @@ web_search = false
                 .iter()
                 .any(|w| w.contains("approval_policy/sandbox_mode")),
             "user preset must not warn: {:?}",
+            catalog.warnings
+        );
+    }
+
+    #[test]
+    fn project_preset_app_mode_and_user_shadow_warn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("user-presets");
+        let project = tmp.path().join("project-presets");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("auto.toml"), "app_mode = \"yolo\"\n").unwrap();
+        std::fs::write(user.join("work.toml"), "app_mode = \"agent\"\n").unwrap();
+        std::fs::write(project.join("work.toml"), "app_mode = \"yolo\"\n").unwrap();
+
+        let catalog = PresetCatalog::load_from(Some(&user), Some(&project));
+
+        assert!(
+            catalog
+                .warnings
+                .iter()
+                .any(|w| w.contains("'auto' sets app_mode")),
+            "app_mode is a security dial: {:?}",
+            catalog.warnings
+        );
+        assert!(
+            catalog
+                .warnings
+                .iter()
+                .any(|w| w.contains("'work' shadows the user preset")),
+            "shadowing a user preset is named: {:?}",
             catalog.warnings
         );
     }

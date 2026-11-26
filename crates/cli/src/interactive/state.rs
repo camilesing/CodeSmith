@@ -151,6 +151,10 @@ pub struct ReplState {
     pub max_subagents: usize,
     pub trust_mode: bool,
     pub yolo: bool,
+    /// Startup's trust decision for the workspace preset layer (see
+    /// [`InteractiveOptions::load_project_presets`](crate::app_state::
+    /// InteractiveOptions::load_project_presets)).
+    pub(crate) load_project_presets: bool,
     pub approval_mode: ApprovalMode,
     pub auto_compact: bool,
     pub compact_threshold: usize,
@@ -290,6 +294,7 @@ impl ReplState {
             use_memory,
             start_in_agent_mode,
             yolo,
+            load_project_presets,
             ..
         } = options;
 
@@ -427,6 +432,7 @@ impl ReplState {
             max_subagents,
             trust_mode: initial_mode == AppMode::Yolo,
             yolo: initial_mode == AppMode::Yolo,
+            load_project_presets,
             approval_mode,
             auto_compact: settings.auto_compact,
             compact_threshold,
@@ -733,7 +739,14 @@ impl ReplState {
     /// Apply a preset tier's live dials (mode, tool allow/deny lists) —
     /// the `ReplState` mirror of `presets::apply_at_startup`.
     pub fn apply_preset_at_startup(&mut self, name: &str) {
-        let catalog = PresetCatalog::load(Some(&self.workspace));
+        // The workspace layer is workspace-controlled input: it loads only
+        // when startup cleared the trust boundary, so a repository's preset
+        // cannot pick this session's mode or tool surface. Warnings for the
+        // layer that did load were printed by `presets::apply_config_preset`.
+        let catalog = PresetCatalog::load(
+            self.load_project_presets
+                .then_some(self.workspace.as_path()),
+        );
         let Some(loaded) = catalog.get_ci(name) else {
             return; // unknown selections already warned in apply_config_preset
         };
@@ -1108,6 +1121,7 @@ mod restore_tests {
 
         let config = crate::config::Config::default();
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),
             config_path: None,
@@ -1139,11 +1153,67 @@ mod restore_tests {
         );
     }
 
+    /// A preset shipped in an untrusted workspace must not choose this
+    /// session's mode: with the workspace layer gated off, the factory tier
+    /// applies and the session stays in Agent mode without trust.
+    #[test]
+    fn project_preset_cannot_pick_the_mode_of_an_untrusted_workspace() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            tmp.path().join("home"),
+        );
+        let presets = tmp.path().join("ws/.codesmith/presets");
+        std::fs::create_dir_all(&presets).unwrap();
+        std::fs::write(presets.join("middle.toml"), "app_mode = \"yolo\"\n").unwrap();
+        let config = crate::config::Config::default();
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: tmp.path().join("ws"),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: tmp.path().join("skills"),
+            memory_path: tmp.path().join("memory.md"),
+            mcp_config_path: tmp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            load_project_presets: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+
+        let mut state = ReplState::new(options.clone(), &config);
+        state.apply_preset_at_startup("middle");
+        assert_eq!(
+            state.mode,
+            AppMode::Agent,
+            "the repo's preset is not applied"
+        );
+        assert!(
+            !state.trust_mode,
+            "no trust is gained from an untrusted workspace"
+        );
+
+        // A workspace startup was allowed to read may set the mode.
+        let trusted = crate::app_state::InteractiveOptions {
+            load_project_presets: true,
+            ..options
+        };
+        let mut state = ReplState::new(trusted, &config);
+        state.apply_preset_at_startup("middle");
+        assert_eq!(state.mode, AppMode::Yolo);
+    }
+
     #[tokio::test]
     async fn resume_restore_rebuilds_todo_and_plan_projections() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         fn options() -> crate::app_state::InteractiveOptions {
             crate::app_state::InteractiveOptions {
+                load_project_presets: false,
                 model: "test-model".to_string(),
                 workspace: std::env::temp_dir(),
                 config_path: None,
@@ -1273,6 +1343,7 @@ mod agent_count_tests {
 
     fn options() -> crate::app_state::InteractiveOptions {
         crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),
             config_path: None,

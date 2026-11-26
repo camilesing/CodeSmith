@@ -378,6 +378,7 @@ mod tests {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let home = codesmith_agent_runtime::test_support::ScopedCodeSmithHome::new();
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),
             config_path: None,
@@ -435,6 +436,7 @@ mod tests {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let home = codesmith_agent_runtime::test_support::ScopedCodeSmithHome::new();
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),
             config_path: None,

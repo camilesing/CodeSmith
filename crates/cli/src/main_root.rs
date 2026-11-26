@@ -1044,8 +1044,19 @@ pub(crate) async fn real_main() -> Result<()> {
                 let mut config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
                 // Fold the preset layer in so the reported tier (and the
-                // effective switches) match an interactive session.
-                crate::presets::apply_config_preset(&mut config, &workspace);
+                // effective switches) match an interactive session. Its
+                // workspace layer is workspace-controlled input: it loads
+                // under the same trust boundary as the project config.
+                let boundary = resolve_workspace_init_boundary(
+                    &workspace,
+                    cli.skip_onboarding,
+                    cli.yolo || config.yolo.unwrap_or(false),
+                );
+                crate::presets::apply_config_preset(
+                    &mut config,
+                    should_load_project_config(cli.no_project_config, &boundary)
+                        .then_some(workspace.as_path()),
+                );
                 if args.json {
                     run_doctor_json(&config, &workspace, cli.config.as_deref())
                 } else {
@@ -1233,8 +1244,18 @@ pub(crate) async fn real_main() -> Result<()> {
                 let mut config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
                 // Apply the layer so the reported effective preset (diy
-                // detection, alias canonicalization) matches a live session.
-                crate::presets::apply_config_preset(&mut config, &workspace);
+                // detection, alias canonicalization) matches a live session —
+                // with the workspace layer under the project-config trust gate.
+                let boundary = resolve_workspace_init_boundary(
+                    &workspace,
+                    cli.skip_onboarding,
+                    cli.yolo || config.yolo.unwrap_or(false),
+                );
+                crate::presets::apply_config_preset(
+                    &mut config,
+                    should_load_project_config(cli.no_project_config, &boundary)
+                        .then_some(workspace.as_path()),
+                );
                 run_preset_command(&config, command)
             }
             Commands::Sandbox(args) => match args.command {
@@ -4259,7 +4280,10 @@ fn dump_effective_config(cli: &Cli) -> Result<()> {
     {
         config.preset = Some(persisted);
     }
-    crate::presets::apply_config_preset(&mut config, &workspace);
+    crate::presets::apply_config_preset(
+        &mut config,
+        should_load_project_config(cli.no_project_config, &boundary).then_some(workspace.as_path()),
+    );
     println!(
         "# Effective configuration for {} (secrets redacted)",
         workspace.display()
@@ -5667,7 +5691,11 @@ pub(crate) async fn run_interactive(
     {
         merged_config.preset = Some(persisted);
     }
-    let applied_preset = crate::presets::apply_config_preset(&mut merged_config, &workspace);
+    let load_project_presets = should_load_project_config(cli.no_project_config, &boundary);
+    let applied_preset = crate::presets::apply_config_preset(
+        &mut merged_config,
+        load_project_presets.then_some(workspace.as_path()),
+    );
     let config = &merged_config;
     match applied_preset.as_ref() {
         Some(applied) if applied.deviated => logging::info(format!(
@@ -5831,6 +5859,7 @@ pub(crate) async fn run_interactive(
         use_memory: config.memory_enabled(),
         start_in_agent_mode: yolo,
         yolo, // YOLO mode auto-approves all tool executions
+        load_project_presets,
         resume_session_id,
         initial_input,
         max_subagents,

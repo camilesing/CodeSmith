@@ -1780,6 +1780,7 @@ mod coverage_tests {
 
     fn test_repl_state() -> ReplState {
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),
             config_path: None,

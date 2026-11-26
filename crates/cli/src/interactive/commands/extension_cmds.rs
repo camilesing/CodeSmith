@@ -403,6 +403,7 @@ mod tests {
     #[test]
     fn status_lists_turn_executor_slots() {
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),
             config_path: None,
@@ -499,6 +500,7 @@ mod tests {
 
     fn test_state_in(workspace: &std::path::Path) -> ReplState {
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: workspace.to_path_buf(),
             config_path: None,

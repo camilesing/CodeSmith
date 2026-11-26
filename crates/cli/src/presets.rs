@@ -247,9 +247,14 @@ pub struct AppliedPreset {
 /// semantics, and record the effective state on the config. Unknown
 /// selections log a warning and fall back to `middle` rather than failing
 /// the launch.
+/// `workspace` is the opened workspace, or `None` when startup was not
+/// allowed to read workspace-controlled input (an untrusted workspace): the
+/// catalog's workspace layer — `<workspace>/.codesmith/presets/` — is then
+/// skipped, exactly like the project config and `.env`, because a repository
+/// must not pick this session's mode, approval posture or tool surface.
 pub fn apply_config_preset(
     config: &mut Config,
-    workspace: &std::path::Path,
+    workspace: Option<&std::path::Path>,
 ) -> Option<AppliedPreset> {
     let selection = match config.preset_selection().map(str::to_string) {
         Some(raw) => match canonicalize_preset_name(&raw) {
@@ -270,9 +275,12 @@ pub fn apply_config_preset(
         None => "middle".to_string(),
     };
 
-    let catalog = PresetCatalog::load(Some(workspace));
+    let catalog = PresetCatalog::load(workspace);
+    // Stderr, not `tracing`: no shipped binary installs a subscriber, so a
+    // `tracing::warn!` here was never shown — and these warnings are the
+    // only notice that a workspace preset sets security dials.
     for warning in &catalog.warnings {
-        tracing::warn!("{warning}");
+        eprintln!("warning: {warning}");
     }
     let loaded = match catalog.get_ci(&selection).cloned() {
         Some(loaded) => loaded,

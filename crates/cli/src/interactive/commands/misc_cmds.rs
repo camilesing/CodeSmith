@@ -1532,6 +1532,7 @@ mod tests {
 
         fn options(workspace: std::path::PathBuf) -> crate::app_state::InteractiveOptions {
             crate::app_state::InteractiveOptions {
+                load_project_presets: false,
                 model: "test-model".to_string(),
                 workspace,
                 config_path: None,
@@ -1626,6 +1627,7 @@ mod tests {
 
     fn state_in(workspace: &std::path::Path) -> ReplState {
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: workspace.to_path_buf(),
             config_path: None,

@@ -311,6 +311,7 @@ mod tests {
     async fn run_prints_usage_for_a_bare_invocation_and_refuses_junk() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: tmp.path().to_path_buf(),
             config_path: None,

@@ -61,6 +61,10 @@ pub struct InteractiveOptions {
     pub start_in_agent_mode: bool,
     /// Auto-approve tool executions (yolo mode)
     pub yolo: bool,
+    /// Whether the REPL may load `<workspace>/.codesmith/presets/`: the same
+    /// trust boundary as the project config. Off for an untrusted workspace,
+    /// so a repository's preset cannot choose this session's mode.
+    pub load_project_presets: bool,
     /// Resume a previous session by ID
     pub resume_session_id: Option<String>,
     /// Pre-populate the input with this text when the session starts.

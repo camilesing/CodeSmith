@@ -412,6 +412,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: tmp.path().to_path_buf(),
             config_path: None,

@@ -1607,6 +1607,7 @@ mod tests {
     /// mode state, so every path points at the temp directory.
     fn test_options() -> crate::app_state::InteractiveOptions {
         crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: std::env::temp_dir(),
             config_path: None,

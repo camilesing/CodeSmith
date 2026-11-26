@@ -268,6 +268,7 @@ mod tests {
 
     fn state_in(workspace: &std::path::Path) -> ReplState {
         let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
             model: "test-model".to_string(),
             workspace: workspace.to_path_buf(),
             config_path: None,
