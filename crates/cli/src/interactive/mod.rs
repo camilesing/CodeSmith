@@ -121,7 +121,16 @@ pub async fn run_repl(
 
     // Runtime services: shell, tasks, automations, hooks, notifier, index.
     if state.index_service.is_none() {
-        state.index_service = crate::index::build_index_service(&state.workspace, config);
+        // Opening the store is SQLite and filesystem work, and it can wait on
+        // another process's write lock (up to the store's busy timeout) — on
+        // the blocking pool, with the scheduler already live above. A worker
+        // panic degrades to no index, like a failed build.
+        let (workspace, config) = (state.workspace.clone(), config.clone());
+        state.index_service = tokio::task::spawn_blocking(move || {
+            crate::index::build_index_service(&workspace, &config)
+        })
+        .await
+        .unwrap_or(None);
     }
     state.runtime_services = crate::tools::spec::RuntimeToolServices {
         shell_manager: Some(crate::tools::shell::wrap_shell_manager(
