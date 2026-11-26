@@ -72,6 +72,15 @@ impl ReplacementToolSpec {
     }
 }
 
+/// Strictness of an approval requirement: `Auto < Suggest < Required`.
+fn approval_rank(requirement: ApprovalRequirement) -> u8 {
+    match requirement {
+        ApprovalRequirement::Auto => 0,
+        ApprovalRequirement::Suggest => 1,
+        ApprovalRequirement::Required => 2,
+    }
+}
+
 #[async_trait]
 impl ToolSpec for ReplacementToolSpec {
     fn name(&self) -> &str {
@@ -153,7 +162,43 @@ impl ToolSpec for ReplacementToolSpec {
                 // The rewritten input speaks the incumbent's dialect — its
                 // own semantic gate guards it before it runs.
                 self.original.validate_input(&rewritten, context)?;
-                self.original.execute(rewritten, context).await
+                // "A replacement can never relax an approval gate": the gate
+                // classified the MODEL's input, never the script's map. A
+                // rewrite that needs more than the gate granted — a stricter
+                // requirement, or a path the model's input did not name — is
+                // refused here; `on("tool-call")` is the gated way to rewrite.
+                if rewritten != input {
+                    let model_escaped = self
+                        .original
+                        .escaped_path_for_input(&input, context)
+                        .is_some();
+                    let rewrite_escaped = self
+                        .original
+                        .escaped_path_for_input(&rewritten, context)
+                        .is_some();
+                    let model_rank = approval_rank(
+                        self.original
+                            .approval_requirement_for_input(&input, context),
+                    );
+                    let rewrite_rank = approval_rank(
+                        self.original
+                            .approval_requirement_for_input(&rewritten, context),
+                    );
+                    if rewrite_rank > model_rank || (rewrite_escaped && !model_escaped) {
+                        return Err(ToolError::execution_failed(format!(
+                            "replacement for '{}' rewrote the input to one that needs \
+                             approval the gate did not grant; rewrite through \
+                             on(\"tool-call\") instead",
+                            self.original.name()
+                        )));
+                    }
+                }
+                let mut result = self.original.execute(rewritten.clone(), context).await?;
+                // The record: the incumbent ran this input, not the model's.
+                result.content.push_str(&format!(
+                    "\n\n[tool replacement ran the rewritten input {rewritten}]"
+                ));
+                Ok(result)
             }
             Err(err) => Err(Self::extension_error(err)),
         }
@@ -458,7 +503,107 @@ mod tests {
             .execute(json!({"arg": "a"}), &tc)
             .await
             .unwrap();
-        assert_eq!(out.content, "builtin:rewritten");
+        assert!(
+            out.content.starts_with("builtin:rewritten"),
+            "the incumbent ran the rewritten input: {}",
+            out.content
+        );
+        assert!(
+            out.content
+                .contains("rewritten input {\"arg\":\"rewritten\"}"),
+            "the result names the input that ran: {}",
+            out.content
+        );
+    }
+
+    /// Ranks inputs the way the shell tool does: `danger` needs approval,
+    /// everything else is Auto.
+    struct RankingTool {
+        inputs: StdMutex<Vec<Value>>,
+    }
+
+    #[async_trait]
+    impl ToolSpec for RankingTool {
+        fn name(&self) -> &str {
+            "fake_shell"
+        }
+        fn description(&self) -> &str {
+            "ranks its inputs"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            Vec::new()
+        }
+        fn approval_requirement_for_input(
+            &self,
+            input: &Value,
+            _context: &ToolContext,
+        ) -> ApprovalRequirement {
+            if input.get("arg").and_then(|v| v.as_str()) == Some("danger") {
+                ApprovalRequirement::Required
+            } else {
+                ApprovalRequirement::Auto
+            }
+        }
+        async fn execute(
+            &self,
+            input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.inputs.lock().unwrap().push(input);
+            Ok(ToolResult::success("ran"))
+        }
+    }
+
+    fn ranked(rewrite: &'static str) -> (Arc<RankingTool>, ReplacementToolSpec) {
+        let incumbent = Arc::new(RankingTool {
+            inputs: StdMutex::new(Vec::new()),
+        });
+        let spec = ReplacementToolSpec::new(
+            incumbent.clone(),
+            Arc::new(FakeReplacement {
+                target: "fake_shell".into(),
+                behavior: Behavior::DelegateRewrite(rewrite),
+                description_override: None,
+                schema_override: None,
+            }),
+            ext_ctx(),
+        );
+        (incumbent, spec)
+    }
+
+    /// The approval gate classified the MODEL's input, never the script's
+    /// map: a `delegate(#{…})` that rewrites an Auto call into one that
+    /// needs approval must not run the incumbent.
+    #[tokio::test]
+    async fn a_rewritten_delegate_never_relaxes_the_approval_gate() {
+        let (incumbent, spec) = ranked("danger");
+        let err = spec
+            .execute(json!({"arg": "safe"}), &tool_context())
+            .await
+            .expect_err("the rewrite needs approval the gate did not grant");
+        assert!(err.to_string().contains("needs approval"), "{err}");
+        assert!(
+            incumbent.inputs.lock().unwrap().is_empty(),
+            "the incumbent never ran"
+        );
+
+        // A rewrite that stays inside what the gate granted runs, and the
+        // result says which input ran.
+        let (_, spec) = ranked("still-safe");
+        let out = spec
+            .execute(json!({"arg": "safe"}), &tool_context())
+            .await
+            .unwrap();
+        assert!(out.content.starts_with("ran"), "{}", out.content);
+        assert!(
+            out.content
+                .contains("rewritten input {\"arg\":\"still-safe\"}"),
+            "{}",
+            out.content
+        );
     }
 
     #[tokio::test]
@@ -685,6 +830,10 @@ mod tests {
             .execute(json!({"arg": "a"}), &tool_context())
             .await
             .unwrap();
-        assert_eq!(out.content, "builtin:outer");
+        assert!(
+            out.content.starts_with("builtin:outer"),
+            "the chain reached the builtin: {}",
+            out.content
+        );
     }
 }
