@@ -143,12 +143,25 @@ impl Engine {
                 let _ = self
                     .tx_event
                     .send(crate::events::Event::status(format!(
-                        "Goal paused: {reason} (raise the token budget or /goal resume to continue)"
+                        "Goal paused: {reason} ({})",
+                        pause_hint(reason)
                     )))
                     .await;
                 None
             }
         }
+    }
+}
+
+/// The remedy that lifts a goal pause. `/goal resume` only re-arms the
+/// status: it lifts neither the round cap (only a new objective resets the
+/// counter) nor a budget nobody raised — naming it for every reason sent the
+/// user in a loop.
+fn pause_hint(reason: &str) -> &'static str {
+    if reason == "round limit reached" {
+        "start a fresh goal with /goal <objective>; /goal resume does not lift the round cap"
+    } else {
+        "raise the token budget, then /goal resume to continue"
     }
 }
 
