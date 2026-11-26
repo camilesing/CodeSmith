@@ -304,12 +304,23 @@ pub async fn try_claim_next_task(
     agent_name: &str,
     task_v2_manager: &SharedTaskV2Manager,
 ) -> Option<TaskV2Record> {
+    try_claim_next_task_skipping(agent_name, task_v2_manager, &Default::default()).await
+}
+
+/// [`try_claim_next_task`] that also skips the ids in `skip` — the tasks
+/// this teammate gave up after `MAX_TASK_ATTEMPTS` failed runs.
+pub async fn try_claim_next_task_skipping(
+    agent_name: &str,
+    task_v2_manager: &SharedTaskV2Manager,
+    skip: &std::collections::HashSet<String>,
+) -> Option<TaskV2Record> {
+    let skip = skip.clone();
     // The manager's calls are blocking fs+flock under a std Mutex (never
     // held across an await), so the whole claim runs off the runtime
     // worker thread.
     let manager = task_v2_manager.clone();
     let agent = agent_name.to_string();
-    tokio::task::spawn_blocking(move || claim_next_task_blocking(&agent, &manager))
+    tokio::task::spawn_blocking(move || claim_next_task_blocking(&agent, &manager, &skip))
         .await
         .ok()
         .flatten()
@@ -319,6 +330,7 @@ pub async fn try_claim_next_task(
 fn claim_next_task_blocking(
     agent_name: &str,
     task_v2_manager: &SharedTaskV2Manager,
+    skip: &std::collections::HashSet<String>,
 ) -> Option<TaskV2Record> {
     let mut manager = task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -341,6 +353,9 @@ fn claim_next_task_blocking(
 
     // Find first pending, unassigned, unblocked task.
     for task in &tasks {
+        if skip.contains(&task.id) {
+            continue;
+        }
         if task.status != TaskV2Status::Pending {
             continue;
         }
@@ -427,6 +442,14 @@ pub enum WaitResult {
 /// Wait for next prompt, shutdown, or available task.
 /// Polls every 500ms with priority checks.
 pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitResult {
+    wait_for_next_prompt_or_shutdown_skipping(rt, &Default::default()).await
+}
+
+/// [`wait_for_next_prompt_or_shutdown`] that never claims the ids in `skip`.
+pub async fn wait_for_next_prompt_or_shutdown_skipping(
+    rt: &mut TeammateRuntime,
+    skip: &std::collections::HashSet<String>,
+) -> WaitResult {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
     let mut scan_failures: u32 = 0;
 
@@ -538,7 +561,9 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
         }
 
         // Try to claim a task if idle.
-        if let Some(task) = try_claim_next_task(&rt.agent_name, &rt.task_v2_manager).await {
+        if let Some(task) =
+            try_claim_next_task_skipping(&rt.agent_name, &rt.task_v2_manager, skip).await
+        {
             return WaitResult::TaskClaimed(task);
         }
     }
@@ -892,6 +917,20 @@ async fn record_task_error(rt: &TeammateRuntime, task_id: &str, error: &str) {
 // Teammate Loop
 // ---------------------------------------------------------------------------
 
+/// Failed runs of one task this teammate attempts before it leaves the task
+/// for someone else. A repeating failure (an auth or config error) was
+/// re-claimed with no pause and no bound.
+const MAX_TASK_ATTEMPTS: u32 = 3;
+/// Base of the wait before a retry; multiplied by the attempts so far.
+const TASK_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// How long to wait before attempt number `attempts + 1`, or `None` once
+/// this teammate gives the task up.
+#[must_use]
+fn retry_backoff(attempts: u32) -> Option<Duration> {
+    (attempts < MAX_TASK_ATTEMPTS).then(|| TASK_RETRY_BACKOFF.saturating_mul(attempts.max(1)))
+}
+
 /// Run the teammate's continuous prompt loop.
 ///
 /// State machine:
@@ -927,12 +966,23 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
     // writes overwritten by a trailing `state = Idle` (hidden behind
     // `#![allow(unused_assignments)]`), so the loop could never report
     // `Active` externally.
+    // A task whose run keeps failing must not be re-claimed in a hot loop:
+    // the wait returns its first tick at once, so each retry was immediate
+    // and unbounded. Attempts are counted per task, spaced, and stop at
+    // `MAX_TASK_ATTEMPTS` — the task stays Pending for another teammate.
+    let mut task_attempts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
     let final_state = loop {
         if rt.cancel_token.is_cancelled() {
             break TeammateState::Terminated;
         }
 
-        let wait_result = wait_for_next_prompt_or_shutdown(&mut rt).await;
+        let given_up: std::collections::HashSet<String> = task_attempts
+            .iter()
+            .filter(|(_, attempts)| **attempts >= MAX_TASK_ATTEMPTS)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let wait_result = wait_for_next_prompt_or_shutdown_skipping(&mut rt, &given_up).await;
 
         match wait_result {
             WaitResult::Aborted => break TeammateState::Terminated,
@@ -1015,6 +1065,7 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                 );
                 match execute_teammate_prompt(&rt, prompt).await {
                     Ok(result_summary) => {
+                        task_attempts.remove(&task.id);
                         summary = result_summary.clone();
                         mark_task_completed(&rt, &task.id, summary.as_deref()).await;
                         let _ = send_idle_notification(
@@ -1025,14 +1076,26 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                         );
                     }
                     Err(error) => {
+                        let attempts = task_attempts.entry(task.id.clone()).or_default();
+                        *attempts += 1;
                         summary = Some(format!("task failed: {error}"));
                         record_task_error(&rt, &task.id, &error).await;
-                        let _ = send_idle_notification(
-                            &rt.agent_name,
-                            &rt.team_name,
-                            summary.clone(),
-                            Some(task.id),
-                        );
+                        // One notification per attempt, and none once this
+                        // teammate gave the task up.
+                        if let Some(backoff) = retry_backoff(*attempts) {
+                            let _ = send_idle_notification(
+                                &rt.agent_name,
+                                &rt.team_name,
+                                summary.clone(),
+                                Some(task.id),
+                            );
+                            // The next wait's first tick fires at once; a
+                            // shutdown still interrupts the pause.
+                            tokio::select! {
+                                _ = tokio::time::sleep(backoff) => {}
+                                _ = rt.cancel_token.cancelled() => {}
+                            }
+                        }
                     }
                 }
             }
@@ -1573,6 +1636,37 @@ mod tests {
     }
 
     // ---- task claiming + lifecycle state machine on tempdir stores ----
+
+    /// A failing task is retried a bounded, spaced number of times, then
+    /// left for another teammate: the next wait must not claim it again.
+    #[test]
+    fn retry_backoff_is_bounded_and_spaced() {
+        assert_eq!(retry_backoff(0), Some(Duration::from_secs(5)));
+        assert_eq!(retry_backoff(1), Some(Duration::from_secs(5)));
+        assert_eq!(retry_backoff(2), Some(Duration::from_secs(10)));
+        assert_eq!(retry_backoff(MAX_TASK_ATTEMPTS), None, "no fourth attempt");
+    }
+
+    #[tokio::test]
+    async fn a_task_this_teammate_gave_up_is_not_claimed_again() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("giveup-team")).expect("team");
+        let tasks = shared_tasks("giveup-team");
+        let doomed = create_task(&tasks, "doomed", None, Vec::new());
+
+        let skip: std::collections::HashSet<String> = [doomed].into_iter().collect();
+        assert!(
+            try_claim_next_task_skipping("worker1", &tasks, &skip)
+                .await
+                .is_none(),
+            "a task in the skip set is never claimed"
+        );
+        assert!(
+            try_claim_next_task("worker1", &tasks).await.is_some(),
+            "without the skip set it is claimable (left Pending for others)"
+        );
+    }
 
     fn shared_tasks(team: &str) -> SharedTaskV2Manager {
         crate::tools::task_v2::new_shared_task_v2_manager(team).expect("task manager")
