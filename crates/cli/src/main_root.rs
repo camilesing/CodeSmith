@@ -1177,7 +1177,7 @@ pub(crate) async fn real_main() -> Result<()> {
                 // `config.yolo`) is not a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
                 let system_prompt_override = resolve_exec_system_prompt_override(&config, &args)?;
-                let append_system_prompts = resolve_exec_append_system_prompts(&config, &args);
+                let append_system_prompts = resolve_exec_append_system_prompts(&config, &args)?;
                 let prompt_cache_breaker = args.prompt_cache_breaker.clone();
                 let needs_engine = args.auto
                     || yolo
@@ -6047,10 +6047,16 @@ pub(crate) fn resolve_exec_system_prompt_override(
     Ok(config.system_prompt_override_text())
 }
 
+/// The append blocks of an `exec` run. A `--append-system-prompt-file`
+/// path is read eagerly, like its sibling `--system-prompt-file`: the engine
+/// only logs an unreadable append file (to a subscriber the CLI does not
+/// install) and runs on without it, so a typo'd path ended the run with the
+/// role instructions absent and exit 0. Config-file paths keep the loader's
+/// own contract.
 pub(crate) fn resolve_exec_append_system_prompts(
     config: &Config,
     args: &ExecArgs,
-) -> Vec<crate::prompts::PromptAppendSource> {
+) -> Result<Vec<crate::prompts::PromptAppendSource>> {
     let mut sources = config
         .append_system_prompt_paths()
         .into_iter()
@@ -6068,13 +6074,14 @@ pub(crate) fn resolve_exec_append_system_prompts(
                 )
             }),
     );
-    sources.extend(
-        args.append_system_prompt_file
-            .iter()
-            .cloned()
-            .map(crate::prompts::PromptAppendSource::file),
-    );
-    sources
+    let mut files = Vec::with_capacity(args.append_system_prompt_file.len());
+    for path in &args.append_system_prompt_file {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        files.push(crate::prompts::PromptAppendSource::file(path.clone()));
+    }
+    sources.extend(files);
+    Ok(sources)
 }
 
 /// One-shot completion over an explicit message list, returning the text.
@@ -9276,6 +9283,9 @@ mod dispatch_helper_tests {
             append_system_prompt: Some(vec!["/cfg/one.md".to_string()]),
             ..Config::default()
         };
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("f.md");
+        std::fs::write(&file, "# role\n").unwrap();
         let args = exec_args(&[
             "codesmith",
             "exec",
@@ -9286,10 +9296,10 @@ mod dispatch_helper_tests {
             "--append-system-prompt",
             "also",
             "--append-system-prompt-file",
-            "/f.md",
+            file.to_str().unwrap(),
             "p",
         ]);
-        let sources = resolve_exec_append_system_prompts(&config, &args);
+        let sources = resolve_exec_append_system_prompts(&config, &args).expect("resolves");
         assert_eq!(sources.len(), 4);
         assert!(
             matches!(&sources[0], PromptAppendSource::File(p) if *p == Path::new("/cfg/one.md"))
@@ -9302,11 +9312,30 @@ mod dispatch_helper_tests {
             matches!(&sources[2], PromptAppendSource::Inline { name, content }
                 if name == "cli:inline:3" && content == "also")
         );
-        assert!(matches!(&sources[3], PromptAppendSource::File(p) if *p == Path::new("/f.md")));
+        assert!(matches!(&sources[3], PromptAppendSource::File(p) if *p == file));
+
+        // A CLI-provided path is read eagerly, like `--system-prompt-file`:
+        // the engine only logs an unreadable append file and runs on
+        // without it, so a typo used to end the run with the role absent
+        // and exit 0.
+        let args = exec_args(&[
+            "codesmith",
+            "exec",
+            "--append-system-prompt-file",
+            "/no/such/role.md",
+            "p",
+        ]);
+        let err = resolve_exec_append_system_prompts(&Config::default(), &args)
+            .expect_err("a missing file is a hard error");
+        assert!(err.to_string().contains("failed to read"), "{err:#}");
 
         // No config, no flags → nothing to append.
         let args = exec_args(&["codesmith", "exec", "p"]);
-        assert!(resolve_exec_append_system_prompts(&Config::default(), &args).is_empty());
+        assert!(
+            resolve_exec_append_system_prompts(&Config::default(), &args)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
