@@ -2,13 +2,13 @@
 //! layer).
 //!
 //! Backs `/mods activate|disable|enable` + the `manage_mods` tool. Mirrors
-//! `ExtensionStateStore` (`crates/tui/src/extension_state.rs`) — same
-//! atomic-write, malformed→default, BTreeSet-for-determinism strategy —
-//! with one divergence: a malformed file is set aside as
-//! `mods_state.toml.bak` (then `.bak.1`, `.bak.2`, … — first free slot)
-//! before the default fallback, so the next persist cannot destroy the
-//! original and a later corruption never overwrites an earlier recovery
-//! copy (the sibling stores do not do this).
+//! `ExtensionStateStore` (`crates/cli/src/extension_state.rs`) — same
+//! atomic-write, malformed→default, BTreeSet-for-determinism strategy. Both
+//! set a malformed file aside before the default fallback, so the next
+//! persist cannot destroy the original; this store numbers its own backups
+//! (`mods_state.toml.bak`, then `.bak.1`, `.bak.2`, … — first free slot,
+//! so a later corruption never overwrites an earlier recovery copy) where
+//! the sibling calls `preserve_corrupt_state_file`.
 //!
 //! Storage shape (TOML at `~/.codesmith/mods_state.toml`):
 //!
