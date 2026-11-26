@@ -20,7 +20,13 @@ jobs:
 
             // Only consider brand-new accounts. If the user has been around
             // long enough to file good-faith issues elsewhere, don't touch.
-            const created = new Date(author.created_at || 0);
+            // The `issues` webhook's user object carries no `created_at`
+            // (it exists only on the REST user record): read from the payload,
+            // the age came out as ~20,000 days and this workflow never fired.
+            const { data: account } = await github.rest.users.getByUsername({
+              username: author.login,
+            });
+            const created = new Date(account.created_at || 0);
             const ageDays = (Date.now() - created.getTime()) / 86_400_000;
             if (ageDays > 30) return;
 
