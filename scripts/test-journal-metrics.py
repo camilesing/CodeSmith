@@ -94,5 +94,45 @@ class TornTail(unittest.TestCase):
             self.fold(whole + b'{"kind": "append"\n' + journal({"kind": "request"}))
 
 
+class SnapshotAuthority(unittest.TestCase):
+    """A snapshot beside a journal: which one is the transcript."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.snapshot = Path(tmp.name) / "s1.json"
+        self.journal = Path(tmp.name) / "s1.journal.jsonl"
+
+    def write(self, snapshot: dict, *records: dict) -> None:
+        self.snapshot.write_text(json.dumps(snapshot), encoding="utf-8")
+        self.journal.write_bytes(journal(*records))
+
+    def test_an_unstamped_snapshot_stays_authoritative(self) -> None:
+        # Written by a build that kept no journal: the product loads it as
+        # is and never consults the journal.
+        self.write(
+            {"metadata": {"id": "s1"}, "messages": [message("user", "snapshot")]},
+            {"kind": "header", "session_id": "s1"},
+            {"kind": "append", "messages": [message("user", "journal only")]},
+        )
+        loaded = jm.load_pair(self.snapshot, self.journal)
+        self.assertEqual(texts(loaded), ["snapshot"])
+
+    def test_a_journal_past_its_stamp_is_folded_in(self) -> None:
+        header = journal({"kind": "header", "session_id": "s1"})
+        self.write(
+            {
+                "metadata": {"id": "s1"},
+                "journal_bytes": len(header),
+                "messages": [message("user", "snapshot")],
+            },
+            {"kind": "header", "session_id": "s1"},
+            {"kind": "append", "messages": [message("user", "journal only")]},
+        )
+        loaded = jm.load_pair(self.snapshot, self.journal)
+        self.assertEqual(texts(loaded), ["journal only"])
+        self.assertEqual(loaded["metadata"], {"id": "s1"})
+
+
 if __name__ == "__main__":
     unittest.main()

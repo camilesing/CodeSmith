@@ -85,10 +85,13 @@ def load_pair(snapshot: Path, journal: Path) -> dict:
     the snapshot is a cache stamped with the journal size it covers, so a
     journal that has grown past the stamp (a crash between journal append
     and snapshot write) is folded for the transcript — the snapshot then
-    contributes only its metadata."""
+    contributes only its metadata. A snapshot that carries no stamp was
+    written by a build without journals and stays authoritative, as in
+    `recover_from_journal`: a downgrade-then-upgrade never rolls a session
+    back to the journal's older transcript."""
     session = load_snapshot(snapshot)
     stamped = session.pop("journal_bytes", None)
-    if stamped is None or journal.stat().st_size > stamped:
+    if stamped is not None and journal.stat().st_size > stamped:
         folded = fold_journal(journal)
         folded["id"] = session["id"]
         folded["metadata"] = session["metadata"]
