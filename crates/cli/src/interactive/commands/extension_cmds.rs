@@ -298,14 +298,18 @@ async fn install(state: &ReplState, arg: &str) {
     if matches!(spec.kind, codesmith_extensions::SourceKind::Prebuilt) && spec.checksum.is_none() {
         println!(
             "{}",
-            "warning: prebuilt install without --checksum — the dylib is fetched over HTTPS              and loaded with no integrity pin; the host's trust is all that protects you"
+            "warning: prebuilt install without --checksum — the dylib is fetched over HTTPS \
+             and loaded with no integrity pin; the host's trust is all that protects you"
                 .yellow()
         );
     }
     if untrusted_project {
         println!(
             "{}",
-            "warning: this workspace is not trusted — the install source runs arbitrary code              (git clone / cargo build); project-scope extensions are gated at load; /trust add              marks the workspace trusted".yellow()
+            "warning: this workspace is not trusted — the install source runs arbitrary code \
+             (git clone / cargo build); project-scope extensions are gated at load; /trust add \
+             marks the workspace trusted"
+                .yellow()
         );
     }
     let result = tokio::task::spawn_blocking(move || run_install(spec, root)).await;
