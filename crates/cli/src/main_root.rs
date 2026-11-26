@@ -6754,20 +6754,24 @@ pub(crate) async fn run_exec_agent(
         println!("{}", serde_json::to_string_pretty(&summary)?);
     }
 
-    if let Some(error) = summary.error.as_ref()
-        && !error.trim().is_empty()
-    {
+    exec_outcome(summary.status.as_deref(), summary.error.as_deref())
+}
+
+/// The post-loop verdict of an `exec` run. A run that never reached
+/// `TurnComplete` carries neither a status nor an error — when the engine
+/// task dies, its event channel closes and the loop simply ends — and both
+/// plain checks passed, so exec exited 0 on truncated output. "No result"
+/// is an error of its own, checked first.
+fn exec_outcome(status: Option<&str>, error: Option<&str>) -> Result<()> {
+    let Some(status) = status else {
+        bail!("exec ended without a turn result — the engine exited before TurnComplete");
+    };
+    if let Some(error) = error.filter(|error| !error.trim().is_empty()) {
         bail!("exec turn failed: {error}");
     }
-
-    if matches!(
-        summary.status.as_deref(),
-        Some("failed" | "canceled" | "interrupted")
-    ) {
-        let status = summary.status.as_deref().unwrap_or("unknown");
+    if matches!(status, "failed" | "interrupted") {
         bail!("exec turn ended with status {status}");
     }
-
     Ok(())
 }
 
@@ -7031,6 +7035,12 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
     }
 
     // 7. Report completion to the lead's mailbox + mark the member inactive.
+    // The engine task died before `TurnComplete`: its event channel closed
+    // and the loop ended. Without this the lead was mailed "turn complete
+    // (status: unknown)" and the process exited 0.
+    let Some(turn_status) = turn_status.as_deref() else {
+        bail!("team-teammate ended without a turn result — the engine exited before TurnComplete");
+    };
     let lead = team_lead_name();
     let body = if output.trim().is_empty() {
         "(no output)".to_string()
@@ -7038,9 +7048,8 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         output.trim().to_string()
     };
     let summary_text = format!(
-        "[teammate {}] turn complete (status: {})\n{body}",
+        "[teammate {}] turn complete (status: {turn_status})\n{body}",
         args.name,
-        turn_status.as_deref().unwrap_or("unknown"),
     );
     // A lost completion must not pass silently: the member is still
     // marked inactive below, but the pane is told the lead heard nothing.
@@ -9002,6 +9011,45 @@ mod dispatch_helper_tests {
         assert_eq!(headless_posture(false, false), (false, false));
         assert_eq!(headless_mode(false), AppMode::Agent);
         assert_eq!(headless_mode(true), AppMode::Yolo);
+    }
+
+    /// Found in the review: when the engine task dies, its event channel
+    /// closes and the event loop simply ends — no status, no error — and
+    /// both plain checks passed, so exec exited 0 on truncated output.
+    #[test]
+    fn exec_outcome_refuses_a_run_that_never_reported_a_turn_result() {
+        let missing = exec_outcome(None, None).expect_err("no TurnComplete is not a success");
+        assert!(
+            missing.to_string().contains("without a turn result"),
+            "{missing:#}"
+        );
+        // An error envelope without a status is still "no result".
+        let orphan = exec_outcome(None, Some("boom")).expect_err("no status, only an error");
+        assert!(
+            orphan.to_string().contains("without a turn result"),
+            "{orphan:#}"
+        );
+
+        assert!(exec_outcome(Some("completed"), None).is_ok());
+        assert!(exec_outcome(Some("completed"), Some("  ")).is_ok());
+        let errored = exec_outcome(Some("completed"), Some("boom")).expect_err("an error envelope");
+        assert!(
+            errored.to_string().contains("exec turn failed: boom"),
+            "{errored:#}"
+        );
+        let failed = exec_outcome(Some("failed"), None).expect_err("a failed status");
+        assert!(
+            failed.to_string().contains("ended with status failed"),
+            "{failed:#}"
+        );
+        let interrupted =
+            exec_outcome(Some("interrupted"), None).expect_err("an interrupted status");
+        assert!(
+            interrupted
+                .to_string()
+                .contains("ended with status interrupted"),
+            "{interrupted:#}"
+        );
     }
 
     fn exec_args(args: &[&str]) -> ExecArgs {
