@@ -216,8 +216,15 @@ impl Completer for ReplHelper {
         // `/model`, … — Tab inserted a command name into a shell line.
         // `complete_shell` returns `None` immediately for non-`!` lines, so
         // trying it first preserves behavior everywhere else.
+        let shell_line = line.trim_start().starts_with('!');
         if let Some(shell) = self.complete_shell(line, pos, ctx) {
             return Ok(shell);
+        }
+        // A shell line's result is final: with no path candidate the word
+        // must not reach command completion (`!ls /mo` offered `/mode`,
+        // `/model`, … — and a unique prefix was inserted into the shell line).
+        if shell_line {
+            return Ok((pos, Vec::new()));
         }
         let pool = self.command_name_pool();
         let disabled = self.disabled_builtin_names();
@@ -727,6 +734,22 @@ mod tests {
 
         let (_, pairs) = helper.complete("plain text", 10, &ctx).expect("none");
         assert!(pairs.is_empty());
+    }
+
+    /// Found in the review: `complete_shell` answers `None` for a word it
+    /// has no candidate for (an absolute path — the index is
+    /// workspace-relative), and that fell through to command completion.
+    #[test]
+    fn a_shell_line_never_falls_through_to_command_completion() {
+        let helper = helper(vec![]);
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = Context::new(&history);
+
+        let (start, pairs) = helper.complete("!ls /mo", 7, &ctx).expect("shell line");
+        assert!(pairs.is_empty(), "{:?}", displays(&pairs));
+        assert_eq!(start, 7, "nothing is replaced");
+        let (_, pairs) = helper.complete("!ls /hel", 8, &ctx).expect("shell line");
+        assert!(pairs.is_empty(), "{:?}", displays(&pairs));
     }
 
     #[test]
