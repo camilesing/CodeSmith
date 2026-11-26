@@ -657,6 +657,15 @@ fn read_runtime_events(events_dir: &Path, since: Option<DateTime<Utc>>, rollup: 
     }
 }
 
+/// The item a runtime event is about: the record's top-level `item_id`,
+/// else the id inside the item it carries.
+fn event_item_id(v: &Value) -> Option<String> {
+    v.get("item_id")
+        .or_else(|| v.pointer("/payload/item/id"))
+        .and_then(|id| id.as_str())
+        .map(str::to_string)
+}
+
 fn read_events_jsonl(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -669,6 +678,13 @@ fn read_events_jsonl(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
             return;
         }
     };
+
+    // Runtime item ids → tool names (the outcome event carries only the
+    // id), and approvals that were required but not yet decided.
+    let mut tool_items: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut pending_approvals: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for raw_line in content.lines() {
         rollup.total_lines += 1;
@@ -706,6 +722,76 @@ fn read_events_jsonl(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
         let event = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
 
         match event {
+            // The thread runtime (desktop app, HTTP API) persists a tool call
+            // as a lifecycle item, not as a `tool.*` event: `item.started`
+            // carries the tool under `payload.tool`, the outcome arrives as
+            // `item.completed` / `item.failed` for the same `item_id`.
+            "item.started"
+                if v.pointer("/payload/item/kind").and_then(|k| k.as_str())
+                    == Some("tool_call") =>
+            {
+                let tool_name = v
+                    .pointer("/payload/tool/name")
+                    .or_else(|| v.pointer("/payload/item/summary"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("unknown");
+                rollup.tool_mut(tool_name).calls += 1;
+                if let Some(item_id) = event_item_id(&v) {
+                    tool_items.insert(item_id, tool_name.to_string());
+                }
+            }
+            "item.completed" | "item.failed"
+                if v.pointer("/payload/item/kind").and_then(|k| k.as_str())
+                    == Some("tool_call") =>
+            {
+                let started = event_item_id(&v).and_then(|id| tool_items.remove(&id));
+                let tool_name = started.unwrap_or_else(|| {
+                    v.pointer("/payload/item/summary")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                });
+                let stats = rollup.tool_mut(&tool_name);
+                if event == "item.completed" {
+                    stats.successes += 1;
+                } else {
+                    stats.failures += 1;
+                }
+                if let (Some(started_at), Some(ended_at)) = (
+                    v.pointer("/payload/item/started_at")
+                        .and_then(|t| t.as_str()),
+                    v.pointer("/payload/item/ended_at").and_then(|t| t.as_str()),
+                ) && let (Ok(started_at), Ok(ended_at)) = (
+                    chrono::DateTime::parse_from_rfc3339(started_at),
+                    chrono::DateTime::parse_from_rfc3339(ended_at),
+                ) {
+                    stats.total_elapsed_ms +=
+                        u64::try_from((ended_at - started_at).num_milliseconds()).unwrap_or(0);
+                    stats.elapsed_samples += 1;
+                }
+            }
+            // Every approval request is recorded; one that a decision follows
+            // was a prompt that got answered, one that nothing follows was
+            // granted by the turn's own posture (auto mode / trust).
+            "approval.required" => {
+                if let Some(approval_id) =
+                    v.pointer("/payload/approval_id").and_then(|id| id.as_str())
+                {
+                    let tool_name = v
+                        .pointer("/payload/tool_name")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown");
+                    pending_approvals.insert(approval_id.to_string(), tool_name.to_string());
+                }
+            }
+            "approval.decided" => {
+                let answered = v
+                    .pointer("/payload/approval_id")
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| pending_approvals.remove(id));
+                let tool_name = answered.as_deref().unwrap_or("unknown");
+                rollup.tool_mut(tool_name).prompted += 1;
+            }
             "tool.started" | "tool.completed" | "tool.failed" => {
                 let tool_name = v
                     .pointer("/payload/tool_name")
@@ -785,6 +871,10 @@ fn read_events_jsonl(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
             }
             _ => {}
         }
+    }
+
+    for tool_name in pending_approvals.into_values() {
+        rollup.tool_mut(&tool_name).auto_approved += 1;
     }
 }
 
@@ -1285,6 +1375,119 @@ mod tests {
         assert_eq!(rollup.compaction.ratio_samples, 1);
         // 1 − 10/40 = 0.75 message-count reduction.
         assert!((rollup.compaction.ratio_sum - 0.75).abs() < 1e-9);
+    }
+
+    /// Found in the review: the thread runtime writes tool calls as
+    /// lifecycle items and approvals as `approval.required` /
+    /// `approval.decided`; the reader matched only `tool.*` events and the
+    /// long-deleted audit log's names, so the runtime source contributed no
+    /// tool call and no approval to `/insights`.
+    #[test]
+    fn runtime_events_count_tool_items_and_approvals() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let record = |seq: u64, item_id: Option<&str>, event: &str, payload: serde_json::Value| {
+            let mut line = serde_json::json!({
+                "schema_version": 1,
+                "seq": seq,
+                "timestamp": "2026-10-25T12:00:00Z",
+                "thread_id": "thr",
+                "turn_id": "turn",
+                "event": event,
+                "payload": payload,
+            });
+            if let Some(id) = item_id {
+                line["item_id"] = serde_json::json!(id);
+            }
+            line
+        };
+        let lines = [
+            record(
+                1,
+                Some("i1"),
+                "item.started",
+                serde_json::json!({
+                    "item": { "kind": "tool_call", "id": "i1" },
+                    "tool": { "id": "c1", "name": "read_file", "input": {} },
+                }),
+            ),
+            record(
+                2,
+                Some("i1"),
+                "item.completed",
+                serde_json::json!({
+                    "item": {
+                        "kind": "tool_call", "id": "i1",
+                        "started_at": "2026-10-25T12:00:00Z",
+                        "ended_at": "2026-10-25T12:00:02Z",
+                    },
+                }),
+            ),
+            record(
+                3,
+                Some("i2"),
+                "item.started",
+                serde_json::json!({
+                    "item": { "kind": "tool_call", "id": "i2" },
+                    "tool": { "id": "c2", "name": "exec_shell", "input": {} },
+                }),
+            ),
+            record(
+                4,
+                Some("i2"),
+                "item.failed",
+                serde_json::json!({ "item": { "kind": "tool_call", "id": "i2" } }),
+            ),
+            record(
+                5,
+                None,
+                "approval.required",
+                serde_json::json!({ "id": "a1", "approval_id": "a1", "tool_name": "exec_shell" }),
+            ),
+            record(
+                6,
+                None,
+                "approval.required",
+                serde_json::json!({ "id": "a2", "approval_id": "a2", "tool_name": "read_file" }),
+            ),
+            record(
+                7,
+                None,
+                "approval.decided",
+                serde_json::json!({ "approval_id": "a2", "decision": "allow", "remember": false }),
+            ),
+        ];
+        let body = lines
+            .iter()
+            .map(|l| serde_json::to_string(l).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(dir.path().join("thr.jsonl"), body).unwrap();
+
+        let mut rollup = Rollup::default();
+        read_runtime_events(dir.path(), None, &mut rollup);
+
+        let read_file = &rollup.tools["read_file"];
+        assert_eq!(
+            (read_file.calls, read_file.successes, read_file.failures),
+            (1, 1, 0)
+        );
+        assert_eq!(
+            (read_file.elapsed_samples, read_file.total_elapsed_ms),
+            (1, 2000)
+        );
+        assert_eq!(read_file.prompted, 1, "a2 was answered by a person");
+        assert_eq!(read_file.auto_approved, 0);
+
+        let exec_shell = &rollup.tools["exec_shell"];
+        assert_eq!(
+            (exec_shell.calls, exec_shell.successes, exec_shell.failures),
+            (1, 0, 1)
+        );
+        assert_eq!(
+            exec_shell.auto_approved, 1,
+            "a1 was never decided: the turn's own posture granted it"
+        );
+        assert_eq!(exec_shell.prompted, 0);
     }
 
     // ── Duration parser edges ──
