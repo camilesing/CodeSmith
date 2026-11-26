@@ -1555,13 +1555,17 @@ fn cmd_agents(state: &ReplState) {
     }
 }
 
-fn cmd_logout(_state: &mut ReplState) {
-    // Wipe the stored key and the onboarding marker so the next start is a
-    // clean first run: the next bare `codesmith` re-asks the setup
-    // questions. Signing back in is explicit — `codesmith auth set` or
-    // `codesmith login` skips the flow.
-    match crate::config::clear_api_key() {
-        Ok(()) => {
+fn cmd_logout(state: &mut ReplState) {
+    // Wipe the stored keys — the config file AND the credential store, for
+    // every provider, the same way `codesmith logout` does — from the config
+    // file the session was started with, plus the onboarding marker so the
+    // next start is a clean first run. The config-only wipe left a key that
+    // `login` / `auth set` had saved to the credential store, and the user
+    // stayed authenticated after "API key removed". Signing back in is
+    // explicit — `codesmith auth set` or `codesmith login` skips the flow.
+    let logout = codesmith_config::ConfigStore::load(state.config_path.clone())
+        .and_then(|mut store| crate::run_logout_command(&mut store))
+        .map(|()| {
             if let Some(marker) = codesmith_agent_runtime::onboarding::default_marker_path()
                 && let Err(err) = std::fs::remove_file(&marker)
                 && err.kind() != std::io::ErrorKind::NotFound
@@ -1575,8 +1579,9 @@ fn cmd_logout(_state: &mut ReplState) {
                 "{}",
                 "logged out: API key removed; sign back in with `codesmith auth set` or `codesmith login`".green()
             );
-        }
-        Err(err) => println!("{} logout failed: {err}", "✗".red()),
+        });
+    if let Err(err) = logout {
+        println!("{} logout failed: {err:#}", "✗".red());
     }
 }
 
@@ -1601,6 +1606,39 @@ mod tests {
         );
         let err = canonicalize_disabled(&["nope".to_string()]).unwrap_err();
         assert!(err.contains("nope"), "{err}");
+    }
+
+    /// `/logout` removes the key from the credential store as well as from
+    /// the config file the session was started with: `login` / `auth set`
+    /// save it to both, and the config-only wipe left the user authenticated.
+    #[test]
+    fn logout_clears_the_credential_store_and_the_session_config() {
+        use codesmith_agent_runtime::test_support::EnvVarGuard;
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("HOME", tmp.path());
+        let _smith_home = EnvVarGuard::set("CODESMITH_HOME", tmp.path().join(".codesmith"));
+        let _backend = EnvVarGuard::set("CODESMITH_SECRET_BACKEND", "file");
+        let config_path = tmp.path().join("session-config.toml");
+        let mut store =
+            codesmith_config::ConfigStore::load(Some(config_path.clone())).expect("store");
+        store.config.api_key = Some("sk-config".to_string());
+        store.save().expect("save");
+        let secrets = codesmith_secrets::Secrets::auto_detect();
+        secrets
+            .set("deepseek", "sk-keyring")
+            .expect("seed the store");
+
+        let mut state = ReplState::new(test_options(), &crate::config::Config::default());
+        state.config_path = Some(config_path.clone());
+        cmd_logout(&mut state);
+
+        assert!(
+            secrets.get("deepseek").expect("read").is_none(),
+            "the credential-store key survives /logout"
+        );
+        let store = codesmith_config::ConfigStore::load(Some(config_path)).expect("reload");
+        assert!(store.config.api_key.is_none(), "the session's config file");
     }
 
     /// A minimal `ReplState` for dispatch tests; the effects asserted on are

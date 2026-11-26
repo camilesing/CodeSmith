@@ -2,18 +2,16 @@
 
 use std::collections::HashMap;
 use std::fs;
-#[cfg(unix)]
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 
-use crate::audit::log_sensitive_event;
 use crate::hooks::HooksConfig;
 use crate::sandbox::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxKind, SandboxNetworkConfig,
@@ -4945,44 +4943,6 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write content to a config file with restrictive permissions (owner-only read/write).
-/// On Unix this sets mode 0o600 before writing.
-fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(content.as_bytes())?;
-        // The file was already opened with mode 0o600; the explicit
-        // set_permissions re-asserts that on filesystems where mode-at-open
-        // didn't take effect (or where the file already existed with broader
-        // bits). Filesystems that don't accept Unix chmod at all (Docker
-        // bind-mounts of NTFS, network shares — #897) return EPERM. Treat
-        // that as a warning rather than failing the whole save: the file
-        // contents are written, and on Windows/macOS hosts the parent file
-        // system's native ACL model is doing the access control.
-        if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
-            tracing::warn!(
-                target: "codesmith::config",
-                path = %path.display(),
-                error = %err,
-                "could not enforce 0o600 on config file; filesystem may \
-                 not support Unix chmod. File contents written; rely on \
-                 host ACLs for access control."
-            );
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, content)?;
-    }
-    Ok(())
-}
-
 pub fn has_api_key(config: &Config) -> bool {
     has_api_key_for(config, config.api_provider())
 }
@@ -5351,60 +5311,6 @@ fn now_unix_secs() -> Option<f64> {
 #[must_use]
 pub fn kimi_cli_credentials_present() -> bool {
     kimi_cli_oauth_credentials_path().is_ok_and(|path| path.exists())
-}
-
-/// Clear the API key from config-file storage.
-///
-/// `/logout` calls this to wipe credentials so the next request can't
-/// silently use a stale config key (#343). The function strips the legacy
-/// root `api_key = ...` line *and* every `api_key` line nested in a
-/// `[providers.<name>]` table.
-///
-/// Environment variables (`DEEPSEEK_API_KEY`, etc.) are intentionally
-/// **not** unset — they are managed by the user's shell and outside the
-/// CLI's purview. `Config::provider_api_key`'s explicit-override path
-/// (Path 0) ensures a freshly-entered key still wins over a stale env
-/// var that lingers from a previous session.
-pub fn clear_api_key() -> Result<()> {
-    // Strip api_key lines from config.toml, including provider-scoped nested
-    // entries. Clearing a config file must not trigger platform credential
-    // prompts.
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-
-    if !config_path.exists() {
-        return Ok(());
-    }
-
-    let existing = fs::read_to_string(&config_path)?;
-    let mut result = String::new();
-
-    for line in existing.lines() {
-        // Match `api_key`, `api_key =`, `  api_key=`, etc. — anywhere it
-        // appears as the leading non-whitespace token.
-        let trimmed = line.trim_start();
-        if trimmed.strip_prefix("api_key").is_some_and(|rest| {
-            let rest = rest.trim_start();
-            rest.is_empty() || rest.starts_with('=')
-        }) {
-            continue;
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-
-    write_config_file_secure(&config_path, &result)
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    log_sensitive_event(
-        "credential.clear",
-        json!({
-            "backend": "config_file",
-            "config_path": config_path.display().to_string(),
-            "scope": "root_and_provider_keys",
-        }),
-    );
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -7020,62 +6926,6 @@ modle = "x"
                 "root config api_key must satisfy onboarding auth check for {provider}"
             );
         }
-    }
-
-    /// Regression for #343: clear_api_key strips both the root `api_key`
-    /// and any nested `[providers.<name>].api_key` lines from config.toml
-    /// so a stale credential can't shadow a fresh login.
-    #[test]
-    fn clear_api_key_strips_root_and_provider_scoped_keys() -> Result<()> {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codesmith-cli-clear-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root)?;
-        let _guard = EnvGuard::new(&temp_root);
-
-        let config_dir = temp_root.join(".codesmith");
-        fs::create_dir_all(&config_dir)?;
-        let config_path = config_dir.join("config.toml");
-        fs::write(
-            &config_path,
-            r#"api_key = "old-root-key"
-default_text_model = "deepseek-v4-flash"
-
-[providers.deepseek]
-api_key = "old-provider-key"
-base_url = "https://api.deepseek.com"
-
-[providers.openrouter]
-api_key = "old-openrouter-key"
-"#,
-        )?;
-
-        clear_api_key()?;
-
-        let after = fs::read_to_string(&config_path)?;
-        assert!(
-            !after.contains("old-root-key"),
-            "root api_key must be stripped: {after}"
-        );
-        assert!(
-            !after.contains("old-provider-key"),
-            "provider-scoped codesmith key must be stripped: {after}"
-        );
-        assert!(
-            !after.contains("old-openrouter-key"),
-            "provider-scoped openrouter key must be stripped: {after}"
-        );
-        // Non-credential lines must survive.
-        assert!(after.contains("default_text_model"));
-        assert!(after.contains("base_url"));
-        Ok(())
     }
 
     /// Regression for #343: explicit in-memory `api_key` (non-empty,
@@ -11718,35 +11568,5 @@ context_window = 200000
         let raw = std::fs::read_to_string(&cred_path).unwrap();
         let parsed: KimiOAuthCredential = serde_json::from_str(&raw).unwrap();
         assert_eq!(parsed.access_token.as_deref(), Some("tok-stale"));
-    }
-
-    #[test]
-    fn clear_api_key_strips_root_and_provider_keys_from_config() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::tempdir().unwrap();
-        let _guard = EnvGuard::new(tmp.path());
-
-        let config_path = tmp.path().join(".codesmith").join("config.toml");
-        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &config_path,
-            "provider = \"openai\"\napi_key = \"sk-live\"\napi_keyholder = \"keep\"\n\
-             [providers.openai]\napi_key = \"sk-openai\"\nmodel = \"gpt\"\n",
-        )
-        .unwrap();
-
-        clear_api_key().expect("clear");
-
-        let after = std::fs::read_to_string(&config_path).unwrap();
-        assert!(!after.contains("sk-live"), "{after}");
-        assert!(!after.contains("sk-openai"), "{after}");
-        // Unrelated keys survive, including the near-miss `api_keyholder`.
-        assert!(after.contains("api_keyholder = \"keep\""), "{after}");
-        assert!(after.contains("provider = \"openai\""), "{after}");
-        assert!(after.contains("model = \"gpt\""), "{after}");
-
-        // No config file at all is a no-op success.
-        std::fs::remove_file(&config_path).unwrap();
-        clear_api_key().expect("clear without a config file");
     }
 }
