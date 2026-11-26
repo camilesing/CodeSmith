@@ -73,7 +73,8 @@ fn record(session_id: Option<&str>, question: &str, answer: &str) -> Result<(), 
 /// failed *record* is printed as a warning, since that is the promise that
 /// must not be broken quietly.
 pub async fn ask(state: &ReplState, question: &str) -> anyhow::Result<()> {
-    let question = question.trim();
+    let owned_question = question.trim().to_string();
+    let question = owned_question.as_str();
     if question.is_empty() {
         println!(
             "{}",
@@ -113,7 +114,15 @@ pub async fn ask(state: &ReplState, question: &str) -> anyhow::Result<()> {
         "— side question: not added to the conversation (ask another /btw to continue)".dimmed()
     );
 
-    if let Err(err) = record(state.current_session_id.as_deref(), question, answer.trim()) {
+    // The record is a file append: on the blocking pool, like the model
+    // call it follows is awaited.
+    let session_id = state.current_session_id.clone();
+    let recorded = tokio::task::spawn_blocking(move || {
+        record(session_id.as_deref(), &owned_question, answer.trim())
+    })
+    .await
+    .unwrap_or_else(|err| Err(format!("record worker failed: {err}")));
+    if let Err(err) = recorded {
         println!(
             "{}",
             format!("warning: the side question could not be recorded: {err}").yellow()

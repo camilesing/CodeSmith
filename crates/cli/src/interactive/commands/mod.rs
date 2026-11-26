@@ -462,7 +462,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::AddDir => {
-            if let Err(err) = dir_cmds::add_dir(state, &arg_str) {
+            if let Err(err) = dir_cmds::add_dir(state, &arg_str).await {
                 println!("{} /add-dir failed: {err}", "✗".red());
             }
             false
@@ -712,7 +712,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Feedback => {
-            feedback_cmds::feedback(state, &arg_str);
+            feedback_cmds::feedback(state, &arg_str).await;
             false
         }
         Command::Share => {

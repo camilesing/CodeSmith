@@ -312,9 +312,20 @@ async fn install(state: &ReplState, arg: &str) {
                 .yellow()
         );
     }
-    let result = tokio::task::spawn_blocking(move || run_install(spec, root)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        let report = run_install(spec, root)?;
+        // Recording the provenance takes the settings lock (a polling wait
+        // under contention) and writes the state file: the same blocking
+        // pool as the build it follows.
+        let warning = crate::extension_state::ExtensionStateStore::load_default()
+            .and_then(|mut store| store.add_installed(&report.id, &report.provenance))
+            .err()
+            .map(|err| format!("warning: could not record install provenance: {err}"));
+        Ok::<_, codesmith_extensions::ExtensionError>((report, warning))
+    })
+    .await;
     match result {
-        Ok(Ok(report)) => {
+        Ok(Ok((report, warning))) => {
             println!(
                 "installed {} (v{}) → {}",
                 report.id,
@@ -322,13 +333,8 @@ async fn install(state: &ReplState, arg: &str) {
                 report.path.display()
             );
             println!("{}", format!("provenance: {}", report.provenance).dimmed());
-            if let Err(err) = crate::extension_state::ExtensionStateStore::load_default()
-                .and_then(|mut store| store.add_installed(&report.id, &report.provenance))
-            {
-                println!(
-                    "{}",
-                    format!("warning: could not record install provenance: {err}").yellow()
-                );
+            if let Some(warning) = warning {
+                println!("{}", warning.yellow());
             }
             println!("{}", "run /extension reload to load it".dimmed());
         }
@@ -391,19 +397,26 @@ async fn uninstall(state: &ReplState, id: &str) {
     roots.push(project_root);
     let id = id.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        codesmith_extensions::Installer::uninstall_files(&id, &roots)
+        let report = codesmith_extensions::Installer::uninstall_files(&id, &roots)?;
+        // Clearing the provenance takes the settings lock and writes the
+        // state file: the same blocking pool as the removal it follows.
+        let warning = report
+            .removed
+            .then(|| {
+                crate::extension_state::ExtensionStateStore::load_default()
+                    .and_then(|mut store| store.remove_installed(&report.id))
+                    .err()
+                    .map(|err| format!("warning: could not clear install provenance: {err}"))
+            })
+            .flatten();
+        Ok::<_, codesmith_extensions::ExtensionError>((report, warning))
     })
     .await;
     match result {
-        Ok(Ok(report)) => {
+        Ok(Ok((report, warning))) => {
             if report.removed {
-                if let Err(err) = crate::extension_state::ExtensionStateStore::load_default()
-                    .and_then(|mut store| store.remove_installed(&report.id))
-                {
-                    println!(
-                        "{}",
-                        format!("warning: could not clear install provenance: {err}").yellow()
-                    );
+                if let Some(warning) = warning {
+                    println!("{}", warning.yellow());
                 }
                 println!(
                     "uninstalled {} — bindings clear on the next /extension reload",

@@ -163,7 +163,7 @@ fn print_usage() {
 /// Run `/feedback`: parse, address the reply, append the record, say where.
 ///
 /// Borrows the state immutably on purpose — see the module note.
-pub fn feedback(state: &ReplState, arg: &str) {
+pub async fn feedback(state: &ReplState, arg: &str) {
     let Some(Request {
         rating,
         nth_from_last,
@@ -193,7 +193,12 @@ pub fn feedback(state: &ReplState, arg: &str) {
         comment,
         excerpt: excerpt(text),
     };
-    let written = ledger_path().and_then(|path| append_to(&path, &record).map(|()| path));
+    // The ledger is a file append: on the blocking pool, not the runtime.
+    let written = tokio::task::spawn_blocking(move || {
+        ledger_path().and_then(|path| append_to(&path, &record).map(|()| path))
+    })
+    .await
+    .unwrap_or_else(|err| Err(anyhow::anyhow!("feedback worker failed: {err}")));
     match written {
         Ok(path) => println!(
             "{}",
@@ -211,6 +216,9 @@ pub fn feedback(state: &ReplState, arg: &str) {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use crate::models::{ContentBlock, Message};
 
@@ -373,8 +381,8 @@ mod tests {
 
     /// The contract the command exists for: rating a reply changes nothing
     /// the model will see, and the record lands under the feedback dir.
-    #[test]
-    fn a_rating_never_reaches_the_model_context() {
+    #[tokio::test]
+    async fn a_rating_never_reaches_the_model_context() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let home = codesmith_agent_runtime::test_support::ScopedCodeSmithHome::new();
         let options = crate::app_state::InteractiveOptions {
@@ -403,7 +411,7 @@ mod tests {
         ]);
         let before = state.api_messages.clone();
 
-        feedback(&state, "down 2 wrong file");
+        feedback(&state, "down 2 wrong file").await;
 
         assert_eq!(
             state.api_messages, before,
@@ -431,8 +439,8 @@ mod tests {
         assert!(cut.ends_with('…'));
     }
 
-    #[test]
-    fn usage_and_out_of_range_never_write_a_ledger() {
+    #[tokio::test]
+    async fn usage_and_out_of_range_never_write_a_ledger() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let home = codesmith_agent_runtime::test_support::ScopedCodeSmithHome::new();
         let options = crate::app_state::InteractiveOptions {
@@ -455,11 +463,11 @@ mod tests {
         let mut state = ReplState::new(options, &crate::config::Config::default());
         assert!(state.api_messages.is_empty());
 
-        feedback(&state, "sideways"); // not up/down → usage
-        feedback(&state, "up 0"); // reply #0 does not exist → usage
-        feedback(&state, "up"); // valid rating, but no replies yet → addressed error
+        feedback(&state, "sideways").await; // not up/down → usage
+        feedback(&state, "up 0").await; // reply #0 does not exist → usage
+        feedback(&state, "up").await; // valid rating, but no replies yet → addressed error
         state.api_messages = std::sync::Arc::new(vec![text("user", "q"), text("assistant", "a")]);
-        feedback(&state, "up 9 too far"); // reply #9 does not exist → addressed error
+        feedback(&state, "up 9 too far").await; // reply #9 does not exist → addressed error
 
         assert!(
             !home.path().join("feedback").join("feedback.jsonl").exists(),

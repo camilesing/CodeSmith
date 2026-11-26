@@ -2,6 +2,11 @@
 //! `commands/config.rs`. The TUI's config editor view and the
 //! `/statusline`/`/theme` pickers degrade to notes: the REPL status line
 //! is fixed and theming is the terminal's own palette.
+//!
+//! Known limitation: `/config <key> <value> --save` and `/sandbox <mode>
+//! --save` are synchronous handlers that take the config-file lock on the
+//! runtime thread — a short local write, or up to the lock's timeout while
+//! another process holds it.
 
 use colored::Colorize;
 

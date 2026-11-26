@@ -92,7 +92,19 @@ pub fn cd_allowed(workspace: &Path, target: &Path) -> bool {
 
 /// `/cd <path>`.
 pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
-    let target = match resolve_target(&state.workspace, argument, "/cd <path>") {
+    // Resolving the path and the trust check read the filesystem (a
+    // `canonicalize`, the trust file): together on the blocking pool.
+    let (workspace, argument) = (state.workspace.clone(), argument.to_string());
+    let (target, allowed) = tokio::task::spawn_blocking(move || {
+        let target = resolve_target(&workspace, &argument, "/cd <path>");
+        let allowed = target
+            .as_ref()
+            .is_ok_and(|target| cd_allowed(&workspace, target));
+        (target, allowed)
+    })
+    .await
+    .unwrap_or_else(|err| (Err(format!("cd worker failed: {err}")), false));
+    let target = match target {
         Ok(target) => target,
         Err(err) => {
             println!("{} {err}", "✗".red());
@@ -104,7 +116,7 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
         println!("{}", format!("already in {}", target.display()).dimmed());
         return Ok(());
     }
-    if !cd_allowed(&previous, &target) {
+    if !allowed {
         println!(
             "{} {} is not trusted for this session — run `/trust add {}` first (or /add-dir)",
             "✗".red(),
@@ -174,18 +186,22 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
 }
 
 /// `/add-dir <path>` — trust a directory for this workspace.
-pub fn add_dir(state: &ReplState, argument: &str) -> anyhow::Result<()> {
+pub async fn add_dir(state: &ReplState, argument: &str) -> anyhow::Result<()> {
     // Unlike `/cd`, the directory need not exist as a cwd target — but a
     // path that does not exist cannot be canonicalized, so it is refused
     // with the same message the resolver produces.
-    let target = match resolve_target(&state.workspace, argument, "/add-dir <path>") {
-        Ok(target) => target,
-        Err(err) => {
-            println!("{} {err}", "✗".red());
-            return Ok(());
-        }
-    };
-    match crate::workspace_trust::add(&state.workspace, &target) {
+    //
+    // Resolving the path and the trust write (it takes the settings lock)
+    // run on the blocking pool.
+    let (workspace, argument) = (state.workspace.clone(), argument.to_string());
+    let outcome = tokio::task::spawn_blocking(move || {
+        let target = resolve_target(&workspace, &argument, "/add-dir <path>")?;
+        crate::workspace_trust::add(&workspace, &target)
+            .map_err(|err| format!("could not save the trust entry: {err}"))
+    })
+    .await
+    .unwrap_or_else(|err| Err(format!("add-dir worker failed: {err}")));
+    match outcome {
         Ok(stored) => println!(
             "{}",
             format!(
@@ -195,7 +211,7 @@ pub fn add_dir(state: &ReplState, argument: &str) -> anyhow::Result<()> {
             )
             .green()
         ),
-        Err(err) => println!("{} could not save the trust entry: {err}", "✗".red()),
+        Err(err) => println!("{} {err}", "✗".red()),
     }
     Ok(())
 }
@@ -333,8 +349,8 @@ mod tests {
     /// `/add-dir` is `/trust add` from the REPL: the directory lands in the
     /// workspace trust record (which is what a later `/cd` consults), and a
     /// bad argument trusts nothing.
-    #[test]
-    fn add_dir_trusts_the_directory_and_persists_it() {
+    #[tokio::test]
+    async fn add_dir_trusts_the_directory_and_persists_it() {
         let _guard = codesmith_agent_runtime::test_support::lock_test_env();
         let home = tempfile::tempdir().expect("tempdir");
         let _env =
@@ -361,7 +377,9 @@ mod tests {
         };
         let state = ReplState::new(options, &crate::config::Config::default());
 
-        add_dir(&state, extra.path().to_str().expect("utf8")).expect("add-dir runs");
+        add_dir(&state, extra.path().to_str().expect("utf8"))
+            .await
+            .expect("add-dir runs");
         let ws_canon = ws.path().canonicalize().expect("canonical ws");
         let extra_canon = extra.path().canonicalize().expect("canonical extra");
         assert!(
@@ -374,7 +392,7 @@ mod tests {
         );
 
         // A bad argument is a usage print, not a trust change.
-        add_dir(&state, "").expect("still Ok");
+        add_dir(&state, "").await.expect("still Ok");
         let untouched = tempfile::tempdir().expect("tempdir");
         assert!(
             !WorkspaceTrust::load_for(&ws_canon).permits(untouched.path()),
