@@ -3,8 +3,11 @@
 # Runs the DeepSWE verifier inside the task's Docker container.
 # Expects model.patch at /tmp/deep-swe-verify/<task_id>/model.patch
 #
-# Exit codes: 0 = verifier reported REWARD=1, 1 = REWARD absent or 0,
-# 2 = model patch failed to apply, 3 = docker pull/run failed.
+# Exit codes: 0 = verifier reported REWARD=1; 1 = REWARD absent or 0, or an
+# invalid invocation / task id; 2 = the model or the task's test patch failed
+# to apply (TEST_PATCH_FAILED tells a broken task image from a rejected model
+# patch); 3 = a required input is missing, docker pull/run failed, or the
+# verifier hit its 900 s timeout.
 set -uo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -68,7 +71,7 @@ timeout 900 docker run --rm \
     cd /app
     git apply --whitespace=nowarn /model.patch 2>/dev/null || { echo "PATCH_FAILED"; exit 2; }
     if [ -f /tests/test.patch ]; then
-      git apply --whitespace=nowarn /tests/test.patch 2>/dev/null || { echo "PATCH_FAILED"; exit 2; }
+      git apply --whitespace=nowarn /tests/test.patch 2>/dev/null || { echo "TEST_PATCH_FAILED"; exit 2; }
     fi
     bash /verify.sh > /logs/verifier/output.txt 2>&1
     EC=$?
