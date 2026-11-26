@@ -1731,6 +1731,9 @@ mod tests {
     /// so the handful that persist (settings/trust) never touch the
     /// developer's real state. Handlers print; the assertions cover the
     /// observable state changes (`/exit`'s bool, `/yolo`'s mode, `/translate`).
+    /// `/logout` and `/export` are not in the list: the first reaches the real
+    /// home (`~/.codesmith/.onboarded` follows `$HOME`, not `CODESMITH_HOME`)
+    /// and the second writes into the process CWD — both have their own tests.
     #[tokio::test]
     async fn dispatch_routes_the_read_only_command_surface() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
@@ -1813,7 +1816,6 @@ mod tests {
             // Session lifecycle (all under the isolated home above).
             "/save",
             "/new",
-            "/export",
             "/load",
             "/purge",
             "/compact",
@@ -1851,23 +1853,6 @@ mod tests {
         ] {
             let should_exit = dispatch(&mut state, line).await;
             assert!(!should_exit, "/{line} must not read as an exit");
-        }
-
-        // `/export` (in the list above) writes a timestamped markdown file
-        // into the process CWD — the crate dir during `cargo test`. Clean up
-        // this run's exports so the test leaves no repository artifacts.
-        for export in std::fs::read_dir(".")
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("chat_export_") && n.ends_with(".md"))
-            })
-        {
-            let _ = std::fs::remove_file(export);
         }
 
         // Observable state effects.
