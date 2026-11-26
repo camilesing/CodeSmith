@@ -561,7 +561,9 @@ function httpRequest(rawUrl, opts = {}) {
       }, stallMs);
     };
 
-    const launch = (socket) => {
+    // Direct connections only: the proxy paths build their own socket and
+    // never come through here.
+    const launch = () => {
       const reqOptions = {
         method: "GET",
         host: connectHost(url.hostname),
@@ -574,19 +576,6 @@ function httpRequest(rawUrl, opts = {}) {
           Connection: "close",
         },
       };
-      if (socket) {
-        reqOptions.createConnection = () => socket;
-        if (isHttps) {
-          // Wrap raw TCP socket from CONNECT in TLS.
-          const tlsSocket = tls.connect({
-            socket,
-            servername: url.hostname,
-            ALPNProtocols: ["http/1.1"],
-          });
-          tlsSocket.once("error", (err) => fail(err));
-          reqOptions.createConnection = () => tlsSocket;
-        }
-      }
       const client = isHttps ? https : http;
       try {
         req = client.request(reqOptions, (response) => {
@@ -766,7 +755,7 @@ function httpRequest(rawUrl, opts = {}) {
     }
 
     // No proxy — direct connection.
-    launch(null);
+    launch();
   });
 }
 

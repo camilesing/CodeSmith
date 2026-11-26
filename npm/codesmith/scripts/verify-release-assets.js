@@ -65,38 +65,6 @@ function clientFor(url) {
   return require("http");
 }
 
-function requestStatus(url, method = "HEAD", redirects = 0) {
-  if (redirects > 10) {
-    throw new Error(`Too many redirects while checking ${url}`);
-  }
-  const client = clientFor(url);
-  return new Promise((resolve, reject) => {
-    const req = client.request(
-      url,
-      {
-        method,
-        headers: {
-          "User-Agent": "codesmith-npm-release-check",
-        },
-      },
-      (res) => {
-        const status = res.statusCode || 0;
-        const location = res.headers.location;
-        res.resume();
-        if (status >= 300 && status < 400 && location) {
-          const next = new URL(location, url).toString();
-          resolve(requestStatus(next, method, redirects + 1));
-          return;
-        }
-        resolve(status);
-      },
-    );
-    req.on("error", reject);
-    armRequestTimeout(req, url);
-    req.end();
-  });
-}
-
 async function downloadText(url, redirects = 0) {
   if (redirects > 10) {
     throw new Error(`Too many redirects while downloading ${url}`);
