@@ -294,14 +294,24 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
         globalThis as { __CODESMITH_TRANSPORT__?: { rpc?: RpcLike } }
       ).__CODESMITH_TRANSPORT__
       const rpc = transport?.rpc
-      const describe = async (): Promise<RpcResult> =>
-        rpc === undefined
-          ? { ok: false, error: { code: 'offline', message: 'bridge transport unavailable' } }
-          : rpc.call('unary', 'agentPresets/describe', { args: {} })
-      const applyOps = async (ops: Op[]): Promise<RpcResult> =>
-        rpc === undefined
-          ? { ok: false, error: { code: 'offline', message: 'bridge transport unavailable' } }
-          : rpc.call('unary', 'agentPresets/apply', { args: { ops } })
+      // The bridge carrier REJECTS on a transport failure (the loopback
+      // bridge unreachable, an undecodable body) and resolves `{ ok: false }`
+      // for HTTP-level errors. Both callers run these under `void` with no
+      // catch: a rejection left the section on "Loading…" with no retry and
+      // an optimistic edit on screen, never rolled back. Every outcome
+      // resolves here, so the existing error/rollback branches always run.
+      const call = async (endpoint: string, args: unknown): Promise<RpcResult> => {
+        if (rpc === undefined) {
+          return { ok: false, error: { code: 'offline', message: 'bridge transport unavailable' } }
+        }
+        try {
+          return await rpc.call('unary', endpoint, { args })
+        } catch (error) {
+          return { ok: false, error: { code: 'gateway/unreachable', message: String(error) } }
+        }
+      }
+      const describe = (): Promise<RpcResult> => call('agentPresets/describe', {})
+      const applyOps = (ops: Op[]): Promise<RpcResult> => call('agentPresets/apply', { ops })
 
       const effect = (ctx as { effect?: PluginContext['effect'] }).effect
       const registerLocale = (locale: string, dict: Record<string, string>): void => {
