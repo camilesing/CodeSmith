@@ -126,11 +126,16 @@ pub async fn run_repl(
         // the blocking pool, with the scheduler already live above. A worker
         // panic degrades to no index, like a failed build.
         let (workspace, config) = (state.workspace.clone(), config.clone());
-        state.index_service = tokio::task::spawn_blocking(move || {
+        state.index_service = match tokio::task::spawn_blocking(move || {
             crate::index::build_index_service(&workspace, &config)
         })
         .await
-        .unwrap_or(None);
+        {
+            // A setting the registry rejects still fails startup loud; a
+            // worker panic degrades to no index, like a failed build.
+            Ok(built) => built?,
+            Err(_) => None,
+        };
     }
     state.runtime_services = crate::tools::spec::RuntimeToolServices {
         shell_manager: Some(crate::tools::shell::wrap_shell_manager(
