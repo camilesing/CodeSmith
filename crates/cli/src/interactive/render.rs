@@ -833,8 +833,13 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
     loop {
         // While this `select!` is pending, the `ctrl_c` arm below is live
         // and owns Ctrl+C; the process-wide cleanup task stands down for it.
-        let _sigint_handoff = super::SigintHandoff::arm();
-        let event = tokio::select! {
+        // The guard lives exactly as long as the `select!`. Created per
+        // loop iteration, it stayed armed straight through the handler below:
+        // with the pump parked in an approval prompt, Ctrl+C reached no one
+        // and only echoed `^C`.
+        let event = {
+            let _sigint_handoff = super::SigintHandoff::arm();
+            tokio::select! {
             event = async {
                 let mut rx = engine.rx_event.write().await;
                 rx.recv().await
@@ -862,6 +867,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 view.clear_live();
                 println!("{}", "^C — cancelling (Ctrl+C again to quit)".yellow());
                 continue;
+            }
             }
         };
 
