@@ -5000,7 +5000,14 @@ pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Res
                     }
                 }
             } else {
-                let _ = pool.connect_all().await;
+                let errors = pool.connect_all().await;
+                // A server that failed to start (a typo'd package, an
+                // expired OAuth token) is the usual reason to run this
+                // command; `mcp connect` and `mcp validate` surface the same
+                // errors, this arm dropped them.
+                for (name, err) in &errors {
+                    eprintln!("warning: MCP server '{name}' failed to connect: {err:#}");
+                }
                 let tools = pool.all_tools();
                 if tools.is_empty() {
                     println!("No MCP tools discovered.");
