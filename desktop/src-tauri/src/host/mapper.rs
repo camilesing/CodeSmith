@@ -601,68 +601,10 @@ impl SessionMapper {
                     .unwrap_or_default();
                 match kind {
                     "agent_message" | "agent_reasoning" => {
-                        let block_type = if kind == "agent_message" {
-                            "text"
-                        } else {
-                            "reasoning"
-                        };
-                        let text = content_text(detail);
-                        if self.attempts.get(&item_id).is_some_and(|a| a.block_open) {
-                            if let Some(frame) = self.chunk(
-                                &item_id,
-                                json!({ "type": "block-end", "index": 0, "block": { "type": block_type, "text": text } }),
-                                time,
-                            ) {
-                                frames.push(frame);
-                            }
-                        }
-                        // The durable message event must precede the end frame
-                        // (the client fold stages the settlement, then the end
-                        // frame publishes it).
-                        let usage = payload
-                            .get("usage")
-                            .filter(|usage| !usage.is_null())
-                            .and_then(client_usage_sample);
-                        let mut data = json!({
-                            "turn": self.turn_no,
-                            "step": self.step,
-                            "message": {
-                                "id": item_id,
-                                "role": "assistant",
-                                "content": [{ "type": block_type, "text": text }],
-                                // ModelMessageSource + empty stream records: the
-                                // usage fold reads source.provider/model and
-                                // stream.length on every settlement.
-                                "source": self.model_source(),
-                            },
-                            "stream": [],
-                        });
-                        if let Some(sample) = usage {
-                            data["usage"] = sample;
-                        }
-                        let message = self.seq.event("assistant/message", data, true, time);
-                        let message_seq = message["seq"].as_u64().unwrap_or(0);
-                        frames.push(Frame::Event(message));
-                        if let Some(attempt) = self.attempts.remove(&item_id) {
-                            self.revision += 1;
-                            frames.push(Frame::Stream(json!({
-                                "type": "end",
-                                "attemptId": item_id,
-                                "revision": self.revision,
-                                "index": attempt.chunk_index,
-                                "outcome": {
-                                    "kind": "committed",
-                                    "eventType": "assistant/message",
-                                    "seq": message_seq,
-                                },
-                            })));
-                        }
-                        frames.push(Frame::Event(self.seq.event(
-                            "step/end",
-                            json!({ "turn": self.turn_no, "step": self.step }),
-                            false,
-                            time,
-                        )));
+                        let usage = payload.get("usage");
+                        frames.extend(
+                            self.settle_agent_message(&item_id, kind, detail, usage, false, time),
+                        );
                     }
                     "tool_call" | "command_execution" | "file_change" => {
                         // A failed or denied file call changed nothing: the
@@ -727,23 +669,43 @@ impl SessionMapper {
                 }
             }
             "item.interrupted" => {
-                // The runtime interrupts an in-flight item (user Esc): close
-                // any streaming attempt as abandoned so the client retires its
-                // transient row instead of waiting for a settlement that never
-                // comes. Tool nodes keep their last state; the turn's own
-                // interrupted end follows.
-                // `index` is the attempt's own chunk counter: the client reads
-                // any other value as a gap and rebaselines (restarts the follow
-                // stream with a full snapshot) instead of retiring the row.
-                if let Some(attempt) = self.attempts.remove(&item_id) {
-                    self.revision += 1;
-                    frames.push(Frame::Stream(json!({
-                        "type": "end",
-                        "attemptId": item_id,
-                        "revision": self.revision,
-                        "index": attempt.chunk_index,
-                        "outcome": { "kind": "abandoned" },
-                    })));
+                // The runtime interrupts an in-flight item (user Esc). An agent
+                // message it saved with the text streamed so far settles like a
+                // completed one, marked interrupted — the same message the
+                // replay publishes for that item, so stopping a reply and
+                // reloading it render the same way. Any other in-flight item's
+                // streaming attempt closes as abandoned so the client retires
+                // its transient row instead of waiting for a settlement that
+                // never comes (`index` is the attempt's own chunk counter: the
+                // client reads any other value as a gap and rebaselines with a
+                // full snapshot). Tool nodes keep their last state; the turn's
+                // own interrupted end follows.
+                let item = payload.get("item").cloned().unwrap_or(Value::Null);
+                let kind = item.get("kind").and_then(Value::as_str).unwrap_or_default();
+                match kind {
+                    "agent_message" | "agent_reasoning" => {
+                        let detail = item.get("detail").and_then(Value::as_str);
+                        frames.extend(self.settle_agent_message(
+                            &item_id,
+                            kind,
+                            detail,
+                            payload.get("usage"),
+                            true,
+                            time,
+                        ));
+                    }
+                    _ => {
+                        if let Some(attempt) = self.attempts.remove(&item_id) {
+                            self.revision += 1;
+                            frames.push(Frame::Stream(json!({
+                                "type": "end",
+                                "attemptId": item_id,
+                                "revision": self.revision,
+                                "index": attempt.chunk_index,
+                                "outcome": { "kind": "abandoned" },
+                            })));
+                        }
+                    }
                 }
             }
             // The workflow tool's journaled lifecycle (the runtime's
@@ -767,6 +729,84 @@ impl SessionMapper {
             // transcript settles from the durable events above.
             _ => {}
         }
+        frames
+    }
+
+    /// Settle a streamed agent message (`agent_message` / `agent_reasoning`):
+    /// close its block, publish the durable `assistant/message`, commit the
+    /// attempt onto it and end the step. `interrupted` marks a reply the
+    /// runtime saved with the text streamed so far when the user stopped the
+    /// turn — the client renders it as an interrupted message, which is also
+    /// how the replay publishes that item.
+    fn settle_agent_message(
+        &mut self,
+        item_id: &str,
+        kind: &str,
+        detail: Option<&str>,
+        usage: Option<&Value>,
+        interrupted: bool,
+        time: i64,
+    ) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        let block_type = if kind == "agent_message" {
+            "text"
+        } else {
+            "reasoning"
+        };
+        let text = content_text(detail);
+        if self.attempts.get(item_id).is_some_and(|a| a.block_open) {
+            if let Some(frame) = self.chunk(
+                item_id,
+                json!({ "type": "block-end", "index": 0, "block": { "type": block_type, "text": text } }),
+                time,
+            ) {
+                frames.push(frame);
+            }
+        }
+        // The durable message event must precede the end frame (the client
+        // fold stages the settlement, then the end frame publishes it).
+        let usage = usage
+            .filter(|usage| !usage.is_null())
+            .and_then(client_usage_sample);
+        let mut data = json!({
+            "turn": self.turn_no,
+            "step": self.step,
+            "message": {
+                "id": item_id,
+                "role": "assistant",
+                "content": [{ "type": block_type, "text": text }],
+                // ModelMessageSource + empty stream records: the usage fold
+                // reads source.provider/model and stream.length on every
+                // settlement.
+                "source": self.model_source(),
+            },
+            "stream": [],
+        });
+        if let Some(sample) = usage {
+            data["usage"] = sample;
+        }
+        if interrupted {
+            data["interrupted"] = json!(true);
+        }
+        let message = self.seq.event("assistant/message", data, true, time);
+        let message_seq = message["seq"].as_u64().unwrap_or(0);
+        frames.push(Frame::Event(message));
+        if let Some(attempt) = self.attempts.remove(item_id) {
+            self.revision += 1;
+            frames.push(Frame::Stream(json!({
+                "type": "end",
+                "attemptId": item_id,
+                "revision": self.revision,
+                "index": attempt.chunk_index,
+                "outcome": { "kind": "committed", "eventType": "assistant/message", "seq": message_seq },
+            })));
+        }
+        frames.push(Frame::Event(self.seq.event(
+            "step/end",
+            json!({ "turn": self.turn_no, "step": self.step }),
+            false,
+            time,
+        )));
         frames
     }
 
@@ -1091,9 +1131,7 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                         false,
                         started,
                     ));
-                    events.push(seq.event(
-                        "assistant/message",
-                        json!({
+                    let mut data = json!({
                             "turn": turn_no,
                             "step": step,
                             "message": {
@@ -1105,10 +1143,14 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                                 "source": { "kind": "model", "provider": provider, "model": model },
                             },
                             "stream": []
-                        }),
-                        true,
-                        ended,
-                    ));
+                    });
+                    if status == "interrupted" {
+                        // The runtime saved the text streamed so far; the
+                        // client renders the message as interrupted (the live
+                        // arm marks the same item the same way).
+                        data["interrupted"] = json!(true);
+                    }
+                    events.push(seq.event("assistant/message", data, true, ended));
                     if kind == "agent_message" {
                         // A text message outranks an earlier reasoning-only
                         // target for the turn's usage.
@@ -1721,6 +1763,92 @@ mod tests {
         // start (1), block-start (2), delta (3), interrupt end (4) stay dense.
         assert_eq!(end["revision"], 4);
         assert_eq!(end["index"], json!(2), "block-start + one delta were sent");
+    }
+
+    /// A reply the user stopped mid-stream is saved by the runtime with the
+    /// text streamed so far. Live and replay publish the same durable item:
+    /// an `assistant/message` marked `interrupted` (the client renders it as
+    /// an interrupted message) — never dropped live and plain after a reload.
+    #[test]
+    fn an_interrupted_agent_message_settles_marked_interrupted_live_and_in_replay() {
+        let mut mapper = SessionMapper::default();
+        for envelope in [
+            json!({ "event": "turn.started", "turn_id": "turn_1", "timestamp": "2026-11-06T10:00:00Z", "payload": {} }),
+            json!({ "event": "item.started", "item_id": "item_m", "timestamp": "2026-11-06T10:00:01Z",
+                "payload": { "item": { "id": "item_m", "kind": "agent_message", "status": "in_progress", "detail": "" } } }),
+            json!({ "event": "item.delta", "item_id": "item_m", "timestamp": "2026-11-06T10:00:02Z",
+                "payload": { "delta": "partial", "kind": "agent_message" } }),
+        ] {
+            let _ = mapper.map_envelope(&envelope);
+        }
+        let frames = mapper.map_envelope(&json!({
+            "event": "item.interrupted", "item_id": "item_m", "timestamp": "2026-11-06T10:00:03Z",
+            "payload": {
+                "item": { "id": "item_m", "kind": "agent_message", "status": "interrupted", "detail": "partial" },
+                "usage": { "input_tokens": 100, "output_tokens": 7 },
+            }
+        }));
+        let event = |kind: &str| {
+            frames.iter().find_map(|frame| match frame {
+                Frame::Event(event) if event["type"] == kind => Some(event.clone()),
+                _ => None,
+            })
+        };
+        let message = event("assistant/message").expect("the partial reply is published live");
+        assert_eq!(message["data"]["interrupted"], json!(true), "{message}");
+        assert_eq!(
+            message["data"]["message"]["content"][0]["text"],
+            json!("partial")
+        );
+        assert_eq!(message["data"]["usage"]["outputTokens"], json!(7));
+        assert!(
+            event("step/end").is_some(),
+            "the step ends with its message"
+        );
+        let end = frames
+            .iter()
+            .find_map(|frame| match frame {
+                Frame::Stream(frame) if frame["type"] == "end" => Some(frame.clone()),
+                _ => None,
+            })
+            .expect("the attempt commits onto its message");
+        assert_eq!(end["outcome"]["kind"], json!("committed"));
+        assert_eq!(end["outcome"]["seq"], message["seq"]);
+        // The settle path closes the block first: its chunk is sent too.
+        assert_eq!(
+            end["index"],
+            json!(3),
+            "block-start + delta + block-end were sent"
+        );
+
+        // The replay marks the same durable item the same way; a completed
+        // message next to it carries no marker.
+        let events = replay_events(&json!({
+            "turns": [{ "id": "turn_1", "status": "interrupted",
+                "created_at": "2026-11-06T10:00:00Z", "started_at": "2026-11-06T10:00:00Z" }],
+            "items": [
+                { "id": "item_m", "turn_id": "turn_1", "kind": "agent_message",
+                  "status": "interrupted", "detail": "partial",
+                  "started_at": "2026-11-06T10:00:01Z", "ended_at": "2026-11-06T10:00:03Z" },
+                { "id": "item_done", "turn_id": "turn_1", "kind": "agent_message",
+                  "status": "completed", "detail": "done",
+                  "started_at": "2026-11-06T10:00:04Z", "ended_at": "2026-11-06T10:00:05Z" },
+            ],
+        }));
+        let messages: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["type"] == "assistant/message")
+            .collect();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["data"]["interrupted"], json!(true));
+        assert_eq!(
+            messages[0]["data"]["message"]["content"][0]["text"],
+            json!("partial")
+        );
+        assert!(
+            messages[1]["data"].get("interrupted").is_none(),
+            "a completed reply carries no marker"
+        );
     }
 
     #[test]
