@@ -144,8 +144,15 @@ impl SidebarState {
                 .with_context(|| format!("create {}", parent.display()))?;
         }
         let body = json!({ "pinned": self.pinned, "order": self.order });
-        std::fs::write(&self.path, serde_json::to_string_pretty(&body)?)
-            .with_context(|| format!("write {}", self.path.display()))?;
+        // Atomic, like the registry writer below: a rename either publishes
+        // the whole new state or leaves the previous one (a torn truncate
+        // left a file `load` refuses — pins and reorders stayed broken until
+        // it was deleted by hand).
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&body)?)
+            .with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::rename(&tmp, &self.path)
+            .with_context(|| format!("rename {}", self.path.display()))?;
         Ok(())
     }
 }
@@ -971,6 +978,11 @@ mod tests {
         assert_eq!(state.pinned, vec!["a".to_string(), "b".to_string()]);
         state.save().unwrap();
         assert_eq!(load(&home).unwrap().pinned, vec!["a", "b"]);
+        // Written through a sibling temp file that the rename consumes.
+        assert!(
+            !state_path(&home).with_extension("json.tmp").exists(),
+            "no temp file is left behind"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
