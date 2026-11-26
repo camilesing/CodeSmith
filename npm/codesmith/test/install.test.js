@@ -111,6 +111,12 @@ test("install failure hint checks configured release base when override is alrea
   }
 });
 
+test("an IPv6 literal reaches the network layer without its URL brackets", () => {
+  assert.equal(_internal.connectHost("[::1]"), "::1");
+  assert.equal(_internal.connectHost("127.0.0.1"), "127.0.0.1");
+  assert.equal(_internal.connectHost("github.com"), "github.com");
+});
+
 test("ensureBinary adopts a manually placed target binary after checksum validation", async (t) => {
   const dir = await makeTempDir(t);
   const target = path.join(dir, process.platform === "win32" ? "codesmith.exe" : "codesmith");

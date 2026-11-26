@@ -352,11 +352,19 @@ function parseProxy(proxyStr) {
   }
   return {
     protocol: u.protocol,
-    host: u.hostname,
+    host: connectHost(u.hostname),
     port,
     auth,
     raw: proxyStr,
   };
+}
+
+// `new URL(...).hostname` keeps the brackets of an IPv6 literal ("[::1]").
+// The network layer wants them stripped: `net.connect({ host: "[::1]" })`
+// fails with ENOTFOUND, so the loopback exemption for `http://[::1]:port/`
+// could never be used.
+function connectHost(hostname) {
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 }
 
 function connectThroughProxy(proxy, targetHost, targetPort, timeoutMs) {
@@ -556,7 +564,7 @@ function httpRequest(rawUrl, opts = {}) {
     const launch = (socket) => {
       const reqOptions = {
         method: "GET",
-        host: url.hostname,
+        host: connectHost(url.hostname),
         port,
         path: `${url.pathname}${url.search || ""}`,
         headers: {
@@ -1213,6 +1221,7 @@ module.exports = {
     ensureBinary,
     maxAttempts,
     withRetry,
+    connectHost,
   },
 };
 
