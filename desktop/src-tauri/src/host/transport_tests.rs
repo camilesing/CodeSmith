@@ -54,6 +54,8 @@ struct FakeRuntime {
     automation_edits: Arc<StdMutex<Vec<AutomationEdit>>>,
     /// Sub-agent continuation inputs and cancels, as (path suffix, body).
     subagent_posts: Arc<StdMutex<Vec<(&'static str, String)>>>,
+    /// Every raw query string `GET /v1/threads/summary` received.
+    summary_queries: Arc<StdMutex<Vec<String>>>,
     /// Feed of SSE `data:` lines handed to every events subscriber.
     events_tx: tokio::sync::broadcast::Sender<String>,
     /// How many SSE event subscribers are attached right now.
@@ -88,6 +90,7 @@ impl FakeRuntime {
             automations: Default::default(),
             automation_edits: Default::default(),
             subagent_posts: Default::default(),
+            summary_queries: Default::default(),
             events_tx,
             watchers: Default::default(),
             preset_applies: Default::default(),
@@ -153,15 +156,25 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         )
         .route(
             "/v1/threads/summary",
-            get(|State(fake): State<FakeRuntime>| async move {
-                let mut summaries =
-                    vec![json!({ "id": "thr_a", "updated_at": "2026-11-15T00:00:00Z" })];
-                if fake.forked() {
-                    summaries
-                        .push(json!({ "id": "thr_fork", "updated_at": "2026-11-15T00:00:01Z" }));
-                }
-                Json(summaries)
-            }),
+            get(
+                |(State(fake), axum::extract::RawQuery(query)): (
+                    State<FakeRuntime>,
+                    axum::extract::RawQuery,
+                )| async move {
+                    fake.summary_queries
+                        .lock()
+                        .unwrap()
+                        .push(query.unwrap_or_default());
+                    let mut summaries =
+                        vec![json!({ "id": "thr_a", "updated_at": "2026-11-15T00:00:00Z" })];
+                    if fake.forked() {
+                        summaries.push(
+                            json!({ "id": "thr_fork", "updated_at": "2026-11-15T00:00:01Z" }),
+                        );
+                    }
+                    Json(summaries)
+                },
+            ),
         )
         .route(
             "/v1/threads/{id}",
@@ -1309,6 +1322,21 @@ async fn session_fork_and_search_shape() {
     assert!(
         rows.iter().all(|row| row.get("snippet").is_some()),
         "search rows: {found}"
+    );
+    // Found in the desktop: the term was interpolated before it was
+    // percent-encoded, so a query holding `&` reached the runtime cut at
+    // that character (`R&D` searched for `r`).
+    let found = rpc(&client, &base, "session/search", json!({ "query": "R&D" })).await;
+    assert_eq!(found["ok"], json!(true), "{found}");
+    let queries = fake.summary_queries.lock().unwrap().clone();
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with("search="))
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["search=anything&limit=50", "search=R%26D&limit=50"],
+        "the term is one query component"
     );
     drop(home);
 }

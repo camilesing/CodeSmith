@@ -1318,7 +1318,7 @@ pub async fn search(host: &HostState, request: &Value) -> Result<Value> {
         .get("query")
         .and_then(Value::as_str)
         .context("session/search without query")?;
-    let encoded = urlencode(&format!("search={query}&limit=50"));
+    let encoded = format!("search={}&limit=50", urlencode(query));
     let threads: Vec<Value> = host
         .backend
         .get(&format!("/v1/threads/summary?{encoded}"))
@@ -1336,12 +1336,14 @@ pub async fn search(host: &HostState, request: &Value) -> Result<Value> {
     Ok(json!({ "items": items, "hasMore": false }))
 }
 
-/// Percent-encode one query component set (`a=b&c=d` form).
+/// Percent-encode one query component: alphanumerics and `-_.~` stay bare,
+/// everything else (including `&` and `=`) is escaped — the user's own text
+/// must never read as a separator.
 fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for byte in s.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'=' | b'&' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(byte as char)
             }
             _ => out.push_str(&format!("%{byte:02X}")),
@@ -2189,6 +2191,16 @@ mod tests {
         } }] });
         assert_eq!(context_pressure(&anthropic), Some(100));
         assert_eq!(context_pressure(&json!({ "turns": [] })), None);
+    }
+
+    /// Found in the desktop: the term was interpolated before it was
+    /// percent-encoded, so a query holding `&` reached the runtime cut at
+    /// that character — `R&D` searched for `r`, and `x&limit=1` sent the
+    /// limit twice.
+    #[test]
+    fn a_search_term_is_encoded_as_one_query_component() {
+        assert_eq!(urlencode("R&D = 100%"), "R%26D%20%3D%20100%25");
+        assert_eq!(urlencode("plain-term_1.0~"), "plain-term_1.0~");
     }
 
     #[test]
