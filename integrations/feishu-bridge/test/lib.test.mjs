@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import {
   activeTurnBlock,
@@ -17,7 +20,8 @@ import {
   splitMessage,
   stripGroupPrefix,
   helpText,
-  validateBridgeConfig
+  validateBridgeConfig,
+  ThreadStore
 } from "../src/lib.mjs";
 
 test("assertStartupConfig refuses group control while unlisted chats are allowed", () => {
@@ -40,6 +44,22 @@ test("assertStartupConfig refuses a zero or non-numeric turn timeout", () => {
       /CODESMITH_TURN_TIMEOUT_MS must be a number of at least 1000/
     );
   }
+});
+
+test("ThreadStore keeps the map intact under concurrent saves", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-thread-map-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "thread-map.json");
+  const store = await ThreadStore.open(file);
+  // Handlers save concurrently, with snapshots of different lengths.
+  const writes = Array.from({ length: 60 }, (_, index) =>
+    store.patchChat(`chat_${index}`, { note: "x".repeat(2000 + index * 300), lastSeq: index })
+  );
+  const settled = await Promise.allSettled(writes);
+  assert.deepEqual(settled.filter((result) => result.status === "rejected"), []);
+  const reopened = await ThreadStore.open(file);
+  assert.equal(Object.keys(reopened.listChats()).length, 60);
+  assert.equal((await reopened.getChat("chat_59")).lastSeq, 59);
 });
 
 test("parseList trims empty values", () => {

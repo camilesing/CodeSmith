@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+
 export function parseList(raw) {
   return String(raw || "")
     .split(",")
@@ -453,4 +456,78 @@ export function helpText() {
     "",
     "Anything else is sent as a prompt to the agent."
   ].join("\n");
+}
+
+
+// The chat → thread map, persisted as one JSON document.
+export class ThreadStore {
+  static async open(filePath) {
+    const store = new ThreadStore(filePath);
+    await store.load();
+    return store;
+  }
+
+  constructor(filePath) {
+    this.filePath = filePath;
+    this.data = { chats: {} };
+  }
+
+  async load() {
+    try {
+      const raw = await fs.readFile(this.filePath, "utf8");
+      this.data = JSON.parse(raw);
+      if (!this.data.chats) this.data.chats = {};
+      if (!this.data.messages) this.data.messages = [];
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  async recordMessage(messageId) {
+    if (!messageId) return false;
+    if (!Array.isArray(this.data.messages)) this.data.messages = [];
+    if (this.data.messages.includes(messageId)) return true;
+    this.data.messages.push(messageId);
+    this.data.messages = this.data.messages.slice(-200);
+    await this.save();
+    return false;
+  }
+
+  async getChat(chatId) {
+    return this.data.chats[chatId] || null;
+  }
+
+  listChats() {
+    return Object.entries(this.data.chats || {});
+  }
+
+  async setChat(chatId, state) {
+    this.data.chats[chatId] = state;
+    await this.save();
+    return state;
+  }
+
+  async patchChat(chatId, patch) {
+    const current = this.data.chats[chatId] || {};
+    this.data.chats[chatId] = { ...current, ...patch };
+    await this.save();
+    return this.data.chats[chatId];
+  }
+
+  // Saves are chained and each write gets its own temp file. Handlers run
+  // concurrently (the dispatcher does not await them) and the stream loop
+  // saves on every event: two saves used to share one temp path, so the
+  // second rename failed with ENOENT — ending that chat's event delivery —
+  // or installed a hybrid file whose SyntaxError crash-looped the next start.
+  async save() {
+    const run = async () => {
+      const dir = path.dirname(this.filePath);
+      await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+      const tmp = `${this.filePath}.${process.pid}.tmp`;
+      await fs.writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
+      await fs.rename(tmp, this.filePath);
+    };
+    this.saveChain = (this.saveChain || Promise.resolve()).then(run, run);
+    return this.saveChain;
+  }
 }

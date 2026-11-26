@@ -16,12 +16,13 @@ test("ThreadStore is initialized before bridge startup opens it", async () => {
     assert.notEqual(index, -1, `marker "${marker}" not found in src/index.mjs; source may have been refactored`);
     return index;
   };
-  const declaration = positionOf("class ThreadStore");
+  // The class lives in lib.mjs now; its import is the declaration here.
+  const declaration = positionOf('ThreadStore\n} from "./lib.mjs";');
   const startupUse = positionOf("await ThreadStore.open");
   const wsStart = positionOf("wsClient.start");
   const reattachCall = positionOf("reattachActiveTurns().catch");
 
-  assert.ok(declaration < startupUse, "class ThreadStore must be declared before ThreadStore.open");
+  assert.ok(declaration < startupUse, "ThreadStore must be imported before ThreadStore.open");
   assert.ok(startupUse < wsStart, "await ThreadStore.open must complete before wsClient.start");
   assert.ok(startupUse < reattachCall, "await ThreadStore.open must complete before reattachActiveTurns");
   assert.ok(wsStart < reattachCall, "wsClient.start must run before reattachActiveTurns");
