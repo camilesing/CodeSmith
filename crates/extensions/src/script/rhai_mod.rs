@@ -2599,6 +2599,72 @@ mod tests {
         assert_eq!(approaches, ["alpha", "beta"], "{out}");
     }
 
+    /// The goal-loop's blocked note names the configured streak limit:
+    /// `fail_streak_limit` rides the `goal-loop-policy` seam, and the note
+    /// (a user-visible status) hardcoded "three". Drives `main` off stub
+    /// capabilities with the limit at 5 and every batch failing.
+    #[test]
+    fn goal_loop_blocked_note_names_the_configured_streak_limit() {
+        let m = RhaiMod::load_source(
+            "goal-loop",
+            "Goal Loop",
+            "0.1.0",
+            include_str!("builtin/goal_loop.rhai").to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load goal-loop");
+        let notes = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let engine = m.engine_for_loop(|engine| {
+            let notes = Arc::clone(&notes);
+            engine.register_fn("note", move |text: &str| {
+                notes.lock().unwrap().push(text.to_string());
+            });
+            engine.register_fn(
+                "loop_policy_int",
+                move |_: &str, field: &str, default: rhai::INT| -> rhai::INT {
+                    if field == "fail_streak_limit" {
+                        5
+                    } else {
+                        default
+                    }
+                },
+            );
+            engine.register_fn("cancelled", move || -> bool { false });
+            engine.register_fn("compact_now", move || -> rhai::Dynamic {
+                rhai::serde::to_dynamic(serde_json::json!({ "ran": false, "messages": 1 }))
+                    .expect("compact")
+            });
+            engine.register_fn("llm_request", move || -> rhai::Dynamic {
+                rhai::serde::to_dynamic(serde_json::json!({
+                    "text": "working",
+                    "interrupted": false,
+                    "tool_uses": [{ "id": "t1", "name": "echo", "input": {} }],
+                }))
+                .expect("round")
+            });
+            engine.register_fn("run_tools", move |_: rhai::Array| -> rhai::Dynamic {
+                rhai::serde::to_dynamic(serde_json::json!({
+                    "halt": null,
+                    "plan_approved": true,
+                    "errors": 1,
+                }))
+                .expect("round")
+            });
+        });
+        let ran: rhai::Dynamic = engine
+            .call_fn(&mut rhai::Scope::new(), &m.loop_ast(), "main", ())
+            .expect("the goal loop runs");
+        assert!(ran.is_unit(), "{ran}");
+        let notes = notes.lock().unwrap().clone();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("goal-loop: 5 consecutive failing batches")),
+            "the blocked note names the configured limit: {notes:?}"
+        );
+    }
+
     // === register_compaction_strategy (the pluggable compaction seam) ========
 
     const STRATEGY_SCRIPT: &str = r#"

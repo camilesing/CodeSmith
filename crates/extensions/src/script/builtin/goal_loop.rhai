@@ -6,7 +6,8 @@
 // first user message (the host already carries it); what the machine
 // adds is the stopping discipline: a step budget, per-round context care
 // (`compact_now()` before every request — pull compaction), and a
-// blocked phase when three consecutive tool batches fail.
+// blocked phase when a streak of consecutive tool batches fails (the
+// `fail_streak_limit` policy knob, default 3).
 // Enable (all three keys): [mods] builtin = ["goal-loop"],
 // turn_executor = "rhai", [rhai_loop] mod = "goal-loop".
 
@@ -50,7 +51,7 @@ fn main() {
         }
         if fail_streak >= fail_streak_limit {
             set_phase("blocked");
-            note("goal-loop: three consecutive failing batches — pausing for a course change");
+            note(`goal-loop: ${fail_streak_limit} consecutive failing batches — pausing for a course change`);
             return;
         }
         step += 1;
