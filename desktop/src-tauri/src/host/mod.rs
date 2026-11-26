@@ -1786,6 +1786,37 @@ mod tests {
         assert_eq!(inside["value"]["text"], json!("inner"), "{inside}");
     }
 
+    /// Found by the test review: the unreadable-file regression test drove
+    /// only `read_page`; the route (`read_inner`) had swallowed the error and
+    /// served an empty page beside the file's real size. This is the route.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_file_is_refused_by_the_read_route() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if unsafe { libc::getuid() } == 0 {
+            // Root reads a mode-000 file: the refusal cannot be produced.
+            return;
+        }
+        let home = test_home("files-unreadable");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let locked = cwd.join("locked.txt");
+        std::fs::write(&locked, b"not for you").expect("file");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let host = test_host(fake_runtime(cwd.clone()).await, cwd);
+        let read = dispatch(
+            &host,
+            "workspaceFiles/read",
+            &json!({ "args": { "workspaceFileScopeId": "thr_a", "path": "locked.txt" } }),
+        )
+        .await;
+        assert_eq!(
+            read["error"]["code"],
+            json!("workspace-file/not-found"),
+            "{read}"
+        );
+    }
+
     fn test_host(base_url: String, cwd: std::path::PathBuf) -> SharedHost {
         Arc::new(HostState {
             backend: codesmith::CodesmithProcess::for_test(base_url, "test-token".into()),
