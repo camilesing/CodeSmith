@@ -154,8 +154,17 @@ impl ReplHelper {
                 .collect();
             return (!candidates.is_empty()).then_some((start, candidates));
         }
-        let candidates = shell_history_candidates(ctx, word);
-        (!candidates.is_empty()).then_some((start, candidates))
+        // History is keyed on the text typed after the `!`, and the whole
+        // command replaces it. The command-name word carries the `!`, so a
+        // lookup on that word never matched; a later word matched unrelated
+        // commands and replaced them with the whole command.
+        let bang = line.len() - line.trim_start().len() + 1;
+        if bang > pos || bang > line.len() {
+            return None;
+        }
+        let typed = &line[bang..pos];
+        let candidates = shell_history_candidates(ctx, typed);
+        (!candidates.is_empty()).then_some((bang, candidates))
     }
 
     /// `@path` candidates for the word at the cursor, or `None` when the
@@ -734,6 +743,33 @@ mod tests {
 
         let (_, pairs) = helper.complete("plain text", 10, &ctx).expect("none");
         assert!(pairs.is_empty());
+    }
+
+    /// Found in the review: the command-name word carries the `!`, so the
+    /// history lookup on that word never matched, and a later word matched
+    /// unrelated commands and replaced them with the whole command.
+    #[test]
+    fn a_shell_line_completes_its_command_name_from_history() {
+        use rustyline::history::{DefaultHistory, History};
+        let mut history = DefaultHistory::new();
+        history.add("!git status").unwrap();
+        history.add("!status --verbose").unwrap();
+        let ctx = Context::new(&history);
+        let (start, pairs) = helper(vec![])
+            .complete("!gi", 3, &ctx)
+            .expect("history candidate");
+        assert_eq!(displays(&pairs), ["git status"]);
+        assert_eq!(start, 1, "the replacement is anchored after the `!`");
+        assert_eq!(pairs[0].replacement, "git status ");
+
+        let (_, pairs) = helper(vec![])
+            .complete("!cd st", 6, &ctx)
+            .expect("no candidate");
+        assert!(
+            pairs.is_empty(),
+            "a later word never completes from an unrelated command: {:?}",
+            displays(&pairs)
+        );
     }
 
     /// Found in the review: `complete_shell` answers `None` for a word it
