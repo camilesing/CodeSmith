@@ -1505,7 +1505,8 @@ fn session_title(detail: &Value) -> Value {
         .map_or(Value::Null, Value::String)
 }
 
-/// The latest completed turn's provider-reported prompt size.
+/// The latest completed turn's provider-reported prompt size — the
+/// occupancy the context meter divides by the window.
 fn context_pressure(detail: &Value) -> Option<u64> {
     detail
         .get("turns")
@@ -1518,9 +1519,18 @@ fn context_pressure(detail: &Value) -> Option<u64> {
         })
         .map(|usage| {
             let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-            tokens("input_tokens")
-                + tokens("prompt_cache_hit_tokens")
-                + tokens("prompt_cache_miss_tokens")
+            let input = tokens("input_tokens");
+            let cached = tokens("prompt_cache_hit_tokens") + tokens("prompt_cache_miss_tokens");
+            // The cache buckets sit inside `input_tokens` for OpenAI-compatible
+            // providers (the runtime's own convention), so adding them counted
+            // the cached share twice — found in the desktop: a half-full context
+            // read as full. Anthropic reports them on top of a smaller
+            // `input_tokens`: a bucket set larger than the total is that shape.
+            if cached <= input {
+                input
+            } else {
+                input + cached
+            }
         })
 }
 
@@ -2163,6 +2173,23 @@ pub(super) fn projection_update(session_id: &str, seq: u64, values: &Value) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found in the desktop: the meter added the cache buckets to
+    /// `input_tokens`, which already contains them for OpenAI-compatible
+    /// providers — a half-full context read as full.
+    #[test]
+    fn context_pressure_counts_the_prompt_once() {
+        let detail = json!({ "turns": [{ "usage": {
+            "input_tokens": 100, "prompt_cache_hit_tokens": 90, "prompt_cache_miss_tokens": 10,
+        } }] });
+        assert_eq!(context_pressure(&detail), Some(100));
+        // Anthropic reports the cache read on top of a smaller `input_tokens`.
+        let anthropic = json!({ "turns": [{ "usage": {
+            "input_tokens": 10, "prompt_cache_hit_tokens": 90,
+        } }] });
+        assert_eq!(context_pressure(&anthropic), Some(100));
+        assert_eq!(context_pressure(&json!({ "turns": [] })), None);
+    }
 
     #[test]
     fn todos_fold_takes_the_latest_successful_whole_list() {
