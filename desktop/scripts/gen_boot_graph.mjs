@@ -15,7 +15,7 @@
  *
  * Run after vendor_client.py. Deterministic for a given vendor tree.
  */
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync, rmSync, cpSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -118,6 +118,11 @@ for (const row of rows) {
       copyFileSync(join(lib, file), join(dir, file))
     }
   }
+  // Compiled assets the bundle addresses through the module table
+  // (`require.asset("plugins/<id>/assets/…")`): unstaged, every reference
+  // 404s on every boot — the chat view's running indicator lost its icon.
+  const assets = join(lib, 'assets')
+  if (existsSync(assets)) cpSync(assets, join(dir, 'assets'), { recursive: true })
 }
 // Concatenated application batch: each client bundle is a self-contained
 // classic script registering itself into __ModuleLoader__. Staged plain;
@@ -132,6 +137,19 @@ writeFileSync(join(pluginsDir, 'application.js'), batch)
 const modulesEntry = rows.find(row => row.id === MODULES_ID)?.entry
 if (!modulesEntry || !existsSync(join(pluginsDir, MODULES_ID, modulesEntry))) {
   throw new Error(`boot graph: ${MODULES_ID} client bundle missing from staging`)
+}
+
+// Every asset a staged bundle addresses must be staged too (the staging
+// block above copies `lib/assets` for exactly this).
+for (const row of rows) {
+  const entry = join(pluginsDir, row.id, row.entry)
+  if (!existsSync(entry)) continue
+  for (const match of readFileSync(entry, 'utf8').matchAll(/require\.asset\("([^"]+)"\)/g)) {
+    const asset = decodeURIComponent(match[1])
+    if (!existsSync(join(uiDir, 'public', asset))) {
+      throw new Error(`boot graph: ${row.id} addresses an asset that is not staged: ${asset}`)
+    }
+  }
 }
 
 // Keep the blocking bootstrap <script src> in index.html on the staged path.

@@ -59,8 +59,9 @@ Tauri App (desktop/)
 后会在 VENDOR_PATCHES 处 fail-loud，需要随之更新。
 
 随后 `desktop/scripts/gen_boot_graph.mjs` 生成 boot 图
-（`ui/src/boot-graph.generated.ts`）并把 classic-script bundle 暂存到
-`ui/public/plugins/`。`desktop/scripts/check_brand.py` 强制"无上游品牌"
+（`ui/src/boot-graph.generated.ts`）并把 classic-script bundle（连同其编译产物
+`assets/`）暂存到 `ui/public/plugins/`；bundle 引用了未暂存的资源时直接失败。
+`desktop/scripts/check_brand.py` 强制"无上游品牌"
 规则（出现品牌命中即退出码 1；仅 `THIRD_PARTY_NOTICES.md` 的版权行与
 `VENDOR.json` 的来源记录豁免）。每次刷新 vendor 后运行：
 

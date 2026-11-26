@@ -65,8 +65,10 @@ anchor on the stamped literals, so an upstream rebuild fails loud in
 VENDOR_PATCHES until they are updated.
 
 `desktop/scripts/gen_boot_graph.mjs` then generates the boot graph
-(`ui/src/boot-graph.generated.ts`) and stages the classic-script bundles
-under `ui/public/plugins/`. `desktop/scripts/check_brand.py` enforces the
+(`ui/src/boot-graph.generated.ts`) and stages the classic-script bundles —
+with their compiled `assets/` — under `ui/public/plugins/`; a bundle that
+addresses an asset which is not staged fails the stage.
+`desktop/scripts/check_brand.py` enforces the
 no-upstream-brand rule (exit 1 on any brand hit; only
 `THIRD_PARTY_NOTICES.md` copyright lines and `VENDOR.json` provenance are
 exempt). Run it after any vendor refresh:
