@@ -8,18 +8,28 @@ use super::ReplState;
 use crate::app_state::HuntVerdict;
 use crate::config::ApiProvider;
 
-/// `/init` — write/update AGENTS.md (reuses the legacy generator).
+/// `/init` — write AGENTS.md when it is missing (reuses the legacy generator).
 pub fn init(state: &ReplState) {
     let workspace = &state.workspace;
     super::project_doc::ensure_codesmith_gitignored(workspace);
     let agents_path = workspace.join("AGENTS.md");
-    let already_exists = agents_path.exists();
+    if agents_path.exists() {
+        // Never clobber: AGENTS.md is the memory tier every turn reads, and
+        // the generator only produces the blank template — "refreshing" it
+        // destroyed the project's hand-maintained instructions (and followed
+        // a symlink to do so).
+        println!(
+            "{} AGENTS.md already exists at {} — /init only writes the template when the file is missing; edit it by hand",
+            "✗".red(),
+            agents_path.display()
+        );
+        return;
+    }
     let content = super::project_doc::generate_project_doc(workspace);
     match std::fs::write(&agents_path, content) {
         Ok(()) => {
-            let verb = if already_exists { "Updated" } else { "Created" };
             println!(
-                "{verb} AGENTS.md at {} — edit it to customize agent behavior for this project.",
+                "Created AGENTS.md at {} — edit it to customize agent behavior for this project.",
                 agents_path.display()
             );
         }
@@ -1623,6 +1633,32 @@ mod tests {
         let config_guard =
             EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
         (home, lock, home_guard, config_guard)
+    }
+
+    /// `/init` must not clobber a hand-maintained AGENTS.md — the memory
+    /// tier every turn reads. It writes the template only when the file is
+    /// missing.
+    #[test]
+    fn init_never_overwrites_an_existing_agents_md() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("AGENTS.md"),
+            "sentinel: hand-maintained guidance\n",
+        )
+        .expect("write");
+        let state = state_in(tmp.path());
+        init(&state);
+        let after = std::fs::read_to_string(tmp.path().join("AGENTS.md")).expect("read");
+        assert!(
+            after.contains("hand-maintained guidance"),
+            "clobbered: {after}"
+        );
+
+        // Missing: the template is written.
+        let fresh = tempfile::tempdir().expect("tempdir");
+        init(&state_in(fresh.path()));
+        assert!(fresh.path().join("AGENTS.md").is_file());
     }
 
     fn state_in(workspace: &std::path::Path) -> ReplState {

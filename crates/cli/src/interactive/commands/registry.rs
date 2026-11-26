@@ -947,7 +947,7 @@ impl Command {
             args: &[],
             aliases: &[],
             group: Group::Session,
-            help: "write or update AGENTS.md for this workspace",
+            help: "write AGENTS.md for this workspace when it is missing",
         },
         CommandInfo {
             command: Command::Hooks,
