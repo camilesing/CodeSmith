@@ -3632,7 +3632,7 @@ fn is_secret_key(key: &str) -> bool {
             .any(|needle| key.contains(needle))
 }
 
-fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
+pub(crate) fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = path {
         return Some(expand_pathbuf(path));
     }

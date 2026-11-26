@@ -12,7 +12,6 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::app_state::ReasoningEffort;
-use crate::config::expand_path;
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 
 pub fn persist_root_string_key(
@@ -54,23 +53,15 @@ pub fn persist_root_string_key(
     Ok(path)
 }
 
-/// Resolve the path to `~/.codesmith/config.toml` (or
-/// `$CODESMITH_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
-/// never write to a different file than the one we read.
+/// Resolve the config file the REPL writes: the one `Config::load` reads.
+/// An explicit path, else `$CODESMITH_CONFIG_PATH` — tilde-expanded, and
+/// yielding to a home config that exists when that file does not — else
+/// `~/.codesmith/config.toml`. One derivation for both sides, so the REPL
+/// never writes to a different file than the one it read.
 pub(crate) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
-    if let Some(path) = config_path {
-        return Ok(expand_path(path.to_string_lossy().as_ref()));
-    }
-    if let Ok(env) = std::env::var("CODESMITH_CONFIG_PATH") {
-        let trimmed = env.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-    let home = codesmith_config::codesmith_home()
-        .context("failed to resolve CodeSmith home directory for config.toml path")?;
-    Ok(home.join("config.toml"))
+    crate::config::resolve_load_config_path(config_path.map(Path::to_path_buf))
+        .context("failed to resolve CodeSmith home directory for config.toml path")
 }
 
 /// Deterministic tier-level heuristic for callers that resolve the tier
@@ -628,6 +619,12 @@ mod tests {
     fn config_toml_path_prefers_explicit_then_env_then_home() {
         let _env = lock_test_env();
         let dir = tempfile::tempdir().expect("tempdir");
+        // The home config lives in the scratch dir too, so a real
+        // `~/.codesmith/config.toml` on the machine running the test cannot
+        // answer for it.
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        let _home_guard = EnvVarGuard::set("CODESMITH_HOME", &home);
 
         let explicit = dir.path().join("explicit.toml");
         assert_eq!(
@@ -640,12 +637,41 @@ mod tests {
         assert_eq!(config_toml_path(None).expect("env"), env_path);
 
         let _removed = EnvVarGuard::remove("CODESMITH_CONFIG_PATH");
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(&home).expect("mkdir");
-        let _home_guard = EnvVarGuard::set("CODESMITH_HOME", &home);
         assert_eq!(
             config_toml_path(None).expect("home fallback"),
             home.join("config.toml")
+        );
+    }
+
+    /// The write side resolves the file `Config::load` reads: a `~` in
+    /// `CODESMITH_CONFIG_PATH` is expanded (it used to create a literal `~/`
+    /// directory under the workspace), and an env path that does not exist
+    /// yields to a home config that does.
+    #[test]
+    fn config_toml_path_mirrors_what_config_load_resolves() {
+        let _env = lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("HOME", dir.path());
+        // A `CODESMITH_HOME` exported in the shell would own the home config
+        // this test expects to be absent.
+        let _no_smith_home = EnvVarGuard::remove("CODESMITH_HOME");
+
+        let _guard = EnvVarGuard::set("CODESMITH_CONFIG_PATH", "~/.p29/config.toml");
+        assert_eq!(
+            config_toml_path(None).expect("env"),
+            dir.path().join(".p29").join("config.toml"),
+            "a tilde in the env path must expand, as it does for `Config::load`"
+        );
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        std::fs::write(home.join("config.toml"), "theme = \"dark\"\n").expect("home config");
+        let _smith_home = EnvVarGuard::set("CODESMITH_HOME", &home);
+        let _absent = EnvVarGuard::set("CODESMITH_CONFIG_PATH", dir.path().join("absent.toml"));
+        assert_eq!(
+            config_toml_path(None).expect("falls back to the home config"),
+            home.join("config.toml"),
+            "the REPL writes the file it reads"
         );
     }
 
