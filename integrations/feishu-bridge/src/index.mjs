@@ -142,7 +142,18 @@ async function handleIncomingMessage(event) {
   }
 
   const command = parseCommand(scoped.text);
-  await handleCommand(identity.chatId, command);
+  // Reported to the chat that just passed the allowlist: a runtime failure
+  // — the runtime still starting, a thread that no longer exists, a late
+  // /allow after the decision window — used to reach only the server log,
+  // so a late approval looked approved.
+  try {
+    await handleCommand(identity.chatId, command);
+  } catch (error) {
+    console.error("Feishu bridge command failed", error);
+    await sendText(identity.chatId, `Command failed: ${error?.message ?? String(error)}`).catch(
+      () => {}
+    );
+  }
 }
 
 async function handleCommand(chatId, command) {
@@ -369,6 +380,12 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
             .filter(Boolean)
             .join("\n")
         );
+      }
+
+      if (record.event === "approval.timeout") {
+        // The runtime denied the call; a late /allow cannot bring it back,
+        // and the chat used to hear nothing.
+        await sendText(chatId, "Approval timed out: the tool call was denied.");
       }
 
       if (record.event === "turn.completed") {
