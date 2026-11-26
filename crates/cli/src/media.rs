@@ -364,9 +364,10 @@ pub async fn ingest_encoded_into(
         prepared.push((attachment.clone(), ext, label));
     }
 
-    // A private temp dir per message: the temp file keeps the display name,
-    // so the appendix's label is the name the caller sent, and a leaf-only
-    // name can never escape the dir.
+    // A private temp dir per message: the temp file keeps the display name
+    // (extended with the resolved extension when the name carries none), so
+    // the appendix's label is the name the caller sent, and a leaf-only name
+    // can never escape the dir.
     let dir = std::env::temp_dir().join(format!(
         "codesmith-encoded-{}",
         uuid::Uuid::new_v4().simple()
@@ -381,10 +382,19 @@ pub async fn ingest_encoded_into(
         }
         let mut intake = EncodedIntake::default();
         let mut rejections: Vec<String> = Vec::new();
-        for (position, (attachment, _ext, label)) in prepared.iter().enumerate() {
-            let tmp = dir.join(label);
+        for (position, (attachment, ext, label)) in prepared.iter().enumerate() {
+            // The store classifies by the temp file's extension. A display
+            // name without the resolved one (`screenshot` + `image/png`)
+            // landed as `<dir>/screenshot`, read back as an opaque file, and
+            // the image the caller sent never reached the wire.
+            let leaf = match Path::new(label).extension().and_then(|e| e.to_str()) {
+                Some("jpeg") if ext == "jpg" => label.clone(),
+                Some(e) if e.eq_ignore_ascii_case(ext) => label.clone(),
+                _ => format!("{label}.{ext}"),
+            };
+            let tmp = dir.join(&leaf);
             if let Err(err) = std::fs::write(&tmp, &attachment.bytes) {
-                rejections.push(format!("attachment refused: {err} ({label})"));
+                rejections.push(format!("attachment refused: {err} ({leaf})"));
                 continue;
             }
             let admitted = AttachmentStore::check_message_count(position + 1)
@@ -404,7 +414,7 @@ pub async fn ingest_encoded_into(
                         // The transcript's label — the same name the
                         // appendix line uses, so the record and the message
                         // text agree.
-                        name: Some(label.clone()),
+                        name: Some(leaf.clone()),
                         media_type: stored.media_type.clone(),
                         bytes: stored.bytes,
                         width: attachment.width.filter(|_| wire_image),
@@ -412,7 +422,7 @@ pub async fn ingest_encoded_into(
                     });
                 }
                 Err(err) => {
-                    rejections.push(format!("attachment refused: {err} ({label})"));
+                    rejections.push(format!("attachment refused: {err} ({leaf})"));
                 }
             }
         }
@@ -837,6 +847,35 @@ mod tests {
         assert_eq!(
             record.attachment_id,
             format!("sha256:{}", hex_of(&png_magic()))
+        );
+    }
+
+    /// Found in the review: a wire image whose display name has no image
+    /// extension (`screenshot` + `image/png`) was written to a temp file
+    /// without one, and the store classifies by extension — the image came
+    /// back as an opaque file and never reached the wire.
+    #[tokio::test]
+    async fn an_extensionless_image_name_keeps_the_wire_path() {
+        let store_dir = tempdir().unwrap();
+        let store = AttachmentStore::new(store_dir.path().to_path_buf());
+        let intake = ingest_encoded_into(
+            &store,
+            vec![encoded(Some("screenshot"), Some("image/png"), &png_magic())],
+        )
+        .await
+        .expect("a magic-matching PNG admits");
+
+        assert_eq!(intake.image_paths.len(), 1, "the image takes the wire path");
+        assert!(
+            intake.content_appendix.is_empty(),
+            "images add no message text"
+        );
+        assert_eq!(intake.records.len(), 1);
+        assert_eq!(intake.records[0].kind, "image");
+        assert_eq!(
+            intake.records[0].name.as_deref(),
+            Some("screenshot.png"),
+            "the record carries the leaf the store read"
         );
     }
 
