@@ -674,7 +674,6 @@ pub(crate) struct EvalArgs {
     #[arg(long, default_value_t = false)]
     json: bool,
     /// Append one JSONL fixture line per step to `<DIR>/<scenario>.jsonl`.
-    /// Mock LLM tests can later replay these fixtures.
     #[arg(long, value_name = "DIR")]
     record: Option<PathBuf>,
 }
