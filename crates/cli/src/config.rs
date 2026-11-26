@@ -2096,6 +2096,21 @@ impl Config {
     /// #1714). Used by the `CODESMITH_MODEL` env handoff and the top-level
     /// `--model` flag.
     pub(crate) fn set_explicit_model_override(&mut self, value: String) {
+        // A selected `[[providers.custom]]` entry is the slot: folded into
+        // the fallback table's slot instead, the override was accepted and
+        // dropped — `default_model()` reads the entry first, so the session
+        // kept requesting the entry's own model.
+        if let Some(id) = self.custom_provider() {
+            let id = id.to_string();
+            let entry = self
+                .providers
+                .as_mut()
+                .and_then(|providers| providers.custom.iter_mut().find(|entry| entry.id == id));
+            if let Some(entry) = entry {
+                entry.model = Some(value);
+                return;
+            }
+        }
         let provider = self.api_provider();
         if matches!(provider, ApiProvider::Deepseek) {
             self.default_text_model = Some(value);
@@ -8465,6 +8480,37 @@ model = "glm-5"
             Some("glm-4.6")
         );
         assert_eq!(openai.default_model(), "glm-4.6");
+    }
+
+    /// Found in the review: with `custom_provider = "acme"` the override
+    /// was folded into the fallback table's slot, and `default_model()`
+    /// reads the entry first — `--model glm-4.6` was accepted and dropped.
+    #[test]
+    fn set_explicit_model_override_targets_the_custom_entry() {
+        let mut config = Config {
+            custom_provider: Some("acme".to_string()),
+            providers: Some(ProvidersConfig {
+                custom: vec![CustomProviderConfig {
+                    id: "acme".to_string(),
+                    model: Some("glm-5".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        config.set_explicit_model_override("glm-4.6".to_string());
+        assert_eq!(
+            config
+                .custom_provider_entry()
+                .and_then(|entry| entry.model.as_deref()),
+            Some("glm-4.6")
+        );
+        assert_eq!(config.default_model(), "glm-4.6");
+        assert_eq!(
+            config.default_text_model, None,
+            "the root slot is untouched"
+        );
     }
 
     #[test]

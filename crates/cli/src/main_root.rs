@@ -4348,6 +4348,20 @@ pub(crate) fn load_config_from_cli_with_exec_model(
         .or_else(|| codesmith_config::codesmith_env("PROFILE"));
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
     warn_unknown_config_keys(&config);
+    // Top-level `--custom-provider <id>`: the same fold `Config::load`
+    // performs for the `CODESMITH_CUSTOM_PROVIDER` handoff. `validate` runs
+    // again so a bad id fails loud here instead of being silently dropped.
+    // Folded before `--model`, so the model flag lands on the entry it
+    // selects (after it, the flag was dropped for a custom route).
+    if let Some(id) = cli
+        .custom_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        config.custom_provider = Some(id.to_string());
+        config.validate()?;
+    }
     // Top-level `--model <id>`: the same slot fold as the facade's
     // `CODESMITH_MODEL` handoff — wins over config.toml and satisfies the
     // custom-gateway explicit-model check below.
@@ -4357,18 +4371,6 @@ pub(crate) fn load_config_from_cli_with_exec_model(
         .filter(|model| !model.trim().is_empty())
     {
         config.set_explicit_model_override(model);
-    }
-    // Top-level `--custom-provider <id>`: the same fold `Config::load`
-    // performs for the `CODESMITH_CUSTOM_PROVIDER` handoff. `validate` runs
-    // again so a bad id fails loud here instead of being silently dropped.
-    if let Some(id) = cli
-        .custom_provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
-        config.custom_provider = Some(id.to_string());
-        config.validate()?;
     }
     // Top-level `--approval-policy` / `--sandbox-mode`: parsed and listed in
     // `--help` since the flags landed, but never read — the session ran on
