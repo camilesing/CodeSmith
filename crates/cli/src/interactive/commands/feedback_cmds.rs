@@ -27,6 +27,10 @@
 //!   Compaction rewrites the transcript, so the index is stable only against
 //!   the session file as saved then; `excerpt` is what keeps the line
 //!   readable on its own.
+//! - `model` is the model that wrote the most recent reply (`reported_model`,
+//!   else `last_effective_model`). For `/feedback … N` with `N` > 1 the
+//!   per-reply route is not tracked, so the field is exact for reply #1 and
+//!   is the session's latest model for older ones.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -186,7 +190,16 @@ pub async fn feedback(state: &ReplState, arg: &str) {
     let record = FeedbackRecord {
         at: chrono::Utc::now().to_rfc3339(),
         session_id: state.current_session_id.clone(),
-        model: state.model.clone(),
+        // The model that wrote the rated reply. An auto-routed session's
+        // selection string is "auto", which says nothing about the model
+        // the rating is about.
+        model: state
+            .reported_model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .or(state.last_effective_model.as_deref())
+            .unwrap_or(&state.model)
+            .to_string(),
         message_index: *message_index,
         nth_from_last,
         rating,
@@ -427,6 +440,43 @@ mod tests {
         assert_eq!(record.model, state.model, "the record names the live model");
         assert_eq!(record.excerpt, "first answer");
         assert_eq!(record.session_id, None, "unsaved session has no id yet");
+    }
+
+    /// An auto-routed session's selection string is "auto": the record
+    /// names the model that wrote the reply instead.
+    #[tokio::test]
+    async fn an_auto_routed_session_records_the_replying_model() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = codesmith_agent_runtime::test_support::ScopedCodeSmithHome::new();
+        let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let mut state = ReplState::new(options, &crate::config::Config::default());
+        state.model = "auto".to_string();
+        state.auto_model = true;
+        state.last_effective_model = Some("deepseek-v4-pro".into());
+        state.api_messages = std::sync::Arc::new(vec![text("user", "q"), text("assistant", "a")]);
+
+        feedback(&state, "up").await;
+
+        let ledger = home.path().join("feedback").join("feedback.jsonl");
+        let body = std::fs::read_to_string(&ledger).expect("ledger written");
+        let record: FeedbackRecord = serde_json::from_str(body.trim()).expect("record parses");
+        assert_eq!(record.model, "deepseek-v4-pro");
     }
 
     #[test]
