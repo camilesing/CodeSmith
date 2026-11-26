@@ -250,6 +250,13 @@ pub struct Engine {
     /// sentinels into the parent's transcript before deciding to end the turn.
     pub(crate) rx_subagent_completion: Arc<AsyncMutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>,
     pub cancel_token: CancellationToken,
+    /// Cancelled when the op loop ends — it returns or its future is dropped.
+    /// Rides the engine-lifetime pollers (shell-job watcher, background-task
+    /// poller, team watcher) and the result verifier's detached replay: none
+    /// of them belongs to a turn, so none may hold a turn's token (the
+    /// turn token is swapped at every turn start, and the construction-time
+    /// one is never cancelled).
+    pub(crate) lifetime_cancel: CancellationToken,
     pub(crate) shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     /// Latched reason for the current cancellation, mirrored to
     /// `EngineHandle::cancel_reason`. Read by the turn-boundary commit
@@ -599,6 +606,10 @@ impl Engine {
     /// scope.
     #[allow(clippy::too_many_lines)]
     async fn run_inner(mut self) {
+        // However the loop exits — a return or a dropped (aborted) future —
+        // the engine lifetime ends with it: the pollers and any detached
+        // replay observe the cancel.
+        let _lifetime = EngineLifetimeGuard(self.lifetime_cancel.clone());
         // Round 10 TODO-70 — bridge background shell-job completions onto
         // the same drain seam as sub-agent completions (see
         // `engine::shell_bridge`). Runs for every host; without shell jobs
@@ -606,14 +617,14 @@ impl Engine {
         crate::engine::shell_bridge::spawn_shell_job_watcher(
             std::sync::Arc::clone(&self.host),
             self.tx_subagent_completion.clone(),
-            self.cancel_token.clone(),
+            self.lifetime_cancel.clone(),
         );
         // Spawn background task poller — polls registry every 2s for status
         // changes and completion notifications.
         {
             let bg_registry = self.host.bg_registry();
             let tx_event = self.tx_event.clone();
-            let cancel_token = self.cancel_token.clone();
+            let cancel_token = self.lifetime_cancel.clone();
             spawn_supervised(
                 "bg-task-poller",
                 std::panic::Location::caller(),
@@ -645,7 +656,7 @@ impl Engine {
             && let Some(team_context) = self.config.team_context.clone()
         {
             let tx_op = self.tx_op.clone();
-            let cancel_token = self.cancel_token.clone();
+            let cancel_token = self.lifetime_cancel.clone();
             let host = self.host.clone();
             spawn_supervised(
                 "team-lifecycle-watcher",
@@ -4066,6 +4077,7 @@ impl Engine {
             pending_round: None,
             turn_in_flight: Arc::new(AtomicBool::new(false)),
             cancel_token,
+            lifetime_cancel: CancellationToken::new(),
             shared_cancel_token,
             cancel_reason,
             journal_failure_reported: false,
@@ -4156,6 +4168,16 @@ struct PromptFsInputs {
     knowledge_prompt_block: Option<String>,
     skills_block: Option<String>,
     slop_gate_block: Option<String>,
+}
+
+/// Cancels the engine-lifetime token when dropped — however `run_inner`
+/// exits (see [`Engine::lifetime_cancel`]).
+struct EngineLifetimeGuard(CancellationToken);
+
+impl Drop for EngineLifetimeGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 pub fn system_prompt_hash(prompt: Option<&SystemPrompt>) -> u64 {
