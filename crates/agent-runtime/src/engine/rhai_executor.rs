@@ -922,88 +922,95 @@ impl RhaiTurnExecutor {
         let _tools: Arc<ToolSet> = self.host.tool_set();
         let callback = self.host.callback_handle();
         let request_model = self.host.request_model_name();
-        let system = self.host.refresh_system_prompt_for(base);
-
-        let api_tools = self.host.api_tools_for(history);
-        let frozen_prefix =
-            codesmith_session::zones::PinnedPrefix::new(system.as_ref(), api_tools.clone())
-                .freeze();
-        self.host.observe_prefix_stability(&frozen_prefix).await;
-        if let Some(runner) = extension {
-            let headers: serde_json::Map<String, serde_json::Value> = client
-                .request_headers()
-                .into_iter()
-                .map(|(name, value)| {
-                    let masked = codesmith_agent::extension::mask_sensitive_header(&name, &value);
-                    (name, serde_json::Value::String(masked))
-                })
-                .collect();
-            let _ = runner
-                .emit_scoped(
-                    self.host.dispatch_scope().clone(),
-                    codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders(
-                        codesmith_agent::extension::BeforeProviderHeadersEvent {
-                            headers: serde_json::Value::Object(headers),
-                        },
-                    ),
-                )
-                .await;
-        }
-
-        let mut request = codesmith_session::zones::ThreeZoneRequest {
-            prefix: &frozen_prefix,
-            log: &history.messages(),
-            scratch: codesmith_session::zones::TurnScratch::new(),
-            model: request_model,
-            max_tokens: self.host.max_tokens(),
-            system: system.clone(),
-            tools: if api_tools.is_empty() {
-                None
-            } else {
-                Some(api_tools)
-            },
-            tool_choice: None,
-            metadata: None,
-            thinking: None,
-            reasoning_effort: self.host.reasoning_effort(),
-            stream: Some(true),
-            temperature: self.host.temperature(),
-            top_p: None,
-        }
-        .into_message_request();
-
-        if let Some(runner) = extension {
-            let out = runner
-                .emit_scoped(
-                    self.host.dispatch_scope().clone(),
-                    codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(
-                        codesmith_agent::extension::BeforeProviderRequestEvent {
-                            messages: serde_json::to_value(&request.messages)
-                                .unwrap_or(serde_json::Value::Null),
-                        },
-                    ),
-                )
-                .await;
-            if let codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(e) = out.event
-                && let Ok(rewritten) = serde_json::from_value::<Vec<Message>>(e.messages)
-            {
-                request.messages = rewritten;
-            }
-        }
-
-        history.record_request(&request);
-        callback.on_llm_start(&request).await;
 
         let mut early_tasks: HashMap<String, EarlyToolTask> = HashMap::new();
         let mut pending_steers: Vec<SteerInput> = Vec::new();
-        // RecoveredContextOverflow restarts the round with the compacted
-        // transcript, exactly as run_inner restarts the step.
+        // One attempt assembles a request from the transcript as it stands
+        // and streams it. `RecoveredContextOverflow` means the host compacted
+        // the transcript mid-stream: the next attempt assembles again, from
+        // the compacted transcript — re-sending this attempt's request would
+        // be rejected the same way until the recovery budget runs out
+        // (run_inner restarts its step for the same reason).
         let (content, stop_reason, usage) = loop {
+            let system = self.host.refresh_system_prompt_for(base);
+
+            let api_tools = self.host.api_tools_for(history);
+            let frozen_prefix =
+                codesmith_session::zones::PinnedPrefix::new(system.as_ref(), api_tools.clone())
+                    .freeze();
+            self.host.observe_prefix_stability(&frozen_prefix).await;
+            if let Some(runner) = extension {
+                let headers: serde_json::Map<String, serde_json::Value> = client
+                    .request_headers()
+                    .into_iter()
+                    .map(|(name, value)| {
+                        let masked =
+                            codesmith_agent::extension::mask_sensitive_header(&name, &value);
+                        (name, serde_json::Value::String(masked))
+                    })
+                    .collect();
+                let _ = runner
+                    .emit_scoped(
+                        self.host.dispatch_scope().clone(),
+                        codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders(
+                            codesmith_agent::extension::BeforeProviderHeadersEvent {
+                                headers: serde_json::Value::Object(headers),
+                            },
+                        ),
+                    )
+                    .await;
+            }
+
+            let mut request = codesmith_session::zones::ThreeZoneRequest {
+                prefix: &frozen_prefix,
+                log: &history.messages(),
+                scratch: codesmith_session::zones::TurnScratch::new(),
+                model: request_model.clone(),
+                max_tokens: self.host.max_tokens(),
+                system: system.clone(),
+                tools: if api_tools.is_empty() {
+                    None
+                } else {
+                    Some(api_tools)
+                },
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: self.host.reasoning_effort(),
+                stream: Some(true),
+                temperature: self.host.temperature(),
+                top_p: None,
+            }
+            .into_message_request();
+
+            if let Some(runner) = extension {
+                let out = runner
+                    .emit_scoped(
+                        self.host.dispatch_scope().clone(),
+                        codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(
+                            codesmith_agent::extension::BeforeProviderRequestEvent {
+                                messages: serde_json::to_value(&request.messages)
+                                    .unwrap_or(serde_json::Value::Null),
+                            },
+                        ),
+                    )
+                    .await;
+                if let codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(e) =
+                    out.event
+                    && let Ok(rewritten) = serde_json::from_value::<Vec<Message>>(e.messages)
+                {
+                    request.messages = rewritten;
+                }
+            }
+
+            history.record_request(&request);
+            callback.on_llm_start(&request).await;
+
             match self
                 .host
                 .stream_with_transparent_retry(
                     &client,
-                    request.clone(),
+                    request,
                     stream_retry_attempts,
                     context_recovery_attempts,
                     history,
@@ -1019,9 +1026,7 @@ impl RhaiTurnExecutor {
                     stop_reason,
                     usage,
                 }) => break (content, stop_reason, usage),
-                Ok(super::turn::stream::StreamRoundOutcome::RecoveredContextOverflow) => {
-                    continue;
-                }
+                Ok(super::turn::stream::StreamRoundOutcome::RecoveredContextOverflow) => continue,
                 Ok(super::turn::stream::StreamRoundOutcome::Interrupted { partial, usage }) => {
                     self.host.accumulate_usage_external(&usage);
                     let shown: String = partial
@@ -2385,6 +2390,168 @@ mod tests {
         assert_eq!(
             outcome.expect("the interrupted turn completes"),
             StopReason::Interrupted
+        );
+    }
+
+    /// A provider context-length rejection mid-script: the recovery compacts
+    /// the transcript, and the next attempt must be assembled from the
+    /// compacted transcript — re-sending the rejected request was rejected
+    /// again until the recovery budget ran out and the turn failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovered_context_overflow_reassembles_the_request() {
+        /// Rejects the first stream with a context-length error; answers the
+        /// compaction summary call and every later stream; records requests.
+        struct RejectOnceLlm {
+            streams: std::sync::atomic::AtomicUsize,
+            requests: Mutex<Vec<MessageRequest>>,
+        }
+        impl LlmClient for RejectOnceLlm {
+            fn provider_name(&self) -> &'static str {
+                "mock"
+            }
+            fn model(&self) -> &str {
+                "mock-v0"
+            }
+            fn create_message(
+                &self,
+                _request: MessageRequest,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = anyhow::Result<codesmith_agent::models::MessageResponse>>
+                        + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async {
+                    Ok(codesmith_agent::models::MessageResponse {
+                        id: "compaction".to_string(),
+                        r#type: "message".to_string(),
+                        role: "assistant".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "SUMMARY: the earlier discussion.\n### Decisions & Confirmed \
+                                   Facts\n### Failed Approaches\n### Brief Process\n### Refuted \
+                                   Assumptions & Invariants"
+                                .to_string(),
+                            cache_control: None,
+                        }],
+                        model: "mock-v0".to_string(),
+                        stop_reason: Some("end_turn".to_string()),
+                        stop_sequence: None,
+                        container: None,
+                        usage: Usage::default(),
+                    })
+                })
+            }
+            fn create_message_stream(
+                &self,
+                request: MessageRequest,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>>
+            {
+                self.requests.lock().unwrap().push(request);
+                let first = self.streams.fetch_add(1, Ordering::SeqCst) == 0;
+                Box::pin(async move {
+                    if first {
+                        anyhow::bail!(
+                            "This model's maximum context length is 128000 tokens, however you \
+                             requested 200000 tokens."
+                        );
+                    }
+                    let mut events = text_block(0, "recovered");
+                    events.extend(finish("end_turn"));
+                    Ok(
+                        Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
+                            as StreamEventBox,
+                    )
+                })
+            }
+        }
+
+        let client = Arc::new(RejectOnceLlm {
+            streams: Default::default(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let host = Arc::new(HostAgentExecutor::new(
+            client.clone(),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(crate::engine::host_executor::CapacityProbe::new(
+                crate::config_types::ApiProvider::Ollama,
+                "llama2".to_string(),
+                crate::config_types::effective_context_window(
+                    crate::config_types::ApiProvider::Ollama,
+                    "llama2",
+                    None,
+                ),
+                crate::compaction::CompactionConfig::default(),
+                std::path::PathBuf::from("/tmp/codesmith-rhai-loop-test"),
+            )),
+            None,
+            None,
+            None,
+        ));
+        let source = r#"
+            fn main() {
+                let r = llm_request();
+                note(r.text);
+            }
+        "#;
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "test-loop-mod",
+            "Test Loop",
+            "0.1.0",
+            format!("register_loop(\"main\");\n{source}"),
+            codesmith_extensions::script::kv::ModKvStore::ephemeral(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("loop mod compiles");
+        let executor = RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(rhai_mod),
+            entry: "main".to_string(),
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(client.clone(), None, 3),
+        };
+
+        // A transcript the forced compaction can shrink.
+        let mut history = VecChatHistory::new();
+        for index in 0..10 {
+            history.push(Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                content: vec![ContentBlock::Text {
+                    text: format!("{index}: {}", "x".repeat(200)),
+                    cache_control: None,
+                }],
+            });
+        }
+
+        executor
+            .run(&mut history, "hello".to_string())
+            .await
+            .expect("the turn recovers from the context-length rejection");
+
+        let requests = client.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the rejected attempt, then one re-assembled"
+        );
+        assert!(
+            requests[1].messages.len() < requests[0].messages.len(),
+            "the second attempt carries the compacted transcript: {} then {}",
+            requests[0].messages.len(),
+            requests[1].messages.len()
+        );
+        // The recovery's summary is folded into the system prompt by the
+        // mid-loop refresh, which the old code computed once per round.
+        assert!(
+            format!("{:?}", requests[1].system).contains("SUMMARY"),
+            "the second attempt carries the compaction summary in its system prompt"
         );
     }
 }
