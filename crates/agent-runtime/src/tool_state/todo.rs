@@ -72,13 +72,44 @@ impl TodoList {
         }
     }
 
+    /// The list a compaction reminder names: one `- #<id> <Status>: <content>`
+    /// per line, the shape `format_todo_reinject_summary` writes. `None` when
+    /// a line does not parse — the fold then keeps what it had.
+    pub(crate) fn from_reinject_summary(summary: &str) -> Option<Self> {
+        let mut items = Vec::new();
+        let mut next_id = 1;
+        for line in summary.lines().filter(|line| !line.trim().is_empty()) {
+            let (id, rest) = line.strip_prefix("- #")?.split_once(' ')?;
+            let id: u32 = id.parse().ok()?;
+            let (status, content) = rest.split_once(": ")?;
+            let status = match status {
+                "Pending" => TodoStatus::Pending,
+                "InProgress" => TodoStatus::InProgress,
+                "Completed" => TodoStatus::Completed,
+                _ => return None,
+            };
+            next_id = next_id.max(id.saturating_add(1));
+            items.push(TodoItem {
+                id,
+                content: content.to_string(),
+                status,
+            });
+        }
+        Some(Self { items, next_id })
+    }
+
     /// Event-sourcing slice 3 — the todo projection: rebuild the list from
     /// a transcript by folding every checklist tool call that actually
     /// executed (see `super::executed_tool_call_ids`). Mirrors the live
     /// tools registered by `with_todo_tool` (tool-impls `todo.rs`):
     /// `*_write` replaces the whole list, `*_add` appends, `*_update`
     /// updates one status, and a missing or unrecognized `status` defaults
-    /// to pending — so the rebuild matches what the live list held. A write
+    /// to pending — so the rebuild matches what the live list held on an
+    /// uncompacted transcript. After a compaction the reminder the engine
+    /// re-injected (`compaction::attachment_reinject`) is the only place the
+    /// transcript still names the list, and the fold reads it back. Known
+    /// limitation: that reminder is budget-trialled and can be skipped, and a
+    /// skipped reminder leaves the list empty on resume. A write
     /// whose item has a non-string `content` is skipped (the fold keeps the
     /// last coherent state). Rebuilt ids/statuses match live semantics
     /// (`add` re-enforces the single-in-progress rule).
@@ -90,6 +121,21 @@ impl TodoList {
         let mut list = Self::new();
         for message in messages {
             if message.role != "assistant" {
+                // The compaction reminder is the one place a compacted
+                // transcript still names the live list: a full snapshot, it
+                // replaces what the fold had.
+                for block in &message.content {
+                    let ContentBlock::Text { text, .. } = block else {
+                        continue;
+                    };
+                    if let Some(summary) = crate::compaction::attachment_reinject::reinject_body(
+                        text,
+                        crate::compaction::attachment_reinject::TODO_REINJECT_PREFIX,
+                    ) && let Some(named) = Self::from_reinject_summary(summary)
+                    {
+                        list = named;
+                    }
+                }
                 continue;
             }
             for block in &message.content {
@@ -264,6 +310,36 @@ pub fn new_shared_todo_list() -> SharedTodoList {
 mod tests {
     use super::*;
     use crate::test_support::{assistant_tool_use, tool_result};
+
+    /// After a compaction the transcript no longer holds the
+    /// `checklist_write` call — only the reminder the engine re-injected.
+    /// The fold reads it back, so a resumed session keeps the list the model
+    /// was told about, and an update after the reminder still applies.
+    #[test]
+    fn todo_projection_reads_the_compaction_reminder() {
+        let prefix = crate::compaction::attachment_reinject::TODO_REINJECT_PREFIX;
+        let reminder = crate::compaction::attachment_reinject::compaction_reinject_message(
+            format!("{prefix}\n\n- #1 InProgress: a\n- #2 Pending: b"),
+        );
+        let messages = vec![
+            reminder,
+            tool_result("call_9", false),
+            assistant_tool_use(
+                "call_9",
+                "checklist_update",
+                serde_json::json!({"id": 2, "status": "completed"}),
+            ),
+        ];
+        let snap = TodoList::rebuild_from_messages(&messages).snapshot();
+        assert_eq!(snap.items.len(), 2, "{snap:?}");
+        assert_eq!(snap.items[0].content, "a");
+        assert!(snap.items[0].status == TodoStatus::InProgress);
+        assert_eq!(snap.items[1].content, "b");
+        assert!(
+            snap.items[1].status == TodoStatus::Completed,
+            "the update after the reminder applies"
+        );
+    }
 
     #[test]
     fn todo_projection_last_write_wins() {

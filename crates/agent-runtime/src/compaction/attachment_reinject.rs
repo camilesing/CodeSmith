@@ -154,6 +154,27 @@ pub(crate) fn summarize_subagents(snapshots: &[SubAgentResult]) -> Vec<AgentSumm
         .collect()
 }
 
+/// The first line of the compaction reminder that carries the plan, and
+/// of the one that carries the todo list. The folds in `tool_state` read the
+/// reminders back by these ([`reinject_body`]): after a compaction they are
+/// the only place a saved transcript still names the live state.
+pub(crate) const PLAN_REINJECT_PREFIX: &str = "Active plan resumed after context compaction:";
+pub(crate) const TODO_REINJECT_PREFIX: &str = "Active todos resumed after context compaction:";
+
+/// The body of the compaction reminder in `text` when it starts with
+/// `prefix` — the `<system-reminder>` wrapper [`compaction_reinject_message`]
+/// adds included. `None` for any other text.
+pub(crate) fn reinject_body<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let body = text.strip_prefix("<system-reminder>\n")?;
+    let body = body.strip_prefix(prefix)?;
+    Some(
+        body.trim_start_matches('\n')
+            .trim_end_matches('\n')
+            .strip_suffix("</system-reminder>")?
+            .trim_end_matches('\n'),
+    )
+}
+
 /// Re-inject plan state after compaction.
 ///
 /// If there's an active plan, inject its current state as a user message
@@ -163,7 +184,7 @@ pub fn reinject_plan_attachment(plan_summary: &str) -> Option<Message> {
         return None;
     }
     Some(compaction_reinject_message(format!(
-        "Active plan resumed after context compaction:\n\n{plan_summary}"
+        "{PLAN_REINJECT_PREFIX}\n\n{plan_summary}"
     )))
 }
 
@@ -343,6 +364,70 @@ pub fn reinject_all_attachments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The folds read back what these formatters write: a reminder body
+    /// parsed into state equals the snapshot it was formatted from, and a
+    /// reminder is read under its own prefix only.
+    #[test]
+    fn reinject_reminders_round_trip_through_the_folds() {
+        use crate::tool_state::plan::{PlanItemArg, PlanState, StepStatus};
+        use crate::tool_state::todo::{TodoList, TodoStatus};
+
+        let mut todos = TodoList::new();
+        todos.add("a: with a colon".to_string(), TodoStatus::InProgress);
+        todos.add("b".to_string(), TodoStatus::Completed);
+        let summary = format_todo_reinject_summary(&todos.snapshot()).expect("items");
+        let message = compaction_reinject_message(format!("{TODO_REINJECT_PREFIX}\n\n{summary}"));
+        let ContentBlock::Text { text, .. } = &message.content[0] else {
+            panic!("text block");
+        };
+        assert_eq!(reinject_body(text, PLAN_REINJECT_PREFIX), None);
+        let body = reinject_body(text, TODO_REINJECT_PREFIX).expect("reminder body");
+        let read = TodoList::from_reinject_summary(body)
+            .expect("parses")
+            .snapshot();
+        fn todo_shape(
+            items: &[crate::tool_state::todo::TodoItem],
+        ) -> Vec<(u32, String, TodoStatus)> {
+            items
+                .iter()
+                .map(|item| (item.id, item.content.clone(), item.status))
+                .collect()
+        }
+        assert_eq!(todo_shape(&read.items), todo_shape(&todos.snapshot().items));
+
+        let mut plan = PlanState::default();
+        plan.update(crate::tool_state::plan::UpdatePlanArgs {
+            explanation: Some("Ship it".to_string()),
+            plan: vec![
+                PlanItemArg {
+                    step: "a".to_string(),
+                    status: StepStatus::InProgress,
+                },
+                PlanItemArg {
+                    step: "b".to_string(),
+                    status: StepStatus::Pending,
+                },
+            ],
+        });
+        let summary = format_plan_reinject_summary(&plan.snapshot()).expect("plan");
+        let message = compaction_reinject_message(format!("{PLAN_REINJECT_PREFIX}\n\n{summary}"));
+        let ContentBlock::Text { text, .. } = &message.content[0] else {
+            panic!("text block");
+        };
+        let body = reinject_body(text, PLAN_REINJECT_PREFIX).expect("reminder body");
+        let mut read = PlanState::default();
+        read.apply_reinject_summary(body);
+        assert_eq!(read.explanation(), Some("Ship it"));
+        fn plan_shape(state: &PlanState) -> Vec<(String, StepStatus)> {
+            state
+                .steps()
+                .iter()
+                .map(|step| (step.text.clone(), step.status.clone()))
+                .collect()
+        }
+        assert_eq!(plan_shape(&read), plan_shape(&plan));
+    }
 
     #[test]
     fn reinject_plan_with_content() {

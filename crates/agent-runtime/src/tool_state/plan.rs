@@ -123,9 +123,13 @@ pub struct PlanState {
 
 impl PlanState {
     /// Event-sourcing slice 3 — the plan projection: rebuild the plan
-    /// from a transcript by folding every `update_plan` call that actually
-    /// executed (see `super::executed_tool_call_ids`); each input
-    /// replaces the plan — last write wins. Parsing mirrors the live
+    /// from a transcript by folding every `update_plan` and
+    /// `write_plan_file` call that actually executed (see
+    /// `super::executed_tool_call_ids`) — plan mode writes its plan with the
+    /// second and never calls the first; each write replaces the plan — last
+    /// write wins. A compaction reminder (the one place a compacted
+    /// transcript still names the live plan) is read back the same way.
+    /// Parsing mirrors the live
     /// `UpdatePlanTool::execute` (tool-impls `plan.rs`): a non-string
     /// `explanation` is ignored, a missing or unrecognized `status`
     /// defaults to pending — a serde round-trip would reject inputs the
@@ -141,6 +145,20 @@ impl PlanState {
         let mut state = Self::default();
         for message in messages {
             if message.role != "assistant" {
+                // The compaction reminder is the one place a compacted
+                // transcript still names the live plan: it replaces what the
+                // fold had.
+                for block in &message.content {
+                    let ContentBlock::Text { text, .. } = block else {
+                        continue;
+                    };
+                    if let Some(summary) = crate::compaction::attachment_reinject::reinject_body(
+                        text,
+                        crate::compaction::attachment_reinject::PLAN_REINJECT_PREFIX,
+                    ) {
+                        state.apply_reinject_summary(summary);
+                    }
+                }
                 continue;
             }
             for block in &message.content {
@@ -186,6 +204,38 @@ impl PlanState {
             }
         }
         state
+    }
+
+    /// The plan a compaction reminder names: an optional explanation, then
+    /// one `- <Status>: <step>` per line (the shape
+    /// `format_plan_reinject_summary` writes). Replaces the plan.
+    pub(crate) fn apply_reinject_summary(&mut self, summary: &str) {
+        let lines: Vec<&str> = summary.lines().collect();
+        let first_item = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("- "))
+            .unwrap_or(lines.len());
+        let explanation = lines[..first_item].join("\n").trim().to_string();
+        let plan = lines[first_item..]
+            .iter()
+            .filter_map(|line| {
+                let (status, step) = line.trim().strip_prefix("- ")?.split_once(": ")?;
+                let status = match status {
+                    "Pending" => StepStatus::Pending,
+                    "InProgress" => StepStatus::InProgress,
+                    "Completed" => StepStatus::Completed,
+                    _ => return None,
+                };
+                Some(PlanItemArg {
+                    step: step.to_string(),
+                    status,
+                })
+            })
+            .collect();
+        self.update(UpdatePlanArgs {
+            explanation: (!explanation.is_empty()).then_some(explanation),
+            plan,
+        });
     }
 
     /// Check whether the plan is empty.
@@ -349,6 +399,27 @@ pub fn new_shared_plan_state() -> SharedPlanState {
 mod tests {
     use super::*;
     use crate::test_support::{assistant_tool_use, tool_result};
+
+    /// After a compaction the transcript no longer holds the `update_plan`
+    /// call — only the reminder the engine re-injected. The fold reads it
+    /// back: steps and explanation both.
+    #[test]
+    fn plan_projection_reads_the_compaction_reminder() {
+        let reminder = crate::compaction::attachment_reinject::reinject_plan_attachment(
+            "Ship it
+
+- Completed: a
+- InProgress: b",
+        )
+        .expect("reminder");
+        let snap = PlanState::rebuild_from_messages(&[reminder]).snapshot();
+        assert_eq!(snap.explanation.as_deref(), Some("Ship it"));
+        assert_eq!(snap.items.len(), 2);
+        assert_eq!(snap.items[0].step, "a");
+        assert!(snap.items[0].status == StepStatus::Completed);
+        assert_eq!(snap.items[1].step, "b");
+        assert!(snap.items[1].status == StepStatus::InProgress);
+    }
 
     #[test]
     fn plan_projection_last_write_wins() {

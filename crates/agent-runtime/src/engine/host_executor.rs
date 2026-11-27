@@ -2595,7 +2595,8 @@ impl HostAgentExecutor {
         if let Some(todo_summary) = todo_summary {
             candidates.push(
                 crate::compaction::attachment_reinject::compaction_reinject_message(format!(
-                    "Active todos resumed after context compaction:\n\n{todo_summary}"
+                    "{}\n\n{todo_summary}",
+                    crate::compaction::attachment_reinject::TODO_REINJECT_PREFIX
                 )),
             );
         }
