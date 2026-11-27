@@ -725,8 +725,16 @@ impl ToolSpec for TaskShellWaitTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        // Honour this schema: `wait` defaults to false here ("without
+        // blocking the agent indefinitely"), while the exec_shell_wait tool
+        // underneath defaults it to true with a 30 s timeout — an omitted
+        // `wait` parked the agent for those 30 s on every poll.
+        let mut inner = input.clone();
+        if inner.get("wait").is_none() {
+            inner["wait"] = Value::Bool(false);
+        }
         let result = ShellWaitTool::new(EXEC_SHELL_WAIT_NAME)
-            .execute(input.clone(), context)
+            .execute(inner, context)
             .await?;
         let Some(gate) = optional_str(&input, "gate") else {
             return Ok(result);
@@ -1661,6 +1669,40 @@ mod tests {
                 .contains("No running task, worker, teammate, shell job, or durable task found"),
             "{err}"
         );
+    }
+
+    /// The schema says `wait` defaults to false: a poll without `wait` must
+    /// return at once while the job is still running.
+    #[tokio::test]
+    async fn task_shell_wait_without_wait_returns_at_once() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        let started = TaskShellStartTool
+            .execute(json!({"command": "sleep 30"}), &context)
+            .await
+            .expect("task_shell_start");
+        let shell_task_id = started
+            .metadata
+            .as_ref()
+            .and_then(|m| m["task_id"].as_str())
+            .expect("background task id in metadata")
+            .to_string();
+
+        let began = Instant::now();
+        let polled = TaskShellWaitTool
+            .execute(json!({"task_id": shell_task_id}), &context)
+            .await
+            .expect("a poll of a running job");
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(5),
+            "an omitted `wait` must not block: {:?}",
+            began.elapsed()
+        );
+        assert!(polled.content.contains("running"), "{}", polled.content);
+
+        let _ = TaskStopTool
+            .execute(json!({"id": shell_task_id}), &context)
+            .await;
     }
 
     #[test]
