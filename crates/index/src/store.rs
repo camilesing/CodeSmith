@@ -21,7 +21,7 @@ use crate::types::{
 
 /// Current store schema version. Bump on any breaking shape change; older
 /// databases are dropped and rebuilt on open.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const CREATE_SCHEMA_SQL: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -43,7 +43,8 @@ CREATE TABLE symbols(
     col INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
     end_col INTEGER NOT NULL,
-    signature TEXT
+    signature TEXT,
+    name_lower TEXT NOT NULL
 );
 CREATE INDEX idx_symbols_name ON symbols(name);
 CREATE INDEX idx_symbols_kind ON symbols(kind);
@@ -53,11 +54,15 @@ CREATE TABLE occurrences(
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     role TEXT NOT NULL,
-    line INTEGER NOT NULL
+    line INTEGER NOT NULL,
+    name_lower TEXT NOT NULL
 );
 CREATE INDEX idx_occurrences_name ON occurrences(name);
 CREATE INDEX idx_occurrences_file ON occurrences(file_id);
 ";
+// `name_lower` is the name lowercased in Rust: SQLite's `lower()`
+// folds A-Z only, so a capital outside that range could not be
+// found by a case-insensitive lookup.
 
 /// Stable on-disk directory key for a workspace root.
 #[must_use]
@@ -247,8 +252,8 @@ impl IndexStore {
         let file_id = tx.last_insert_rowid();
         for symbol in &extraction.symbols {
             tx.execute(
-                "INSERT INTO symbols(file_id, name, kind, container, line, col, end_line, end_col, signature)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO symbols(file_id, name, kind, container, line, col, end_line, end_col, signature, name_lower)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     file_id,
                     symbol.name,
@@ -259,13 +264,14 @@ impl IndexStore {
                     symbol.location.end_line,
                     symbol.location.end_col,
                     symbol.signature,
+                    symbol.name.to_lowercase(),
                 ],
             )?;
         }
         for occurrence in &extraction.occurrences {
             tx.execute(
-                "INSERT INTO occurrences(file_id, name, role, line)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO occurrences(file_id, name, role, line, name_lower)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     file_id,
                     occurrence.name,
@@ -274,6 +280,7 @@ impl IndexStore {
                         OccurrenceRole::Reference => "reference",
                     },
                     occurrence.line,
+                    occurrence.name.to_lowercase(),
                 ],
             )?;
         }
@@ -349,7 +356,7 @@ impl IndexStore {
         let conn = self.conn.lock().expect("index store mutex poisoned");
         let base_sql = "SELECT s.name, s.kind, s.container, f.path, s.line, s.col, s.end_line, s.end_col, s.signature
                         FROM symbols s JOIN files f ON f.id = s.file_id
-                        WHERE instr(lower(s.name), ?1) > 0";
+                        WHERE instr(s.name_lower, ?1) > 0";
         let sql = match query.kind {
             Some(_kind) => format!("{base_sql} AND s.kind = ?2 LIMIT ?3"),
             None => format!("{base_sql} LIMIT ?2"),
@@ -400,11 +407,11 @@ impl IndexStore {
         let mut stmt = conn.prepare(
             "SELECT s.name, s.kind, s.container, f.path, s.line, s.col, s.end_line, s.end_col, s.signature
              FROM symbols s JOIN files f ON f.id = s.file_id
-             WHERE lower(s.name) = lower(?1)
+             WHERE s.name_lower = ?1
              ORDER BY f.path, s.line",
         )?;
         let symbols = stmt
-            .query_map(params![name], |row| {
+            .query_map(params![name.to_lowercase()], |row| {
                 Ok(Symbol {
                     name: row.get(0)?,
                     kind: kind_from_str(&row.get::<_, String>(1)?).unwrap_or(SymbolKind::Function),
@@ -430,11 +437,11 @@ impl IndexStore {
         let mut stmt = conn.prepare(
             "SELECT o.name, o.role, f.path, o.line
              FROM occurrences o JOIN files f ON f.id = o.file_id
-             WHERE lower(o.name) = lower(?1)
+             WHERE o.name_lower = ?1
              ORDER BY f.path, o.line",
         )?;
         let occurrences = stmt
-            .query_map(params![name], |row| {
+            .query_map(params![name.to_lowercase()], |row| {
                 Ok(Occurrence {
                     name: row.get(0)?,
                     role: if row.get::<_, String>(1)?.as_str() == "definition" {
@@ -751,6 +758,57 @@ mod tests {
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "build");
         assert_eq!(defs[0].container.as_deref(), Some("ToolRegistry"));
+    }
+
+    /// SQLite's `lower()` folds A-Z only: a Cyrillic capital (or any
+    /// other non-ASCII one) used to make its symbol unfindable by a
+    /// case-insensitive lookup.
+    #[test]
+    fn matching_folds_non_ascii_letters() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&tmp);
+        store
+            .replace_file(
+                &file_entry("src/a.rs"),
+                &Extraction {
+                    symbols: vec![Symbol {
+                        name: "Модуль".into(),
+                        kind: SymbolKind::Struct,
+                        container: None,
+                        path: "src/a.rs".into(),
+                        location: Location {
+                            line: 1,
+                            col: 1,
+                            end_line: 2,
+                            end_col: 2,
+                        },
+                        signature: None,
+                    }],
+                    occurrences: vec![Occurrence {
+                        name: "Модуль".into(),
+                        role: OccurrenceRole::Definition,
+                        path: "src/a.rs".into(),
+                        line: 1,
+                    }],
+                },
+            )
+            .expect("insert");
+        let defs = store.find_definition("МОДУЛЬ").expect("defs");
+        assert_eq!(defs.len(), 1, "found under different case");
+        assert_eq!(defs[0].name, "Модуль");
+        let hits = store
+            .search_symbols(&SymbolQuery {
+                query: "модуль".into(),
+                kind: None,
+                file_glob: None,
+                limit: 10,
+            })
+            .expect("search");
+        assert_eq!(hits.len(), 1, "found by a lowercased needle");
+        assert_eq!(
+            store.find_occurrences("модуль").expect("occurrences").len(),
+            1
+        );
     }
 
     #[test]
