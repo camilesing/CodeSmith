@@ -343,23 +343,32 @@ impl IndexStore {
     }
 
     /// Case-insensitive substring search over symbol definitions with
-    /// exact → prefix → substring ranking. Kind filtering happens in SQL;
-    /// the file glob and ranking happen here.
+    /// exact → prefix → substring ranking. Kind filtering and ranking
+    /// happen in SQL; the file glob is applied here while the ranked rows
+    /// stream.
     pub fn search_symbols(&self, query: &SymbolQuery) -> Result<Vec<Symbol>> {
         if query.query.is_empty() {
             bail!("symbol search query must not be empty");
         }
         let needle = query.query.to_lowercase();
-        // `clamp` panics when limit > 500 (min > max); min/max cannot
-        // invert.
-        let fetch_cap = query.limit.saturating_mul(4).min(500).max(query.limit);
         let conn = self.conn.lock().expect("index store mutex poisoned");
+        // Ranked in SQL — exact name, then prefix, then substring; a
+        // shorter name and an earlier path break ties — so a LIMIT cannot
+        // cut a better match. With a file glob nothing is cut in SQL: the
+        // glob only applies after the read.
         let base_sql = "SELECT s.name, s.kind, s.container, f.path, s.line, s.col, s.end_line, s.end_col, s.signature
                         FROM symbols s JOIN files f ON f.id = s.file_id
                         WHERE instr(s.name_lower, ?1) > 0";
-        let sql = match query.kind {
-            Some(_kind) => format!("{base_sql} AND s.kind = ?2 LIMIT ?3"),
-            None => format!("{base_sql} LIMIT ?2"),
+        let order_sql = "ORDER BY (s.name_lower = ?1) DESC,
+                        (substr(s.name_lower, 1, length(?1)) = ?1) DESC,
+                        length(s.name),
+                        f.path";
+        let kind = query.kind.as_ref().map(|kind| kind.as_str());
+        let sql = match (&kind, query.file_glob.as_deref()) {
+            (Some(_), None) => format!("{base_sql} AND s.kind = ?2 {order_sql} LIMIT ?3"),
+            (None, None) => format!("{base_sql} {order_sql} LIMIT ?2"),
+            (Some(_), Some(_)) => format!("{base_sql} AND s.kind = ?2 {order_sql}"),
+            (None, Some(_)) => format!("{base_sql} {order_sql}"),
         };
         let mut stmt = conn.prepare(&sql)?;
         let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Symbol> {
@@ -377,27 +386,31 @@ impl IndexStore {
                 signature: row.get(8)?,
             })
         };
-        let mut candidates = match query.kind {
-            Some(kind) => stmt
-                .query_map(params![needle, kind.as_str(), fetch_cap], map_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-            None => stmt
-                .query_map(params![needle, fetch_cap], map_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-        };
-        drop(stmt);
         let glob = query.file_glob.as_deref().map(GlobMatcher::new);
-        if let Some(matcher) = glob.as_ref() {
-            candidates.retain(|s| matcher.matches(&s.path));
+        let mut candidates = Vec::new();
+        {
+            let mut rows = match (&kind, query.file_glob.as_deref()) {
+                (Some(kind), None) => {
+                    stmt.query_map(params![needle, kind, query.limit], map_row)?
+                }
+                (None, None) => stmt.query_map(params![needle, query.limit], map_row)?,
+                (Some(kind), Some(_)) => stmt.query_map(params![needle, kind], map_row)?,
+                (None, Some(_)) => stmt.query_map(params![needle], map_row)?,
+            };
+            for row in rows.by_ref() {
+                let symbol = row?;
+                if glob
+                    .as_ref()
+                    .is_some_and(|matcher| !matcher.matches(&symbol.path))
+                {
+                    continue;
+                }
+                if candidates.len() >= query.limit {
+                    break;
+                }
+                candidates.push(symbol);
+            }
         }
-        let needle_ci = needle;
-        candidates.sort_by(|a, b| {
-            symbol_rank(&a.name, &needle_ci)
-                .cmp(&symbol_rank(&b.name, &needle_ci))
-                .then_with(|| a.name.len().cmp(&b.name.len()))
-                .then_with(|| a.path.cmp(&b.path))
-        });
-        candidates.truncate(query.limit);
         Ok(candidates)
     }
 
@@ -524,19 +537,6 @@ fn kind_from_str(value: &str) -> Option<SymbolKind> {
         .iter()
         .copied()
         .find(|k| k.as_str() == value)
-}
-
-/// Rank a candidate name against the (lowercased) needle: exact match
-/// ranks best, then prefix, then plain substring.
-fn symbol_rank(name: &str, needle: &str) -> u8 {
-    let lower = name.to_lowercase();
-    if lower == needle {
-        0
-    } else if lower.starts_with(needle) {
-        1
-    } else {
-        2
-    }
 }
 
 #[cfg(test)]
@@ -745,6 +745,61 @@ mod tests {
             "both fixture symbols filed under src/other.rs"
         );
         assert!(glob_hits.iter().all(|s| s.path == "src/other.rs"));
+    }
+
+    /// The SQL LIMIT used to cut rows in insertion order, before the
+    /// ranking and before the file glob: an exact match in a late file
+    /// was dropped behind hundreds of substring hits, and a glob on that
+    /// file reported nothing.
+    #[test]
+    fn search_symbols_ranks_before_cutting_and_streams_a_glob() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&tmp);
+        let symbol = |name: &str| Symbol {
+            name: name.into(),
+            kind: SymbolKind::Struct,
+            container: None,
+            path: String::new(),
+            location: Location {
+                line: 1,
+                col: 1,
+                end_line: 1,
+                end_col: 1,
+            },
+            signature: None,
+        };
+        let mut many = Extraction::default();
+        for i in 0..250 {
+            many.symbols.push(symbol(&format!("config_{i}")));
+        }
+        store
+            .replace_file(&file_entry("a.rs"), &many)
+            .expect("insert a.rs");
+        store
+            .replace_file(
+                &file_entry("z.rs"),
+                &Extraction {
+                    symbols: vec![symbol("Config"), symbol("z_config")],
+                    ..Extraction::default()
+                },
+            )
+            .expect("insert z.rs");
+
+        let query = |file_glob: Option<&str>| SymbolQuery {
+            query: "config".into(),
+            kind: None,
+            file_glob: file_glob.map(Into::into),
+            limit: 50,
+        };
+        let hits = store.search_symbols(&query(None)).expect("search");
+        assert_eq!(hits.len(), 50);
+        assert_eq!(hits[0].name, "Config", "the exact match ranks first");
+
+        let globbed = store
+            .search_symbols(&query(Some("z.rs")))
+            .expect("glob search");
+        let names: Vec<&str> = globbed.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Config", "z_config"], "both z.rs symbols are kept");
     }
 
     #[test]
