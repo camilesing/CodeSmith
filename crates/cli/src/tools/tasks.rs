@@ -406,10 +406,19 @@ impl ToolSpec for TaskStopTool {
             Err(_) => {}
         }
 
-        if let Some(manager) = context.runtime.task_manager.as_ref()
-            && let Ok(task) = manager.cancel_task(target).await
-        {
-            return task_result("task_stop", &task);
+        if let Some(manager) = context.runtime.task_manager.as_ref() {
+            // "Not found" is the expected miss — fall through to the summary
+            // error. An ambiguous prefix or a failed persist is a real
+            // failure and must not read as "No running task found".
+            match manager.cancel_task(target).await {
+                Ok(task) => return task_result("task_stop", &task),
+                Err(err) if err.to_string().contains("Task not found") => {}
+                Err(err) => {
+                    return Err(ToolError::execution_failed(format!(
+                        "failed to stop durable task '{target}': {err}"
+                    )));
+                }
+            }
         }
 
         Err(ToolError::execution_failed(format!(
@@ -1703,6 +1712,84 @@ mod tests {
         let _ = TaskStopTool
             .execute(json!({"id": shell_task_id}), &context)
             .await;
+    }
+
+    /// Two durable tasks whose generated ids share a prefix: `task_stop`
+    /// with that prefix must say "Ambiguous", not "No running task found".
+    /// Ids are `task_` plus eight hex characters, so forty tasks always put
+    /// two of them behind one `task_<digit>` prefix.
+    #[tokio::test]
+    async fn task_stop_reports_an_ambiguous_durable_prefix() {
+        use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
+
+        struct FinishesAtOnce;
+        #[async_trait]
+        impl crate::task_manager::TaskExecutor for FinishesAtOnce {
+            async fn execute(
+                &self,
+                _task: crate::task_manager::ExecutionTask,
+                _events: tokio::sync::mpsc::UnboundedSender<
+                    crate::task_manager::TaskExecutionEvent,
+                >,
+                _cancel: tokio_util::sync::CancellationToken,
+            ) -> crate::task_manager::TaskExecutionResult {
+                crate::task_manager::TaskExecutionResult {
+                    status: crate::task_manager::TaskStatus::Completed,
+                    result_text: None,
+                    error: None,
+                }
+            }
+        }
+
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let root = std::env::temp_dir().join(format!("codesmith-task-stop-{}", Uuid::new_v4()));
+        let manager = crate::task_manager::TaskManager::start_with_executor(
+            crate::task_manager::TaskManagerConfig {
+                data_dir: root.clone(),
+                worker_count: 1,
+                default_workspace: root,
+                default_model: "deepseek-v4-flash".to_string(),
+                default_mode: "agent".to_string(),
+                allow_shell: false,
+                trust_mode: false,
+                max_subagents: 2,
+            },
+            std::sync::Arc::new(FinishesAtOnce),
+        )
+        .await
+        .expect("manager");
+        let mut by_prefix = std::collections::HashMap::new();
+        for _ in 0..40 {
+            let task = manager
+                .add_task(crate::task_manager::NewTaskRequest::from_prompt(
+                    "never finishes",
+                ))
+                .await
+                .expect("add");
+            // `task_` plus its first id character: sixteen buckets.
+            let prefix = task.id[..6].to_string();
+            *by_prefix.entry(prefix).or_insert(0_usize) += 1;
+        }
+        let (prefix, count) = by_prefix
+            .into_iter()
+            .find(|(_, count)| *count >= 2)
+            .expect("forty ids over sixteen prefixes: one is shared");
+        assert!(count >= 2);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        context.runtime.task_manager = Some(manager);
+        let err = TaskStopTool
+            .execute(json!({"id": prefix}), &context)
+            .await
+            .expect_err("an ambiguous prefix is refused");
+        let message = err.to_string();
+        assert!(message.contains("Ambiguous"), "{message}");
+        assert!(
+            !message.contains("No running task"),
+            "the real reason is not dressed up as a miss: {message}"
+        );
     }
 
     #[test]
