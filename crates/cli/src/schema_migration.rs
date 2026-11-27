@@ -106,8 +106,11 @@ pub type MigrationFn = fn(&mut serde_json::Value) -> Result<(), MigrationError>;
 ///
 /// `MIGRATIONS[i]` migrates from version `i + 1` to version `i + 2`. So
 /// `MIGRATIONS[0]` is the v1 → v2 step, `MIGRATIONS[1]` is v2 → v3, etc.
-/// `CURRENT_VERSION` must equal `MIGRATIONS.len() + 1` (i.e. the version
-/// produced by running every step in sequence starting from version 1).
+/// `CURRENT_VERSION` must be greater than `MIGRATIONS.len()`. A domain
+/// whose writers stamp a version directly, with no step for the gap
+/// (runtime/task at v2 today), rejects records older than that stamped
+/// version instead of migrating them; once a step covers every version
+/// from 1, `len() + 1` is the contract.
 #[allow(dead_code)] // Public surface; first concrete domain lands when v2 ships.
 pub trait SchemaMigration {
     /// The current schema version for this domain.
