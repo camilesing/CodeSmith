@@ -1059,10 +1059,25 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                         // Release owned tasks before exiting — the manager
                         // provides `unassign_teammate_tasks` for exactly
                         // this; skipping it stranded owned tasks.
-                        {
-                            let mut manager =
-                                rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
-                            let _ = manager.unassign_teammate_tasks(&rt.agent_name);
+                        // Release on the blocking pool (the call takes the
+                        // cross-process task lock) and say so when it fails:
+                        // a teammate that exits with tasks still owned leaves
+                        // them stranded.
+                        let manager = rt.task_v2_manager.clone();
+                        let agent = rt.agent_name.clone();
+                        let released = tokio::task::spawn_blocking(move || {
+                            manager
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .unassign_teammate_tasks(&agent)
+                        })
+                        .await
+                        .unwrap_or_else(|err| Err(err.into()));
+                        if let Err(err) = released {
+                            crate::logging::warn(format!(
+                                "teammate '{}' exited after shutdown approval but failed to release its tasks: {err:#}",
+                                rt.agent_name
+                            ));
                         }
                         break TeammateState::ShutdownApproved;
                     }
