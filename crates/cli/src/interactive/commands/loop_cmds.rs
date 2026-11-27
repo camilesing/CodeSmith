@@ -353,7 +353,11 @@ async fn stop(
     match automations.delete_automation(&target.id).await {
         Ok(record) => println!(
             "{}",
-            format!("stopped {} — its runs stay in the history", record.name).dimmed()
+            format!(
+                "stopped {} — its run records were deleted with it",
+                record.name
+            )
+            .dimmed()
         ),
         Err(err) => println!("{} could not stop {}: {err}", "✗".red(), target.name),
     }
