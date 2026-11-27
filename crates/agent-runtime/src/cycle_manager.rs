@@ -255,9 +255,7 @@ pub async fn produce_briefing(
     let request = MessageRequest {
         model: model.to_string(),
         messages,
-        max_tokens: u32::try_from(max_briefing_tokens.saturating_mul(2))
-            .unwrap_or(8_192)
-            .max(1_024),
+        max_tokens: briefing_request_max_tokens(max_briefing_tokens),
         system: Some(SystemPrompt::Blocks(vec![SystemBlock {
             block_type: "text".to_string(),
             text: CYCLE_HANDOFF_TEMPLATE.to_string(),
@@ -320,9 +318,20 @@ pub fn extract_carry_forward(raw: &str) -> String {
     raw.trim().to_string()
 }
 
+/// The briefing request's `max_tokens`: twice the cap the answer is held
+/// to, never below 1_024 — the same bound on the main-model and the Flash
+/// briefing paths.
+#[must_use]
+pub fn briefing_request_max_tokens(max_briefing_tokens: usize) -> u32 {
+    u32::try_from(max_briefing_tokens.saturating_mul(2))
+        .unwrap_or(8_192)
+        .max(1_024)
+}
+
 /// Defensive bound on briefing length. Calibrated at ~4 chars/token to match
-/// the rest of the codebase's token estimator.
-fn enforce_briefing_cap(text: &str, max_tokens: usize) -> String {
+/// the rest of the codebase's token estimator. Shared by the main-model and
+/// the Flash briefing paths.
+pub fn enforce_briefing_cap(text: &str, max_tokens: usize) -> String {
     let max_chars = max_tokens.saturating_mul(APPROX_CHARS_PER_TOKEN);
     if max_chars == 0 {
         return String::new();

@@ -19,7 +19,8 @@ use crate::tools::todo::{SharedTodoList, TodoListSnapshot};
 use codesmith_agent_runtime::working_set::WorkingSet;
 
 pub use codesmith_agent_runtime::cycle_manager::{
-    CYCLE_HANDOFF_TEMPLATE, CycleConfig, extract_carry_forward,
+    CYCLE_HANDOFF_TEMPLATE, CycleConfig, briefing_request_max_tokens, enforce_briefing_cap,
+    extract_carry_forward,
 };
 
 /// Roll-up of state that survives a cycle boundary deterministically.

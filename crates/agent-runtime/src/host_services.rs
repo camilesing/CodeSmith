@@ -225,11 +225,13 @@ pub trait SeamManagerApi: Send + Sync {
         end_idx: usize,
     ) -> anyhow::Result<String>;
     /// Produce a cycle briefing (`<carry_forward>` block) from existing seams
-    /// and optional structured-state text. Uses the Flash side-channel.
+    /// and optional structured-state text. Uses the Flash side-channel, and
+    /// is held to `max_briefing_tokens` like the main-model briefing.
     async fn produce_flash_briefing(
         &self,
         existing_seams: &[String],
         structured_state: Option<&str>,
+        max_briefing_tokens: usize,
     ) -> anyhow::Result<String>;
     /// Clear seam tracking (hard cycle reset).
     async fn reset(&self);

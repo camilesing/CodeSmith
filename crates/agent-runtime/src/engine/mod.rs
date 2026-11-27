@@ -3618,7 +3618,7 @@ impl Engine {
                         .await
                 };
                 match seam_mgr
-                    .produce_flash_briefing(&seams, state_text.as_deref())
+                    .produce_flash_briefing(&seams, state_text.as_deref(), max_briefing_tokens)
                     .await
                 {
                     Ok(text) => return Ok(text),

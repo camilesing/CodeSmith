@@ -392,11 +392,13 @@ impl SeamManager {
     /// Produce a cycle briefing using Flash. Unlike the current
     /// `produce_briefing` in cycle_manager.rs (which uses the main model),
     /// this consumes existing `<archived_context>` blocks as input rather
-    /// than scanning raw history.
+    /// than scanning raw history. The answer is held to
+    /// `max_briefing_tokens`, as the main-model briefing is.
     pub async fn produce_flash_briefing(
         &self,
         existing_seams: &[String],
         structured_state: Option<&str>,
+        max_briefing_tokens: usize,
     ) -> Result<String> {
         let mut input = String::from(
             "## Briefing Request\n\n\
@@ -431,7 +433,7 @@ impl SeamManager {
                     cache_control: None,
                 }],
             }],
-            max_tokens: 4_096,
+            max_tokens: crate::cycle_manager::briefing_request_max_tokens(max_briefing_tokens),
             system: Some(SystemPrompt::Blocks(vec![SystemBlock {
                 block_type: "text".to_string(),
                 text: crate::cycle_manager::CYCLE_HANDOFF_TEMPLATE.to_string(),
@@ -462,7 +464,11 @@ impl SeamManager {
             .collect::<Vec<_>>()
             .join("\n");
 
-        Ok(crate::cycle_manager::extract_carry_forward(&raw))
+        let briefing = crate::cycle_manager::extract_carry_forward(&raw);
+        Ok(crate::cycle_manager::enforce_briefing_cap(
+            &briefing,
+            max_briefing_tokens,
+        ))
     }
 
     /// Internal: summarize a slice of messages using Flash.
@@ -706,6 +712,41 @@ mod tests {
         assert_eq!(4usize.saturating_sub(4), 0);
 
         let _ = config;
+    }
+
+    /// The Flash path used to return whatever the model wrote, over the
+    /// cap the main-model briefing is held to.
+    #[tokio::test]
+    async fn flash_briefing_is_held_to_the_briefing_cap() {
+        use crate::llm_client::mock::MockLlmClient;
+        use codesmith_agent_runtime::models::{ContentBlock, MessageResponse, Usage};
+
+        let mock = Arc::new(MockLlmClient::new(Vec::new()));
+        mock.push_message_response(MessageResponse {
+            id: "mock_msg".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!("<carry_forward>{}</carry_forward>", "x".repeat(400)),
+                cache_control: None,
+            }],
+            model: "mock-model".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+        });
+        let manager = SeamManager::new(mock.clone(), SeamConfig::default());
+
+        let briefing = manager
+            .produce_flash_briefing(&[], None, 50)
+            .await
+            .expect("briefing");
+        // 50 tokens * 4 chars, plus the cap marker.
+        assert!(briefing.chars().count() <= 50 * 4 + 40, "{briefing}");
+        assert!(briefing.contains("[...briefing truncated"), "{briefing}");
+        // Twice the cap, floored at 1_024 — the main-model request's bound.
+        assert_eq!(mock.captured_requests()[0].max_tokens, 1_024);
     }
 
     #[test]

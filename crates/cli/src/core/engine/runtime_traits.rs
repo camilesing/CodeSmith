@@ -961,8 +961,15 @@ impl SeamManagerApi for SeamManager {
         &self,
         existing_seams: &[String],
         structured_state: Option<&str>,
+        max_briefing_tokens: usize,
     ) -> anyhow::Result<String> {
-        SeamManager::produce_flash_briefing(self, existing_seams, structured_state).await
+        SeamManager::produce_flash_briefing(
+            self,
+            existing_seams,
+            structured_state,
+            max_briefing_tokens,
+        )
+        .await
     }
 
     async fn reset(&self) {
