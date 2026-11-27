@@ -1786,8 +1786,16 @@ impl ShellManager {
         install_parent_death_signal(&mut cmd);
         install_sandbox_preexec(exec_env, &mut cmd);
 
-        if stdin_data.is_some() {
-            cmd.stdin(Stdio::piped());
+        match stdin_data {
+            Some(_) => {
+                cmd.stdin(Stdio::piped());
+            }
+            // Never the caller's terminal: the child runs in a group of its
+            // own (a timeout then takes the whole tree), and a background
+            // group is stopped by SIGTTIN the moment it reads the terminal.
+            None => {
+                cmd.stdin(Stdio::null());
+            }
         }
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
@@ -1973,10 +1981,12 @@ impl ShellManager {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        #[cfg(unix)]
-        {
-            cmd.process_group(0);
-        }
+        // No process group of its own: the child has to sit in the caller's
+        // foreground group to read the terminal. In a group of its own the
+        // kernel stopped it with SIGTTIN on its first read, and the call ran
+        // on to its timeout. Taken with it: a terminal Ctrl-C now reaches the
+        // child together with the REPL, as it reaches any foreground program,
+        // and the timeout below ends the child alone.
         install_parent_death_signal(&mut cmd);
         install_sandbox_preexec(exec_env, &mut cmd);
 
@@ -2035,9 +2045,8 @@ impl ShellManager {
             apply_shell_result_decision_metadata(&mut result, decision);
             Ok(result)
         } else {
-            #[cfg(unix)]
-            let _ = kill_child_process_group(&mut child);
-            #[cfg(not(unix))]
+            // The child shares the caller's process group (see the spawn):
+            // only the child itself is signalled.
             let _ = child.kill();
             let status = child.wait().ok();
 
