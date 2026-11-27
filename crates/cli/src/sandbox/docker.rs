@@ -86,6 +86,15 @@ fn label_filter(label: &str) -> String {
     format!("label={label}")
 }
 
+/// Whether a failed `docker inspect` / `kill` / `rm` says the container
+/// is not there. Both dialects, either case: the CLI prints
+/// `error: no such object: <name>` (client 29), older builds
+/// `Error: No such object`, and `kill` says `No such container`.
+fn container_missing(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("no such object") || lower.contains("no such container")
+}
+
 /// Exit code docker reports for a SIGKILLed container (`docker kill`).
 const DOCKER_KILL_EXIT_CODE: i32 = 137;
 
@@ -637,7 +646,7 @@ impl SandboxTaskPlane for ContainerEngine {
         ])?;
         if !out.status.success() {
             let body = String::from_utf8_lossy(&out.stderr);
-            if body.contains("No such object") {
+            if container_missing(&body) {
                 return Ok(SandboxTaskStatus::Gone);
             }
             bail!("docker inspect failed for {task}: {}", body.trim());
@@ -660,7 +669,7 @@ impl SandboxTaskPlane for ContainerEngine {
         if !out.status.success() {
             let body = String::from_utf8_lossy(&out.stderr);
             // Idempotent: killing a finished task succeeds by contract.
-            if body.contains("is not running") || body.contains("No such object") {
+            if body.contains("is not running") || container_missing(&body) {
                 return Ok(());
             }
             bail!("docker kill failed for {task}: {}", body.trim());
@@ -683,7 +692,7 @@ impl SandboxTaskPlane for ContainerEngine {
         let out = self.docker_output(&["rm".to_string(), "-f".into(), task.to_string()])?;
         if !out.status.success() {
             let body = String::from_utf8_lossy(&out.stderr);
-            if body.contains("No such object") {
+            if container_missing(&body) {
                 return Ok(());
             }
             bail!("docker rm failed for {task}: {}", body.trim());
@@ -730,6 +739,28 @@ mod tests {
             label_filter("codesmith.engine=abc"),
             "label=codesmith.engine=abc"
         );
+    }
+
+    /// A container that vanished used to read as a probe error, so the
+    /// task stayed `Running` forever and its kill failed.
+    #[test]
+    fn a_missing_container_is_recognized_in_both_dialects() {
+        // What the installed CLI prints (lower case), the older wording,
+        // and what `kill` says.
+        assert!(container_missing(
+            "error: no such object: codesmith-shell-abc"
+        ));
+        assert!(container_missing(
+            "Error: No such object: codesmith-shell-abc"
+        ));
+        assert!(container_missing(
+            "Error response from daemon: Cannot kill container: codesmith-shell-abc: \
+             No such container: codesmith-shell-abc"
+        ));
+        // A daemon that cannot be reached is not a missing container.
+        assert!(!container_missing(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+        ));
     }
 
     fn args_contains(args: &[String], needle: &str) -> bool {
