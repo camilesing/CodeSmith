@@ -333,7 +333,7 @@ pub(crate) struct AppServerArgs {
     stdio: bool,
 }
 
-const MCP_SERVER_DEFINITIONS_KEY: &str = "mcp.server_definitions";
+use codesmith_config::MCP_SERVER_DEFINITIONS_KEY;
 
 /// Static snapshot of the container quick start. `docs/DOCKER.md` is the
 /// canonical copy: changing the image tag, volume layout, or env var there

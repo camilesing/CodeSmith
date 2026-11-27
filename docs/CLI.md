@@ -56,7 +56,10 @@ The prompt entry points are:
 - `codesmith exec "<prompt>"` — the non-interactive one-shot form.
 
 `codesmith config get|set|unset|list|path` read and edit the config file
-itself. `codesmith config dump` prints the configuration a session in the
+itself. `set` and `unset` take the keys `config list` names; a key with no
+handler is refused with a pointer to edit the file directly — it used to
+answer `set <key>` and store a value nothing read. `codesmith config dump`
+prints the configuration a session in the
 current workspace (`--workspace` to pick another) would actually run with —
 the file and selected profile, env and managed overrides, the workspace
 `.env` and project overlay when the workspace is trusted, then the preset

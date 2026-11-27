@@ -965,6 +965,9 @@ impl ConfigToml {
             "providers.volcengine.api_key" => self.providers.volcengine.api_key.clone(),
             "providers.volcengine.base_url" => self.providers.volcengine.base_url.clone(),
             "providers.volcengine.model" => self.providers.volcengine.model.clone(),
+            "providers.volcengine.http_headers" => {
+                serialize_http_headers(&self.providers.volcengine.http_headers)
+            }
             "providers.wanjie_ark.http_headers" => {
                 serialize_http_headers(&self.providers.wanjie_ark.http_headers)
             }
@@ -1181,6 +1184,9 @@ impl ConfigToml {
             "providers.volcengine.model" => {
                 self.providers.volcengine.model = Some(value.to_string());
             }
+            "providers.volcengine.http_headers" => {
+                self.providers.volcengine.http_headers = parse_http_headers(value)?;
+            }
             "providers.wanjie_ark.http_headers" => {
                 self.providers.wanjie_ark.http_headers = parse_http_headers(value)?;
             }
@@ -1371,10 +1377,15 @@ impl ConfigToml {
                     _ => unreachable!("split_custom_provider_key guards the field set"),
                 }
             }
-            _ => {
+            // The one extras key. Every other key addresses typed config:
+            // a blind write here used to report success and land as an
+            // inert extras entry — or, for a bare typed key such as
+            // `allow_shell`, as a string that made config.toml unloadable.
+            MCP_SERVER_DEFINITIONS_KEY => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
             }
+            _ => bail!("config key '{key}' cannot be set here; edit config.toml directly"),
         }
         Ok(())
     }
@@ -1429,6 +1440,9 @@ impl ConfigToml {
             "providers.volcengine.api_key" => self.providers.volcengine.api_key = None,
             "providers.volcengine.base_url" => self.providers.volcengine.base_url = None,
             "providers.volcengine.model" => self.providers.volcengine.model = None,
+            "providers.volcengine.http_headers" => {
+                self.providers.volcengine.http_headers.clear();
+            }
             "providers.wanjie_ark.http_headers" => {
                 self.providers.wanjie_ark.http_headers.clear();
             }
@@ -1530,8 +1544,13 @@ impl ConfigToml {
                     }
                 }
             }
+            // A key that lives only in `extras` (hand-written, or the MCP
+            // blob) can go; one that addresses typed config with no arm
+            // must not report success while the real value stays.
             _ => {
-                self.extras.remove(key);
+                if self.extras.remove(key).is_none() {
+                    bail!("config key '{key}' cannot be unset here; edit config.toml directly");
+                }
             }
         }
         Ok(())
@@ -3008,6 +3027,11 @@ impl EnvRuntimeOverrides {
     }
 }
 
+/// The one config key that lives in `extras`: the CLI's MCP server
+/// definitions (a JSON string). Every other key `set_value` and
+/// `unset_value` accept addresses typed config.
+pub const MCP_SERVER_DEFINITIONS_KEY: &str = "mcp.server_definitions";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4041,6 +4065,65 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         assert_eq!(mode, 0o600);
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// `config set <key>` used to answer `set <key>` for any key without
+    /// an arm and park the value in `extras`, where no typed field reads
+    /// it — or, for a bare typed key, as a string the CLI cannot load.
+    #[test]
+    fn setting_a_key_without_an_arm_fails_loud() {
+        let mut config = ConfigToml::default();
+        for key in [
+            "network.default",
+            "sandbox.enabled",
+            "allow_shell",
+            "max_subagents",
+        ] {
+            let err = config
+                .set_value(key, "true")
+                .expect_err("an unarmed key must not report success");
+            assert!(
+                err.to_string().contains("cannot be set here"),
+                "{key}: {err}"
+            );
+        }
+        assert!(config.extras.is_empty());
+
+        // The MCP definitions blob keeps its extras slot.
+        config
+            .set_value(MCP_SERVER_DEFINITIONS_KEY, "[]")
+            .expect("the MCP blob is the one extras key");
+        assert_eq!(
+            config.get_value(MCP_SERVER_DEFINITIONS_KEY).as_deref(),
+            Some("[]")
+        );
+        config
+            .unset_value(MCP_SERVER_DEFINITIONS_KEY)
+            .expect("and it can be removed again");
+
+        // Unsetting an unarmed key that holds nothing is loud too.
+        let err = config
+            .unset_value("sandbox.enabled")
+            .expect_err("nothing to unset");
+        assert!(err.to_string().contains("cannot be unset here"), "{err}");
+    }
+
+    #[test]
+    fn volcengine_http_headers_round_trip() {
+        let mut config = ConfigToml::default();
+        config
+            .set_value("providers.volcengine.http_headers", "X-A=1")
+            .expect("set");
+        assert_eq!(
+            config
+                .get_value("providers.volcengine.http_headers")
+                .as_deref(),
+            Some("X-A=1")
+        );
+        config
+            .unset_value("providers.volcengine.http_headers")
+            .expect("unset");
+        assert_eq!(config.get_value("providers.volcengine.http_headers"), None);
     }
 
     #[test]

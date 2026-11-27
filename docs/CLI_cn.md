@@ -52,7 +52,9 @@ prompt 的入口有两个：
   会话会保持打开以便继续对话。
 - `codesmith exec "<prompt>"` —— 非交互的一次性形式。
 
-`codesmith config get|set|unset|list|path` 读取和编辑配置文件本身。
+`codesmith config get|set|unset|list|path` 读取和编辑配置文件本身。`set` / `unset`
+只接受 `config list` 列出的键；没有对应处理逻辑的键会被拒绝并提示直接编辑配置文件——
+此前会回答 `set <key>` 并存下一个谁也不读的值。
 `codesmith config dump` 打印当前工作区（可用 `--workspace` 指定其他工作区）
 中会话实际使用的配置——配置文件与选中的档案、环境变量与托管覆盖、工作区
 受信任时的 `.env` 与项目 overlay，最后叠加预设基线——以 TOML 输出，凡是
