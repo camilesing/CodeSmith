@@ -1121,7 +1121,14 @@ impl Runtime {
         let selection = self
             .model_registry
             .resolve(Some(&requested_model), Some(resolved.provider));
-        let resolved_model = selection.resolved.id.clone();
+        // The registry does not know every provider's models (no Anthropic
+        // rows, no provider-scoped custom ids) and falls back to its first
+        // row: the configured id is the truthful one unless it matched.
+        let resolved_model = if selection.used_fallback {
+            requested_model.clone()
+        } else {
+            selection.resolved.id.clone()
+        };
         let response_id = format!("resp-{}", Uuid::new_v4());
 
         self.hooks
@@ -3032,6 +3039,38 @@ mod tests {
         assert_eq!(thread.model_provider, "anthropic");
         assert_eq!(thread.cwd, PathBuf::from("/tmp/explicit"));
         assert!(!thread.ephemeral, "persist_extended_history honored");
+    }
+
+    /// The registry has no Anthropic rows: `handle_prompt` used to report
+    /// and persist its first row as the selected model.
+    #[tokio::test]
+    async fn handle_prompt_reports_the_configured_model_when_the_registry_falls_back() {
+        let (_tmp, store) = scratch_state_store();
+        let runtime = Runtime::new(
+            ConfigToml {
+                provider: ProviderKind::Anthropic,
+                ..ConfigToml::default()
+            },
+            ModelRegistry::default(),
+            store,
+            Arc::new(McpManager::default()),
+            ExecPolicyEngine::new(Vec::new(), Vec::new()),
+            HookDispatcher::default(),
+        );
+
+        let response = runtime
+            .handle_prompt(
+                PromptRequest {
+                    prompt: "hi".to_string(),
+                    model: None,
+                    thread_id: None,
+                },
+                &CliRuntimeOverrides::default(),
+            )
+            .await
+            .expect("prompt");
+
+        assert_eq!(response.model, "claude-sonnet-4-5");
     }
 
     #[tokio::test]
