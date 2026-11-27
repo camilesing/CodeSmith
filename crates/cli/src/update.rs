@@ -592,6 +592,8 @@ fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
 
     #[cfg(windows)]
     {
+        // Backups earlier updates could not remove: removable now.
+        sweep_stale_backups(target);
         let backup = backup_path_for(target);
         if target.exists() {
             std::fs::rename(target, &backup).with_context(|| {
@@ -638,6 +640,37 @@ fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Remove the `.old-<pid>` backups earlier updates left beside `target`.
+/// Windows renames a running image out of the way and cannot delete it from
+/// the process it runs, so an update's own backup only becomes removable
+/// later — here, at the next update. A backup another process still runs
+/// from stays (the removal fails and is skipped).
+#[cfg(any(windows, test))]
+fn sweep_stale_backups(target: &Path) -> usize {
+    let Some(stem) = target.file_stem().and_then(|stem| stem.to_str()) else {
+        return 0;
+    };
+    let prefix = format!("{stem}.old-");
+    let parent = target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let is_backup = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix));
+        if is_backup && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 #[cfg(windows)]
@@ -933,6 +966,29 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
         let parse = release_parse_error_message("release JSON", &page);
         assert!(parse.contains("failed to parse release JSON"), "{parse}");
         assert!(parse.len() < 1_200, "{} chars", parse.len());
+    }
+
+    /// Every Windows update used to strand one full copy of the previous
+    /// binary: the backup it made could not be deleted, and nothing swept.
+    #[test]
+    fn stale_backup_sweep_removes_only_this_binaries_backups() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("codesmith.exe");
+        std::fs::write(&target, b"current").expect("target");
+        for name in ["codesmith.old-1", "codesmith.old-2-fallback"] {
+            std::fs::write(dir.path().join(name), b"stale").expect(name);
+        }
+        for name in ["other.old-1", "codesmith.exe.old-1", "codesmith-old-1"] {
+            std::fs::write(dir.path().join(name), b"keep").expect(name);
+        }
+
+        assert_eq!(sweep_stale_backups(&target), 2);
+        assert!(!dir.path().join("codesmith.old-1").exists());
+        assert!(!dir.path().join("codesmith.old-2-fallback").exists());
+        for name in ["other.old-1", "codesmith.exe.old-1", "codesmith-old-1"] {
+            assert!(dir.path().join(name).exists(), "{name} must stay");
+        }
+        assert!(target.exists());
     }
 
     fn serve_http_once(
