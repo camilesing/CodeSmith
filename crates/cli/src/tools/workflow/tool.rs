@@ -129,7 +129,7 @@ impl ToolSpec for WorkflowTool {
 
     fn description(&self) -> &'static str {
         concat!(
-            "Run a Python orchestration script on a one-shot sandboxed kernel that orchestrates sub-agents ",
+            "Run a Python orchestration script on a one-shot local Python kernel that orchestrates sub-agents ",
             "through injected helpers. Script API: run_agent(objective, *, role=None, model=None, timeout_s=None) ",
             "-> {'result': str, 'steps': int, 'status': str} runs ONE sub-agent to completion; ",
             "agents([{objective, role?, model?, timeout_s?}, ...]) fans out over a list CONCURRENTLY ",
@@ -175,8 +175,10 @@ impl ToolSpec for WorkflowTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         // Same tier as `agent_open`/`agent_run`: the spawned children
-        // inherit the parent's approval posture as their ceiling, and the
-        // kernel is orchestration logic only (no more than a repl block).
+        // inherit the parent's approval posture as their ceiling. The
+        // kernel itself runs model-authored Python on a local interpreter
+        // with no OS sandbox, so this Auto is a product decision left open:
+        // it is the one code-executing surface that does not prompt.
         ApprovalRequirement::Auto
     }
 
@@ -562,6 +564,20 @@ mod tests {
             );
             assert!(!message.contains("{MAX"), "{message}");
         }
+    }
+
+    /// The kernel is a plain local interpreter; the description used to
+    /// call it "sandboxed".
+    #[test]
+    fn description_does_not_call_the_kernel_sandboxed() {
+        let (tool, _context) = tool_with(Arc::new(RecordedSpawner {
+            calls: Mutex::new(Vec::new()),
+        }));
+        let description = tool.description();
+        assert!(
+            !description.contains("sandboxed"),
+            "the workflow kernel is not sandboxed: {description}"
+        );
     }
 
     #[tokio::test]
