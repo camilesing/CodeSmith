@@ -203,7 +203,7 @@ impl TaskV2Manager {
             metadata: metadata.unwrap_or(json!({})),
             created_at: now,
             started_at,
-            completed_at: None,
+            completed_at: (status == TaskV2Status::Completed).then_some(now),
         };
 
         self.write_task_file(&record)?;
@@ -508,7 +508,10 @@ impl TaskV2Manager {
 
         let mut record = self.read_task_file(id)?;
         if record.status == TaskV2Status::InProgress {
+            // A task back to `Pending` must not keep a stale `started_at` —
+            // the rule `update_task` applies to the same transition.
             record.status = TaskV2Status::Pending;
+            record.started_at = None;
         }
         record.owner = None;
         self.write_task_file(&record)?;
@@ -530,6 +533,7 @@ impl TaskV2Manager {
             if task.owner.as_deref() == Some(agent_name) {
                 if task.status == TaskV2Status::InProgress {
                     task.status = TaskV2Status::Pending;
+                    task.started_at = None;
                 }
                 task.owner = None;
                 self.write_task_file(task)?;
@@ -600,6 +604,75 @@ mod tests {
         let task_dir = dir.join("tasks").join("test_session");
         fs::create_dir_all(&task_dir).expect("create task dir");
         TaskV2Manager { task_dir }
+    }
+
+    /// The three status writers keep the timestamps `update_task` would:
+    /// a task created completed is stamped, and work returned to `Pending`
+    /// by either release path does not keep a stale `started_at`.
+    #[test]
+    fn create_and_release_stamp_timestamps_like_update_task() {
+        let mut mgr = temp_manager();
+        let born_done = mgr
+            .create_task(
+                "done at birth".into(),
+                "d".into(),
+                None,
+                Some(TaskV2Status::Completed),
+                None,
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        assert!(
+            mgr.get_task(&born_done).unwrap().completed_at.is_some(),
+            "a task created completed is stamped completed"
+        );
+
+        let released = mgr
+            .create_task(
+                "released".into(),
+                "d".into(),
+                None,
+                None,
+                Some("alice".to_string()),
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        let unassigned = mgr
+            .create_task(
+                "unassigned".into(),
+                "d".into(),
+                None,
+                None,
+                Some("alice".to_string()),
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        for id in [&released, &unassigned] {
+            mgr.update_task(
+                id,
+                Some(TaskV2Status::InProgress),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(mgr.get_task(id).unwrap().started_at.is_some());
+        }
+
+        mgr.release_task(&released).unwrap();
+        assert!(mgr.get_task(&released).unwrap().started_at.is_none());
+        assert_eq!(mgr.unassign_teammate_tasks("alice").unwrap(), 1);
+        assert!(mgr.get_task(&unassigned).unwrap().started_at.is_none());
     }
 
     #[test]
