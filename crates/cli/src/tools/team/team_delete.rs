@@ -31,15 +31,22 @@ impl ToolSpec for TeamDeleteTool {
     }
 
     fn description(&self) -> &'static str {
-        "Remove the current team and its task directories. \
-         Validates no active teammates remain before deletion. \
+        "Remove a team and its task directories — the session's own, or the \
+         one named by team_name when it was left on disk by an earlier \
+         session. Validates no active teammates remain before deletion. \
          Removes git worktrees, team directory, and task directory."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "team_name": {
+                    "type": "string",
+                    "description": "Delete the team with this name instead of the session's own — \
+                                    for a team an earlier session left on disk."
+                }
+            },
             "additionalProperties": false
         })
     }
@@ -61,24 +68,32 @@ impl ToolSpec for TeamDeleteTool {
 
     async fn execute(
         &self,
-        _input: serde_json::Value,
+        input: serde_json::Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         if !context.features.enabled(Feature::AgentTeams) {
             return Err(ToolError::not_available("agent_teams feature is disabled"));
         }
 
-        let team_name = {
-            let tc = self.team_context.lock().await;
-            match tc.as_ref() {
-                Some(ctx) => ctx.team_name.clone(),
-                None => {
-                    return Err(ToolError::invalid_input(
-                        "Not in a team. Nothing to delete.",
-                    ));
-                }
-            }
+        // The session's own team, unless the caller names one: a team an
+        // earlier session left on disk blocks its name forever otherwise
+        // (`team_create` says "delete the existing team first"), because
+        // nothing joins or resumes a team.
+        let session_team = self
+            .team_context
+            .lock()
+            .await
+            .as_ref()
+            .map(|ctx| ctx.team_name.clone());
+        let team_name = match input.get("team_name").and_then(|v| v.as_str()) {
+            Some(name) => name.trim().to_string(),
+            None => session_team
+                .clone()
+                .ok_or_else(|| ToolError::invalid_input("Not in a team. Nothing to delete."))?,
         };
+        if team_name.is_empty() {
+            return Err(ToolError::invalid_input("team_name must not be empty"));
+        }
 
         let team_file = read_team_file(&team_name)
             .map_err(|e| ToolError::execution_failed(format!("Failed to read team file: {}", e)))?;
@@ -143,8 +158,9 @@ impl ToolSpec for TeamDeleteTool {
             ToolError::execution_failed(format!("Failed to delete team directories: {}", e))
         })?;
 
-        // Clear TeamContext and defensively cancel any stored teammate tokens.
-        {
+        // Clear TeamContext and defensively cancel any stored teammate tokens
+        // — only when the session was in the team that was deleted.
+        if session_team.as_deref() == Some(team_name.as_str()) {
             let mut tc = self.team_context.lock().await;
             if let Some(ctx) = tc.as_mut() {
                 for token in ctx.teammate_cancel_tokens.values() {
@@ -289,9 +305,17 @@ mod tests {
             let tool = TeamDeleteTool::new(new_shared_team_context());
             assert_eq!(tool.name(), "team_delete");
             assert!(tool.description().contains("active teammates"));
-            assert_eq!(
-                tool.input_schema(),
-                json!({"type": "object", "properties": {}, "additionalProperties": false})
+            let schema = tool.input_schema();
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["additionalProperties"], false);
+            let team_name = &schema["properties"]["team_name"];
+            assert_eq!(team_name["type"], "string");
+            assert!(
+                team_name["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("earlier session"),
+                "{schema}"
             );
             assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);
             assert_eq!(tool.capabilities(), vec![ToolCapability::WritesFiles]);
@@ -318,6 +342,56 @@ mod tests {
             assert!(
                 err.to_string().contains("Not in a team. Nothing to delete"),
                 "{err}"
+            );
+        }
+
+        /// A team an earlier session left on disk could be neither deleted
+        /// (no team in this session) nor re-created (its name was taken).
+        #[tokio::test]
+        async fn team_delete_removes_a_team_left_on_disk_by_an_earlier_session() {
+            let _guard = lock_test_env();
+            let _home = ScopedCodeSmithHome::new();
+            create_team_file(&make_team_file("del-stale", 0)).expect("team");
+            let tool = TeamDeleteTool::new(new_shared_team_context());
+
+            let result = tool
+                .execute(json!({"team_name": "del-stale"}), &context(true))
+                .await
+                .expect("a stale team deletes by name");
+
+            assert!(
+                crate::tools::team::read_team_file("del-stale").is_err(),
+                "roster removed from disk"
+            );
+            let payload: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+            assert_eq!(payload["deleted_team"], "del-stale");
+        }
+
+        /// Deleting some other team by name must not end this session's own
+        /// team: the context is cleared only for the team that was deleted.
+        #[tokio::test]
+        async fn deleting_another_team_by_name_keeps_the_session_in_its_own() {
+            let _guard = lock_test_env();
+            let _home = ScopedCodeSmithHome::new();
+            create_team_file(&make_team_file("del-other", 0)).expect("team");
+            let team_context = in_team("del-keep").await;
+            let tool = TeamDeleteTool::new(team_context.clone());
+
+            tool.execute(json!({"team_name": "del-other"}), &context(true))
+                .await
+                .expect("another team deletes by name");
+            assert!(
+                crate::tools::team::read_team_file("del-other").is_err(),
+                "the named team is removed"
+            );
+            assert_eq!(
+                team_context
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|ctx| ctx.team_name.as_str()),
+                Some("del-keep"),
+                "the session stays in its own team"
             );
         }
 

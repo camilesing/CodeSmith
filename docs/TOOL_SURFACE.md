@@ -165,7 +165,7 @@ Registered only when the `agent_teams` feature flag is enabled.
 | Tool | Niche |
 |---|---|
 | `team_create` | Create a team for coordinating multiple agents: team config file, shared task directory, current session registered as lead. One team per leader session. |
-| `team_delete` | Remove the current team and its task directories; validates no active teammates remain. |
+| `team_delete` | Remove the current team (or the one named by `team_name`, e.g. one an earlier session left on disk) and its task directories; validates no active teammates remain. |
 | `send_message` | Message a teammate via file-based mailbox — plain text, broadcast (`to: "*"`), or structured protocol messages (shutdown, plan approval, permission requests). |
 
 ### Code review and recall
