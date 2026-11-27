@@ -212,7 +212,12 @@ pub fn network(state: &ReplState, arg: Option<&str>) {
 
 /// `/goal` / `/hunt`
 pub async fn goal(state: &mut ReplState, arg: Option<&str>) {
-    match arg.map(str::trim) {
+    // The keywords are matched without case (`/hunt Done` closes the hunt
+    // instead of starting one whose quarry is the word "Done"); the
+    // objective keeps the text as typed.
+    let keyword = arg.map(|text| text.trim().to_ascii_lowercase());
+    let objective = arg.map(str::trim).unwrap_or("");
+    match keyword.as_deref() {
         Some("clear") | Some("reset") => {
             state.hunt.quarry = None;
             state.hunt.token_budget = None;
@@ -245,7 +250,7 @@ pub async fn goal(state: &mut ReplState, arg: Option<&str>) {
             println!("{}", "hunt closed: ESCAPED".green());
         }
         Some(text) if !text.is_empty() => {
-            let (objective, budget) = parse_hunt_budget(text);
+            let (objective, budget) = parse_hunt_budget(objective);
             if objective.is_empty() {
                 println!("{} usage: /hunt <quarry> [budget: N]", "✗".red());
                 return;
@@ -659,10 +664,11 @@ pub fn anchor(state: &ReplState, content: Option<&str>) {
         }
         return;
     }
-    if let Some(rest) = input
-        .strip_prefix("remove ")
-        .or_else(|| input.strip_prefix("rm "))
-        .or_else(|| input.strip_prefix("delete "))
+    // The verb is matched without case, as `list` above is.
+    let lower = input.to_ascii_lowercase();
+    if let Some(rest) = ["remove ", "rm ", "delete "]
+        .iter()
+        .find_map(|verb| lower.strip_prefix(verb))
     {
         let Ok(index) = rest.trim().parse::<usize>() else {
             println!("{} usage: /anchor remove <n>", "✗".red());
@@ -1839,6 +1845,25 @@ mod tests {
         );
     }
 
+    /// `/anchor Remove 1` is the remove verb with a capital, not a new
+    /// anchor called "Remove 1".
+    #[test]
+    fn anchor_remove_verb_is_matched_without_case() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = state_in(tmp.path());
+        anchor(&state, Some("first anchor"));
+        anchor(&state, Some("Remove 1"));
+        let anchors = tmp.path().join(".codesmith").join("anchors.md");
+        assert!(
+            std::fs::read_to_string(&anchors)
+                .unwrap_or_default()
+                .trim()
+                .is_empty(),
+            "the capitalized verb removed the anchor"
+        );
+    }
+
     #[test]
     fn note_command_full_cycle() {
         let _env = scratch_env();
@@ -1993,6 +2018,22 @@ mod tests {
         assert_eq!(state.hunt.verdict, HuntVerdict::Hunted);
         goal(&mut state, Some("clear")).await;
         assert!(state.hunt.quarry.is_none());
+    }
+
+    /// `/hunt Done` closes the hunt; it must not replace the quarry with the
+    /// word "Done" and send that to the model.
+    #[tokio::test]
+    async fn goal_keywords_are_matched_without_case() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = state_in(tmp.path());
+        state.hunt.quarry = Some("the flaky test".to_string());
+        state.hunt.verdict = HuntVerdict::Hunting;
+
+        goal(&mut state, Some("Done")).await;
+
+        assert_eq!(state.hunt.verdict, HuntVerdict::Hunted);
+        assert_eq!(state.hunt.quarry.as_deref(), Some("the flaky test"));
     }
 
     #[tokio::test]
