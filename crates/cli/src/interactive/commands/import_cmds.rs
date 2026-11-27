@@ -22,7 +22,9 @@
 //! Known limitations (recorded beside the behaviour it owns):
 //!
 //! - Stdio and URL servers come over (`command`/`args`/`env`, and
-//!   `url`/`transport`/`headers`). An entry with neither is skipped.
+//!   `url`/`transport`/`headers`; Gemini's `httpUrl`, and Codex's
+//!   `http_headers` and `bearer_token_env_var`, are read under those). An
+//!   entry with neither is skipped.
 //!   Per-server timeouts and OAuth blocks are not carried: they are
 //!   CodeSmith-specific shapes the source tools do not have.
 //! - A server whose name already exists in `~/.codesmith/mcp.json` is left
@@ -306,8 +308,10 @@ fn imported_from_json(name: &str, entry: &serde_json::Value) -> ImportedServer {
             .map(str::to_string),
         args,
         env: strings("env"),
+        // Gemini CLI spells a remote server's endpoint `httpUrl`.
         url: entry
             .get("url")
+            .or_else(|| entry.get("httpUrl"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
         transport: entry
@@ -389,7 +393,27 @@ pub fn servers_from_toml(document: &str) -> Found {
                 .get("transport")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
-            headers: strings("headers"),
+            // Codex spells the headers `http_headers` and a bearer token as
+            // the env var that holds it (`bearer_token_env_var`).
+            headers: {
+                let mut headers = strings("headers");
+                headers.extend(strings("http_headers"));
+                let has_authorization = headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+                if !has_authorization {
+                    let token = entry.get("bearer_token").and_then(scalar).or_else(|| {
+                        entry
+                            .get("bearer_token_env_var")
+                            .and_then(scalar)
+                            .and_then(|name| std::env::var(&name).ok())
+                    });
+                    if let Some(token) = token {
+                        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+                    }
+                }
+                headers
+            },
         };
         if let Some(server) = usable(candidate, &mut found.skipped) {
             found.servers.push(server);
@@ -843,6 +867,56 @@ args = ["mcp-server-fetch"]
         assert_eq!(
             found.skipped,
             vec![("empty".to_string(), "neither command nor url".to_string())]
+        );
+    }
+
+    /// Gemini CLI spells a remote server's endpoint `httpUrl`: it is a URL
+    /// server, not "neither command nor url".
+    #[test]
+    fn gemini_remote_servers_come_over_by_http_url() {
+        let found = servers_from_json(&serde_json::json!({
+            "mcpServers": {
+                "github": {"httpUrl": "https://example.test/mcp", "headers": {"X-A": "1"}}
+            }
+        }));
+        assert!(found.skipped.is_empty(), "{:?}", found.skipped);
+        assert_eq!(found.servers.len(), 1);
+        assert_eq!(
+            found.servers[0].url.as_deref(),
+            Some("https://example.test/mcp")
+        );
+        assert_eq!(
+            found.servers[0].headers,
+            vec![("X-A".to_string(), "1".to_string())]
+        );
+    }
+
+    /// Codex names the headers `http_headers` and a bearer token by the env
+    /// var holding it: without them the server is imported unauthenticated.
+    #[test]
+    fn codex_http_headers_and_bearer_token_come_over() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let _token = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_IMPORT_TEST_TOKEN",
+            "s3cret",
+        );
+        let found = servers_from_toml(
+            r#"
+[mcp_servers.remote]
+url = "https://example.test/mcp"
+http_headers = { "X-Thing" = "value" }
+bearer_token_env_var = "CODESMITH_IMPORT_TEST_TOKEN"
+"#,
+        );
+        assert_eq!(found.servers.len(), 1);
+        let headers = &found.servers[0].headers;
+        assert!(
+            headers.contains(&("X-Thing".to_string(), "value".to_string())),
+            "{headers:?}"
+        );
+        assert!(
+            headers.contains(&("Authorization".to_string(), "Bearer s3cret".to_string())),
+            "{headers:?}"
         );
     }
 
