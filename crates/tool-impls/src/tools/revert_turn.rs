@@ -87,10 +87,21 @@ impl ToolSpec for RevertTurnTool {
             // or by hand) would survive the revert — and it stages those
             // files, so the boundary comparison below sees them (`git diff
             // <commit>` ignores files the index does not know). A failed
-            // safety-net snapshot is a warning, not a blocker.
-            if let Err(err) = repo.snapshot("before revert_turn") {
-                tracing::warn!(target: "snapshot", "revert_turn safety snapshot failed: {err}");
-            }
+            // safety-net snapshot is a warning, not a blocker — but one
+            // the caller must see: the pre-revert state is in no snapshot,
+            // and files created since the last one are invisible to the
+            // boundary comparison below.
+            let safety_warning = match repo.snapshot("before revert_turn") {
+                Ok(_) => String::new(),
+                Err(err) => {
+                    tracing::warn!(target: "snapshot", "revert_turn safety snapshot failed: {err}");
+                    format!(
+                        " WARNING: the pre-revert state could not be snapshotted ({err}) — \
+                         this revert cannot be undone, and files created since the last \
+                         snapshot may have been left in place."
+                    )
+                }
+            };
             // Find pre-turn:* snapshots only — those mark the start of
             // each turn, which is the right rollback target. We pull a
             // generous list and filter so the model's `turn_offset` is
@@ -153,7 +164,7 @@ impl ToolSpec for RevertTurnTool {
             repo.restore(&target.id)
                 .map_err(|e| format!("Restore failed: {e}"))?;
             Ok(format!(
-                "{label}: restored '{}' ({}). Workspace files reverted; conversation unchanged.",
+                "{label}: restored '{}' ({}). Workspace files reverted; conversation unchanged.{safety_warning}",
                 target.label,
                 short_sha(target.id.as_str()),
             ))
@@ -228,6 +239,45 @@ mod tests {
 
         let content = std::fs::read_to_string(workspace.join("a.txt")).unwrap();
         assert_eq!(content, "original");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn revert_turn_reports_a_failed_safety_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // An unreadable file makes `git add -A` fail, so the pre-revert
+        // snapshot cannot be taken; the restore itself still works. The
+        // result has to say so: this revert cannot be undone.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let _guard = scoped_home(tmp.path());
+        let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
+        std::fs::write(workspace.join("a.txt"), b"original").unwrap();
+        repo.snapshot("pre-turn:1").unwrap();
+        std::fs::write(workspace.join("a.txt"), b"modified").unwrap();
+        let unreadable = workspace.join("unreadable.txt");
+        std::fs::write(&unreadable, b"secret").unwrap();
+        let mut perms = std::fs::metadata(&unreadable).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&unreadable, perms).unwrap();
+
+        let tool = RevertTurnTool;
+        let ctx = ToolContext::new(workspace.clone());
+        let r = tool.execute(json!({}), &ctx).await.expect("execute");
+        std::fs::remove_file(&unreadable).unwrap();
+
+        assert!(r.success, "{r:?}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "original"
+        );
+        assert!(
+            r.content.contains("could not be snapshotted"),
+            "{}",
+            r.content
+        );
     }
 
     #[tokio::test]
