@@ -145,7 +145,8 @@ fn match_include_directive(line: &str) -> Option<&str> {
 }
 
 /// Resolve an `@include` target (raw text from [`match_include_directive`])
-/// against `base`: `~`/env-expanded via [`workspace_trust::expand_path`],
+/// against `base`: `~`-expanded via [`workspace_trust::expand_path`] (no
+/// `$VAR` expansion),
 /// then treated as relative to `base` unless already absolute.
 fn resolve_include_target(target: &str, base: &Path) -> PathBuf {
     let expanded = expand_path(target);
@@ -159,7 +160,7 @@ fn resolve_include_target(target: &str, base: &Path) -> PathBuf {
 /// Whether an `@include` resolved target is permitted: it must stay within
 /// the *tier root* — workspace for Project/Local files, home for User,
 /// `/etc/codesmith` for Managed — compared canonically, so symlinks can't
-/// sidestep it. Any target — absolute, `~`, env-expanded, or `..`-relative —
+/// sidestep it. Any target — absolute, `~`, or `..`-relative —
 /// whose canonical form escapes that root (`@include ../../secrets.md`) is
 /// rejected: an untrusted workspace memory file must not be able to pull
 /// arbitrary files (`~/.ssh/…`, `/etc/…`) into the system prompt. (An
@@ -520,9 +521,9 @@ fn load_local_tier(
 /// `<!-- tier: … -->` labels. Returns an empty `String` when no tier
 /// resolves to non-empty content, so callers can fall back to other sources.
 ///
-/// `excludes` is a list of raw path strings (`~`/env-expanded and
-/// canonicalized internally); entries that don't resolve to a real file are
-/// simply never matched.
+/// `excludes` is a list of raw path strings (`~`-expanded and canonicalized
+/// internally; `$VAR` is not expanded); entries that don't resolve to a
+/// real file are simply never matched.
 #[must_use]
 pub fn load_all_memory_tiers(workspace: &Path, home: Option<&Path>, excludes: &[String]) -> String {
     let exclude_paths: Vec<PathBuf> = excludes

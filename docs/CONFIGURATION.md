@@ -1201,10 +1201,10 @@ and the capacity controller remains disabled unless configured.
     defaults to the parent of `memory_path` with `/memory/` appended. A
     leading `~` is expanded.
   - `[memory].excludes` (array, optional): paths dropped from the
-    four-tier CLAUDE.md memory merge. Entries are `~`/env-expanded and
-    canonicalized; the list is resolved into the
-    `CODESMITH_MEMORY_EXCLUDES` env var at engine startup so every load
-    site honours it.
+    four-tier CLAUDE.md memory merge. Entries are `~`-expanded and
+    canonicalized (`$VAR` is not expanded); the engine publishes the
+    list to every load site at startup, and `CODESMITH_MEMORY_EXCLUDES`
+    (`:`-separated) adds to it from the shell.
 - `memory_path` (string, optional): defaults to `~/.codesmith/memory.md`.
   Used by the user-memory feature when enabled — see
   [`MEMORY.md`](MEMORY.md) for the full feature surface (`# foo`

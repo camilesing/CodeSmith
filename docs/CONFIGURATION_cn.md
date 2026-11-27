@@ -1068,8 +1068,9 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   - `[memory].directory`（字符串，可选）：记忆目录覆盖；默认为
     `memory_path` 的父目录加 `/memory/`。开头的 `~` 会被展开。
   - `[memory].excludes`（数组，可选）：从四层 CLAUDE.md 记忆合并中剔除
-    的路径。条目会做 `~`/环境变量展开并规范化；该列表在引擎启动时
-    解析为 `CODESMITH_MEMORY_EXCLUDES` 环境变量，使所有加载点都遵循。
+    的路径。条目会做 `~` 展开并规范化（不展开 `$VAR`）；引擎启动时把该
+    列表发布给所有加载点，`CODESMITH_MEMORY_EXCLUDES`（`:` 分隔）可在
+    shell 里追加。
 - `memory_path`（字符串，可选）：默认为 `~/.codesmith/memory.md`。
   启用后由用户记忆功能使用——完整功能面请参阅
   [`MEMORY.md`](MEMORY.md)（`# foo` 输入框前缀、`/memory` 斜杠命令、
