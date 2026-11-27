@@ -146,12 +146,30 @@ impl ChildSessionJournal for RuntimeChildJournal {
 }
 
 impl RuntimeChildJournal {
+    /// The store's methods are synchronous file IO — two fsyncs per write,
+    /// several writes per event — so they run on the blocking pool, never
+    /// on the worker that drives the child's turn.
+    async fn off_runtime<T: Send + 'static>(
+        &self,
+        job: impl FnOnce(&RuntimeThreadStore) -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<T> {
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || job(&store))
+            .await
+            .map_err(|err| anyhow::anyhow!("journal store task failed: {err}"))?
+    }
+
     async fn start(&self, state: &mut JournalState) {
         if state.turn_id.is_some() {
             return;
         }
         let now = Utc::now();
-        let parent = self.store.load_thread(&self.descriptor.parent_id).ok();
+        let parent_id = self.descriptor.parent_id.clone();
+        let parent = self
+            .off_runtime(move |store| Ok(store.load_thread(&parent_id).ok()))
+            .await
+            .ok()
+            .flatten();
         let mut thread = parent
             .as_ref()
             .map(|parent| ThreadRecord {
@@ -211,10 +229,16 @@ impl RuntimeChildJournal {
         // A child identity is a fresh run. If an id somehow already exists,
         // keep its record and open a new turn rather than overwriting the
         // durable transcript.
-        if let Ok(existing) = self.store.load_thread(&thread.id) {
+        let existing = self
+            .off_runtime({
+                let thread_id = thread.id.clone();
+                move |store| store.load_thread(&thread_id)
+            })
+            .await;
+        if let Ok(mut existing) = existing {
+            existing.updated_at = now;
+            existing.subagent_status = Some("running".to_string());
             thread = existing;
-            thread.updated_at = now;
-            thread.subagent_status = Some("running".to_string());
         }
 
         let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
@@ -237,10 +261,22 @@ impl RuntimeChildJournal {
         };
         thread.latest_turn_id = Some(turn_id.clone());
         thread.updated_at = now;
-        if let Err(err) = self.store.save_thread(&thread) {
+        if let Err(err) = self
+            .off_runtime({
+                let thread = thread.clone();
+                move |store| store.save_thread(&thread)
+            })
+            .await
+        {
             tracing::warn!(target: "codesmith_subagents", ?err, "child thread save failed");
         }
-        if let Err(err) = self.store.save_turn(&turn) {
+        if let Err(err) = self
+            .off_runtime({
+                let turn = turn.clone();
+                move |store| store.save_turn(&turn)
+            })
+            .await
+        {
             tracing::warn!(target: "codesmith_subagents", ?err, "child turn save failed");
         }
         state.turn_id = Some(turn_id.clone());
@@ -268,7 +304,13 @@ impl RuntimeChildJournal {
             Ok(record) => {
                 state.descriptor_seq = Some(record.seq);
                 thread.subagent_descriptor_seq = Some(record.seq);
-                if let Err(err) = self.store.save_thread(&thread) {
+                if let Err(err) = self
+                    .off_runtime({
+                        let thread = thread.clone();
+                        move |store| store.save_thread(&thread)
+                    })
+                    .await
+                {
                     tracing::warn!(target: "codesmith_subagents", ?err, "child descriptor save failed");
                 }
             }
@@ -413,9 +455,16 @@ impl RuntimeChildJournal {
             .await;
             return;
         };
-        let Ok(mut item) = self.store.load_item(&item_id) else {
+        let Ok(item) = self
+            .off_runtime({
+                let item_id = item_id.clone();
+                move |store| store.load_item(&item_id)
+            })
+            .await
+        else {
             return;
         };
+        let mut item = item;
         item.status = if ok {
             TurnItemLifecycleStatus::Completed
         } else {
@@ -437,9 +486,15 @@ impl RuntimeChildJournal {
         let Some(turn_id) = state.turn_id.as_deref() else {
             return;
         };
-        if let Ok(mut turn) = self.store.load_turn(turn_id) {
+        let loaded = self
+            .off_runtime({
+                let turn_id = turn_id.to_string();
+                move |store| store.load_turn(&turn_id)
+            })
+            .await;
+        if let Ok(mut turn) = loaded {
             turn.usage = Some(usage.clone());
-            if let Err(err) = self.store.save_turn(&turn) {
+            if let Err(err) = self.off_runtime(move |store| store.save_turn(&turn)).await {
                 tracing::warn!(target: "codesmith_subagents", ?err, "child usage save failed");
             }
         }
@@ -468,7 +523,13 @@ impl RuntimeChildJournal {
             .flat_map(|(_, items)| items)
             .collect();
         for item_id in open_items {
-            if let Ok(mut item) = self.store.load_item(&item_id) {
+            let loaded = self
+                .off_runtime({
+                    let item_id = item_id.clone();
+                    move |store| store.load_item(&item_id)
+                })
+                .await;
+            if let Ok(mut item) = loaded {
                 item.status = TurnItemLifecycleStatus::Interrupted;
                 item.ended_at = Some(now);
                 if item.detail.as_deref().unwrap_or_default().trim().is_empty() {
@@ -484,7 +545,13 @@ impl RuntimeChildJournal {
             ChildSessionStatus::Cancelled => RuntimeTurnStatus::Canceled,
             ChildSessionStatus::Failed(_) => RuntimeTurnStatus::Failed,
         };
-        if let Ok(mut turn) = self.store.load_turn(&turn_id) {
+        let loaded = self
+            .off_runtime({
+                let turn_id = turn_id.clone();
+                move |store| store.load_turn(&turn_id)
+            })
+            .await;
+        if let Ok(mut turn) = loaded {
             turn.status = runtime_status;
             turn.ended_at = Some(now);
             if let Some(started_at) = turn.started_at {
@@ -498,7 +565,13 @@ impl RuntimeChildJournal {
             if let ChildSessionStatus::Failed(message) = &status {
                 turn.error = Some(message.clone());
             }
-            if let Err(err) = self.store.save_turn(&turn) {
+            if let Err(err) = self
+                .off_runtime({
+                    let turn = turn.clone();
+                    move |store| store.save_turn(&turn)
+                })
+                .await
+            {
                 tracing::warn!(target: "codesmith_subagents", ?err, "child turn finish save failed");
             }
             self.append(
@@ -519,10 +592,20 @@ impl RuntimeChildJournal {
         )
         .await;
 
-        if let Ok(mut thread) = self.store.load_thread(&self.descriptor.agent_id) {
+        let agent_id = self.descriptor.agent_id.clone();
+        let loaded = self
+            .off_runtime(move |store| store.load_thread(&agent_id))
+            .await;
+        if let Ok(mut thread) = loaded {
             thread.subagent_status = Some(status.as_str().to_string());
             thread.updated_at = now;
-            if let Err(err) = self.store.save_thread(&thread) {
+            if let Err(err) = self
+                .off_runtime({
+                    let thread = thread.clone();
+                    move |store| store.save_thread(&thread)
+                })
+                .await
+            {
                 tracing::warn!(target: "codesmith_subagents", ?err, "child thread finish save failed");
             }
         }
@@ -556,17 +639,24 @@ impl RuntimeChildJournal {
     }
 
     async fn save_item(&self, turn_id: &str, item: &TurnItemRecord) {
-        if let Err(err) = self.store.save_item(item) {
-            tracing::warn!(target: "codesmith_subagents", ?err, "child item save failed");
-            return;
-        }
-        if let Ok(mut turn) = self.store.load_turn(turn_id)
-            && !turn.item_ids.iter().any(|id| id == &item.id)
+        // One hop for the whole sequence: the item write, the turn's
+        // item index, and the turn write.
+        let item = item.clone();
+        let turn_id = turn_id.to_string();
+        if let Err(err) = self
+            .off_runtime(move |store| {
+                store.save_item(&item)?;
+                if let Ok(mut turn) = store.load_turn(&turn_id)
+                    && !turn.item_ids.iter().any(|id| id == &item.id)
+                {
+                    turn.item_ids.push(item.id.clone());
+                    store.save_turn(&turn)?;
+                }
+                Ok(())
+            })
+            .await
         {
-            turn.item_ids.push(item.id.clone());
-            if let Err(err) = self.store.save_turn(&turn) {
-                tracing::warn!(target: "codesmith_subagents", ?err, "child turn item index save failed");
-            }
+            tracing::warn!(target: "codesmith_subagents", ?err, "child item save failed");
         }
     }
 
