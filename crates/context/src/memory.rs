@@ -16,10 +16,9 @@
 //!   notices a durable preference or convention worth keeping across
 //!   sessions.
 //!
-//! Default behavior is **opt-in**: load + use the memory file only when
-//! `[memory] enabled = true` in `config.toml` or `CODESMITH_MEMORY=on`.
-//! That keeps existing users on zero-overhead behavior and makes the
-//! feature explicit.
+//! On by default (`Config::memory_enabled` in the CLI, `docs/MEMORY.md`):
+//! opt out with `[memory] enabled = false` in `config.toml`,
+//! `CODESMITH_DISABLE_AUTO_MEMORY`, or bare/remote mode.
 
 use codesmith_sandbox::sanitization::escape_prompt_attr;
 
@@ -110,7 +109,7 @@ fn previous_char_boundary(value: &str, mut index: usize) -> usize {
 }
 
 /// Compose the `<user_memory>` block for the system prompt, honouring the
-/// opt-in toggle. Returns `None` when the feature is disabled or the file
+/// memory switch. Returns `None` when the feature is disabled or the file
 /// is missing / empty so the caller doesn't have to check both conditions.
 ///
 /// Callers that hold a `&Config` should pass `config.memory_enabled()` and
