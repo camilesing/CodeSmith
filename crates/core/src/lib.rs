@@ -764,6 +764,12 @@ pub struct Runtime {
     /// `.await`), which serializes thread mutations against each other while
     /// everything else (hook emission, tool dispatch, MCP
     /// startup, job reads) runs concurrently.
+    ///
+    /// Known limitation: `handle_thread` and `handle_prompt` run their
+    /// store I/O inline on the runtime that drives them — this crate
+    /// depends on no executor and cannot hand the work to a blocking pool.
+    /// A request holds a worker for the store call, and a contended
+    /// `state.db` write lock parks it for up to the 5 s busy timeout.
     pub thread_manager: std::sync::Mutex<ThreadManager>,
     /// Manager for MCP server connections.
     pub mcp_manager: Arc<McpManager>,
