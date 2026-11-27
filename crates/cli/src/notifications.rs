@@ -1,10 +1,12 @@
 //! Desktop notifications for turn completion.
 //!
-//! Supports four delivery mechanisms:
+//! Supports five delivery mechanisms:
 //! - **OSC 9** — terminal escape sequence (`\x1b]9;…\x07`) for iTerm2,
 //!   Ghostty, WezTerm, and tmux (with DCS passthrough).
 //! - **Kitty** — OSC 99 protocol with ST terminator (no audible beep).
 //! - **Ghostty** — OSC 777 notification protocol.
+//! - **macOS Notification Center** — through `osascript`; every macOS
+//!   terminal that matches none of the `$TERM_PROGRAM` rows resolves here.
 //! - **BEL** — audible bell (`\x07`) as a last-resort fallback.
 //!
 //! When `method = "auto"`, the resolver picks the best method for the
@@ -58,15 +60,16 @@ fn windows_bell() {
 /// Resolve `Auto` to a concrete method by inspecting `$TERM_PROGRAM`,
 /// `$LC_TERMINAL`, and `$TERM`.
 ///
-/// Resolution table:
+/// Resolution table (first match wins):
 /// - `iTerm.app`, `WezTerm`, `Cmux` → `Osc9`
 /// - `Ghostty` → `Ghostty` (OSC 777)
 /// - `kitty` → `Kitty` (OSC 99)
 /// - `$LC_TERMINAL` matches OSC-9 capable → `Osc9` (Cmux that sets LC_TERMINAL)
-/// - `$TERM` contains `ghostty` → `Osc9` (cmux etc.)
-/// - `$TERM` contains `kitty` → `Kitty`
-/// - Unix unknown → `Bel`
-/// - Windows unknown → `Bel`
+/// - Windows, anything else → `Bel`
+/// - macOS, anything else → `MacOS` (Notification Center, through osascript)
+/// - `$TERM` contains `ghostty` → `Osc9` (other Unix; cmux sets it too)
+/// - `$TERM` contains `kitty` → `Kitty` (other Unix)
+/// - other Unix, unknown → `Bel`
 #[must_use]
 fn resolve_method() -> Method {
     let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
@@ -219,9 +222,10 @@ pub fn notify_done_to<W: Write>(
 /// Emit a turn-complete notification to **stdout** if `elapsed >= threshold`.
 ///
 /// With `method = Auto`, selects the best protocol for the current terminal
-/// (OSC 9, Kitty OSC 99, Ghostty OSC 777, or Bel). The unknown-terminal
-/// fallback is platform-aware: `Bel` on every platform, with Windows routing
-/// it through `MessageBeep(MB_OK)` for a default system notification sound.
+/// (OSC 9, Kitty OSC 99, Ghostty OSC 777, macOS Notification Center, or
+/// Bel). The unknown-terminal fallback is platform-aware: `MacOS` on macOS,
+/// `Bel` elsewhere, with Windows routing it through `MessageBeep(MB_OK)` for
+/// a default system notification sound.
 /// See [`resolve_method`] for the canonical resolution table. Pass
 /// `in_tmux = true` (i.e. `$TMUX` is non-empty at runtime) to wrap OSC
 /// sequences in a DCS passthrough.
