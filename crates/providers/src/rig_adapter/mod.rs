@@ -69,34 +69,52 @@ pub(crate) fn synth_message_id() -> String {
 /// result type is identical to what rig's `ClientBuilder::http_headers` and
 /// reqwest's `ClientBuilder::default_headers` expect — one helper serves both.
 ///
-/// Malformed header names/values are silently skipped: a provider config with a
-/// bad header should not crash client construction, and the request still goes
-/// out with the valid headers + bearer auth.
+/// A malformed header name or value is skipped with a warning naming it: a
+/// provider config with a bad header should not crash client construction, and
+/// the request still goes out with the valid headers + bearer auth — but a
+/// dropped credential header turns every request into an opaque 401, so the
+/// skip is never silent.
 pub(crate) fn build_header_map(
     headers: &std::collections::HashMap<String, String>,
 ) -> reqwest::header::HeaderMap {
-    use std::convert::TryFrom;
     let mut map = reqwest::header::HeaderMap::new();
     for (name, value) in headers {
-        let Ok(name) = reqwest::header::HeaderName::try_from(name.as_str()) else {
-            continue;
-        };
-        let Ok(value) = reqwest::header::HeaderValue::try_from(value.as_str()) else {
-            continue;
-        };
-        map.insert(name, value);
+        match parse_header(name, value) {
+            Ok((name, value)) => {
+                map.insert(name, value);
+            }
+            Err(error) => tracing::warn!(
+                target: "codesmith_rig_adapter",
+                header = %name,
+                %error,
+                "dropping malformed extra header: it will not be sent"
+            ),
+        }
     }
     map
 }
 
+/// One extra header as typed name + value, or the reason it cannot travel.
+fn parse_header(
+    name: &str,
+    value: &str,
+) -> Result<(reqwest::header::HeaderName, reqwest::header::HeaderValue), String> {
+    use std::convert::TryFrom;
+    let name = reqwest::header::HeaderName::try_from(name).map_err(|error| error.to_string())?;
+    let value = reqwest::header::HeaderValue::try_from(value).map_err(|error| error.to_string())?;
+    Ok((name, value))
+}
+
 /// The extra headers as sorted `(name, value)` pairs — the
-/// [`LlmClient::request_headers`] observation surface (same source map as
-/// [`build_header_map`]; sorted for a stable payload).
+/// [`LlmClient::request_headers`] observation surface. Same filter as
+/// [`build_header_map`] (which logs each drop), so it never reports a header
+/// that was not sent; sorted for a stable payload.
 pub(crate) fn header_pairs(
     headers: &std::collections::HashMap<String, String>,
 ) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = headers
         .iter()
+        .filter(|(name, value)| parse_header(name, value).is_ok())
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     pairs.sort();
@@ -532,6 +550,42 @@ mod tests {
         assert!(
             bodies[1].get("top_p").is_none(),
             "an unset top_p must not travel"
+        );
+    }
+
+    // --- header observation surface -----------------------------------------
+
+    fn extra_headers(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    /// What rides the wire and what `request_headers` reports must agree: a
+    /// malformed name or value is dropped from both, never from the wire only.
+    #[test]
+    fn malformed_extra_headers_are_dropped_everywhere() {
+        let headers = extra_headers(&[("X-Ok", "fine"), ("X-Api-Key", "abc\n"), ("Bad Name", "v")]);
+        assert_eq!(
+            build_header_map(&headers).len(),
+            1,
+            "only the valid pair travels"
+        );
+        assert_eq!(build_header_map(&headers)["x-ok"], "fine");
+        assert_eq!(
+            header_pairs(&headers),
+            vec![("X-Ok".to_string(), "fine".to_string())]
+        );
+
+        let valid = extra_headers(&[("X-B", "2"), ("X-A", "1")]);
+        assert_eq!(build_header_map(&valid).len(), 2);
+        assert_eq!(
+            header_pairs(&valid),
+            vec![
+                ("X-A".to_string(), "1".to_string()),
+                ("X-B".to_string(), "2".to_string())
+            ]
         );
     }
 }
