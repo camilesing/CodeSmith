@@ -234,7 +234,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 - `tool-call`: `input` (JSON value — the pre-execute rewrite; the host applies it before approval + execution and records it)
 - `before-agent-start`: `system_prompt`, `inject_message` (string = set, `()` = clear, absent = keep)
 - `before-provider-request`: `messages`
-- `tool-result`: `content`, `success`, `is_error`, `canonical` (JSON value — the machine-readable result; rewriting `content` alone leaves it untouched, and it can be replaced explicitly)
+- `tool-result`: `content`, `success`, `is_error`, `canonical` (JSON value — the machine-readable result; rewriting `content` alone leaves it untouched, and it can be replaced explicitly). `is_error` decides whether the result is an error and `success` alone implies its inverse; a transform naming neither leaves that as it was, so a content-only rewrite of a failed result (`success: false`) stays a failed result
 - `provider-request-error`: `retry` (bool — `false` gives up), `delay_ms` (int; kept from the current plan when absent; forced retries are capped engine-side)
 - `session-before-compact`: `pinned_hints` (array of strings = set, `()` = clear, absent = keep) — chain-visible only in v1: the host does not consume text hints yet (the compaction planner pins by message index), so a transform writes what later handlers in the chain read
 

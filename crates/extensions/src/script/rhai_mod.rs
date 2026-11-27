@@ -805,8 +805,10 @@ pub(crate) fn merge_transform(
                 Err(err) => (err.to_string(), false, None, None),
             };
             let mut changed = false;
+            let mut content_rewritten = false;
             if let Some(c) = map_field_string(&map, "content") {
                 content = c;
+                content_rewritten = true;
                 changed = true;
             }
             if let Some(s) = map_field_bool(&map, "success") {
@@ -832,9 +834,24 @@ pub(crate) fn merge_transform(
                 tracing::warn!(target: "codesmith_mods", "tool-result transform recognized no fields (need content / success / canonical)");
                 return HandlerOutcome::Continue;
             }
-            let is_error = map_field_bool(&map, "is_error").unwrap_or(!success);
+            // A transform that names neither flag keeps the lane the event
+            // arrived in: `success: false` is the result's own state, not a
+            // request to turn it into a dispatch error.
+            let is_error = match (
+                map_field_bool(&map, "is_error"),
+                map_field_bool(&map, "success"),
+            ) {
+                (Some(v), _) => v,
+                (None, Some(s)) => !s,
+                (None, None) => cur.result.is_err(),
+            };
             let result = if is_error {
-                Err(ToolError::execution_failed(content))
+                match &cur.result {
+                    // No rewritten content: the original error stands,
+                    // variant and all.
+                    Err(err) if !content_rewritten => Err(err.clone()),
+                    _ => Err(ToolError::execution_failed(content)),
+                }
             } else {
                 Ok(ToolResult {
                     content,
@@ -5858,6 +5875,55 @@ mod tests {
                 let r = tr.result.expect("is_error:false keeps the ok lane");
                 assert_eq!(r.content, "kept");
                 assert!(!r.success);
+            }
+            other => panic!("expected a ToolResult transform, got {other:?}"),
+        }
+    }
+
+    /// A transform that names neither `is_error` nor `success` keeps the
+    /// lane the event arrived in: a content-only rewrite over a soft
+    /// failure (`Ok` with `success: false`) used to come back as a hard
+    /// `Err`, dropping `canonical` and `metadata`.
+    #[test]
+    fn merge_transform_tool_result_content_only_keeps_a_soft_failure_soft() {
+        let mut original = ToolResult::error("soft");
+        original.metadata = Some(serde_json::json!({"exit_code": 1}));
+        let event = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c1".into(),
+            name: "exec_shell".into(),
+            result: Ok(original),
+        });
+        let mut fields = rhai::Map::new();
+        fields.insert("content".into(), Dynamic::from("trimmed".to_string()));
+        match merge_transform(&event, &Dynamic::from(fields)) {
+            codesmith_agent::extension::HandlerOutcome::Transform(ExtensionEvent::ToolResult(
+                tr,
+            )) => {
+                let r = tr.result.expect("a soft failure stays on the ok lane");
+                assert_eq!(r.content, "trimmed");
+                assert!(!r.success);
+                assert_eq!(r.metadata, Some(serde_json::json!({"exit_code": 1})));
+            }
+            other => panic!("expected a ToolResult transform, got {other:?}"),
+        }
+
+        // An error original whose machine value alone is replaced keeps
+        // its variant instead of coming back as `ExecutionFailed`.
+        let err_event = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c2".into(),
+            name: "read_file".into(),
+            result: Err(ToolError::Rejected {
+                message: "stale read".into(),
+            }),
+        });
+        let mut fields = rhai::Map::new();
+        fields.insert("canonical".into(), Dynamic::from(rhai::Map::new()));
+        match merge_transform(&err_event, &Dynamic::from(fields)) {
+            codesmith_agent::extension::HandlerOutcome::Transform(ExtensionEvent::ToolResult(
+                tr,
+            )) => {
+                let err = tr.result.expect_err("an error stays an error");
+                assert!(matches!(err, ToolError::Rejected { .. }), "{err:?}");
             }
             other => panic!("expected a ToolResult transform, got {other:?}"),
         }

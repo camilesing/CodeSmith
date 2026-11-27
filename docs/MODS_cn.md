@@ -220,7 +220,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 - `input`：`text`——每条提交的消息以及 turn 运行中输入的每条消息（steer）的文本；改写后的文本即被记录与发送的内容
 - `before-agent-start`：`system_prompt`、`inject_message`（字符串=设置，`()`=清除，缺省=保持）
 - `before-provider-request`：`messages`
-- `tool-result`：`content`、`success`、`is_error`、`canonical`（JSON 值——结果的机器可读值；仅改写 `content` 不动它，可显式替换）
+- `tool-result`：`content`、`success`、`is_error`、`canonical`（JSON 值——结果的机器可读值；仅改写 `content` 不动它，可显式替换）。`is_error` 决定结果是否为错误，只写 `success` 时取其反；两者都不写则保持原样——只改写内容的失败结果（`success: false`）仍是失败结果
 - `provider-request-error`：`retry`（布尔——`false` 放弃）、`delay_ms`（整数；缺省时保持当前 plan 的值；强制重试在引擎侧有上限）
 - `session-before-compact`：`pinned_hints`（字符串数组=设置，`()`=清除，缺省=保持）——v1 仅链上可见：宿主尚未消费文本提示（压缩计划器按消息序号 pin），transform 写入的是链上后续 handler 读到的值
 
