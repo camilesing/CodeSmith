@@ -49,6 +49,18 @@
 //!    reported this answered 500 to every later request of the session.
 //!    Enforced by [`normalize_tool_call_inputs`].
 //!
+//! # Not recorded in the session
+//!
+//! The sweep changes what the model sees and the session record never
+//! learns of it: orphan results and dangling calls are deleted, tool-call
+//! arguments are replaced by `{}`, empty results become `(empty output)`,
+//! adjacent messages merge, and invariant 7 splices in a synthetic user
+//! note. This crate has no channel to the session, so the persisted
+//! transcript says one thing and the model saw another. The only trace is
+//! the `codesmith_wire_sanitize` warning — counts per kind, never content.
+//! For invariant 7's note to be reconstructable it would have to be
+//! appended through the engine's logged injection path instead.
+//!
 //! Reasoning items are never touched here: the provider shaper owns the
 //! strip/inject decision (#1542 / #1739), and DeepSeek thinking-mode requires
 //! reasoning on assistant turns. Valid histories pass through unchanged.
@@ -72,11 +84,15 @@ const CONTINUATION_NOTE: &str = "[context note] Earlier conversation context is 
 /// pass over a placeholder is a no-op and the bound is only a guard against
 /// logic slips, not part of the convergence argument).
 pub(crate) fn sanitize_wire_messages(messages: &mut Vec<RigMessage>) {
+    let before = tally(messages);
     let mut changed_any = false;
+    let mut inputs_rewritten = 0;
     for _ in 0..FIXPOINT_PASSES {
         let mut changed = repair_tool_pairs(messages);
         changed |= normalize_empty_content(messages);
-        changed |= normalize_tool_call_inputs(messages);
+        let rewritten = normalize_tool_call_inputs(messages);
+        inputs_rewritten += rewritten;
+        changed |= rewritten > 0;
         changed |= merge_adjacent_same_role(messages);
         changed_any |= changed;
         if !changed {
@@ -92,12 +108,18 @@ pub(crate) fn sanitize_wire_messages(messages: &mut Vec<RigMessage>) {
         merge_adjacent_same_role(messages);
     }
     if changed_any || note_inserted {
-        // Aggregate counts only — never content. When the model suddenly
+        // Counts per kind only — never content. When the model suddenly
         // behaves differently after an emergency trim or `/undo`, this line
-        // is the evidence that its history was rewritten on the wire.
+        // is the evidence that its history was rewritten on the wire, and
+        // which invariants fired.
+        let after = tally(messages);
         tracing::warn!(
             target: "codesmith_wire_sanitize",
             messages = messages.len(),
+            messages_before = before.messages,
+            tool_results_dropped = before.tool_results.saturating_sub(after.tool_results),
+            tool_calls_stripped = before.tool_calls.saturating_sub(after.tool_calls),
+            inputs_rewritten,
             note_inserted,
             "rewrote outbound history to satisfy wire invariants"
         );
@@ -107,6 +129,40 @@ pub(crate) fn sanitize_wire_messages(messages: &mut Vec<RigMessage>) {
 /// Upper bound on fixpoint iterations. Each changing pass removes at least one
 /// item, so this comfortably exceeds anything a real history needs.
 const FIXPOINT_PASSES: usize = 8;
+
+/// Per-kind item counts of a message list, taken before and after the sweep
+/// so the warning can say what was removed — counts only, never content.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct WireCounts {
+    messages: usize,
+    tool_results: usize,
+    tool_calls: usize,
+}
+
+fn tally(messages: &[RigMessage]) -> WireCounts {
+    let mut counts = WireCounts {
+        messages: messages.len(),
+        ..WireCounts::default()
+    };
+    for msg in messages {
+        match msg {
+            RigMessage::User { content } => {
+                counts.tool_results += content
+                    .iter()
+                    .filter(|item| matches!(item, UserContent::ToolResult(_)))
+                    .count();
+            }
+            RigMessage::Assistant { content, .. } => {
+                counts.tool_calls += content
+                    .iter()
+                    .filter(|item| matches!(item, AssistantContent::ToolCall(_)))
+                    .count();
+            }
+            _ => {}
+        }
+    }
+    counts
+}
 
 /// Tool-call ids requested by an assistant message.
 fn call_ids_of(msg: &RigMessage) -> Vec<String> {
@@ -362,8 +418,9 @@ fn normalize_empty_content(messages: &mut [RigMessage]) -> bool {
 ///
 /// Idempotent by construction — the replacement is always an object, so a
 /// second pass is a no-op — and independent of the pairing passes.
-fn normalize_tool_call_inputs(messages: &mut [RigMessage]) -> bool {
-    let mut changed = false;
+/// Returns how many calls it rewrote (0 = nothing to do).
+fn normalize_tool_call_inputs(messages: &mut [RigMessage]) -> usize {
+    let mut rewritten = 0;
     for msg in messages.iter_mut() {
         let RigMessage::Assistant { content, .. } = msg else {
             continue;
@@ -376,10 +433,10 @@ fn normalize_tool_call_inputs(messages: &mut [RigMessage]) -> bool {
                 continue;
             }
             call.function.arguments = object_or_empty(&call.function.arguments);
-            changed = true;
+            rewritten += 1;
         }
     }
-    changed
+    rewritten
 }
 
 /// The object [`normalize_tool_call_inputs`] puts in place of a non-object:
