@@ -213,6 +213,16 @@ impl McpManager {
         // `call_qualified_tool`'s fallback scan to whichever server the
         // HashMap yields first.
         let sanitized = sanitize_component(&config.name);
+        // A name with no ASCII letter or digit sanitizes to `_`: its
+        // tools qualify as `mcp_____<tool>`, whose empty server segment
+        // `tools/call` cannot route.
+        if !sanitized.bytes().any(|b| b.is_ascii_alphanumeric()) {
+            anyhow::bail!(
+                "MCP server name '{}' has no ASCII letter or digit; its tools would \
+                 qualify as mcp_____*, which tools/call cannot route; rename it",
+                config.name
+            );
+        }
         for existing in self.configs.keys() {
             if sanitize_component(existing) == sanitized {
                 anyhow::bail!(
@@ -1557,6 +1567,37 @@ mod tests {
     fn parse_qualified_tool_name_rejects_missing_prefix() {
         let err = parse_qualified_tool_name("not_mcp__server__tool").unwrap_err();
         assert!(err.to_string().contains("missing mcp__ prefix"));
+    }
+
+    /// `搜索` sanitizes to `_`: every tool it listed was qualified as
+    /// `mcp_____health`, a name `tools/call` could not route.
+    #[test]
+    fn manager_register_server_rejects_a_name_without_ascii_alphanics() {
+        let mut manager = McpManager::default();
+        let err = manager
+            .register_server(
+                make_server_config("搜索"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no ASCII letter or digit"),
+            "{err:#}"
+        );
+        assert!(manager.configs.is_empty());
+
+        // An accepted name round-trips through its qualified form.
+        manager
+            .register_server(
+                make_server_config("docs"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default()),
+            )
+            .unwrap();
+        let (server, tool) =
+            parse_qualified_tool_name(&qualify_tool_name("docs", "health")).unwrap();
+        assert_eq!((server.as_str(), tool.as_str()), ("docs", "health"));
     }
 
     #[test]
