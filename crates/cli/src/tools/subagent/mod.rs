@@ -1383,6 +1383,10 @@ impl SubAgentManager {
         write_json_atomic(path, &payload)
     }
 
+    /// Known limitation (the blocking-call convention): this runs inline
+    /// under the manager lock — a small atomic JSON write per state
+    /// change. Moving it off the runtime means a dedicated persister
+    /// (the callers hold the lock and are synchronous).
     fn persist_state_best_effort(&self) {
         if let Err(err) = self.persist_state() {
             // Must not be `eprintln!` — raw stderr inside the alt-screen
@@ -5618,18 +5622,28 @@ async fn run_subagent_task(task: SubAgentTask) {
         Err(_) => "failed".to_string(),
     };
     let payload = {
-        let card = task.runtime.ticket_store.as_ref().and_then(|store| {
-            let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
-            if result.is_err() {
-                // Failed runs end the mandate (retry = a new ticket).
-                store.end(
-                    &task.agent_id,
-                    crate::coordinator::tickets::TicketOutcome::Failed,
-                    "worker",
-                );
+        // Every ticket-store mutation persists the state file: on the
+        // blocking pool, like the ticket tools (`TicketStore::offload`).
+        let card = match task.runtime.ticket_store.as_ref() {
+            Some(store) => {
+                let (agent_id, status_name) = (task.agent_id.clone(), terminal_status_name.clone());
+                let failed = result.is_err();
+                crate::coordinator::tickets::TicketStore::offload(store, move |store| {
+                    if failed {
+                        // Failed runs end the mandate (retry = a new ticket).
+                        store.end(
+                            &agent_id,
+                            crate::coordinator::tickets::TicketOutcome::Failed,
+                            "worker",
+                        );
+                    }
+                    store.card_for(&agent_id, &status_name)
+                })
+                .await
+                .unwrap_or(None)
             }
-            store.card_for(&task.agent_id, &terminal_status_name)
-        });
+            None => None,
+        };
         match card {
             Some(card) => format!("{summary}\n{card}\n{sentinel}"),
             None => format!("{summary}\n{sentinel}"),
