@@ -113,7 +113,7 @@ impl ToolSpec for RememberTool {
         let path = context.memory_path.as_ref().ok_or_else(|| {
             ToolError::execution_failed(
                 "user memory is disabled — set `[memory] enabled = true` in config.toml or \
-                 `DEEPSEEK_MEMORY=on` in the environment to enable",
+                 `CODESMITH_MEMORY=on` in the environment to enable",
             )
         })?;
 
