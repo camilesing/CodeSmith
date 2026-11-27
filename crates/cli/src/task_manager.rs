@@ -262,6 +262,10 @@ impl TaskExecutor for EngineTaskExecutor {
         let mut last_progress_at = std::time::Instant::now();
         let mut terminal_status: Option<RuntimeTurnStatus> = None;
         let mut terminal_error: Option<String> = None;
+        // `item.completed` names the runtime item, not the wire tool-use id
+        // `item.started` announced: remember the pair so a completion finds
+        // the call it belongs to.
+        let mut tool_ids: HashMap<String, String> = HashMap::new();
 
         loop {
             if cancel.is_cancelled() && !interrupt_delivered {
@@ -376,6 +380,9 @@ impl TaskExecutor for EngineTaskExecutor {
                                 .unwrap_or_default()
                                 .to_string();
                             let input = tool.get("input").cloned().unwrap_or_else(|| json!({}));
+                            if let Some(item_id) = event.item_id.as_deref() {
+                                tool_ids.insert(item_id.to_string(), id.clone());
+                            }
                             let _ =
                                 events.send(TaskExecutionEvent::ToolStarted { id, name, input });
                         }
@@ -387,11 +394,11 @@ impl TaskExecutor for EngineTaskExecutor {
                                 || kind == "file_change"
                                 || kind == "command_execution"
                             {
-                                let id = item
-                                    .get("id")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_string();
+                                let id = completed_tool_id(
+                                    &mut tool_ids,
+                                    event.item_id.as_deref(),
+                                    item.get("id").and_then(Value::as_str),
+                                );
                                 let name = item
                                     .get("summary")
                                     .and_then(Value::as_str)
@@ -1446,6 +1453,20 @@ fn load_state(
     Ok((tasks, queue))
 }
 
+/// The id a completion reports its tool call under. `item.completed`
+/// carries the runtime item id; the start announced the wire tool-use id,
+/// which is what the task record keys the call by.
+fn completed_tool_id(
+    tool_ids: &mut HashMap<String, String>,
+    item_id: Option<&str>,
+    payload_id: Option<&str>,
+) -> String {
+    item_id
+        .and_then(|item_id| tool_ids.remove(item_id))
+        .or_else(|| payload_id.map(ToOwned::to_owned))
+        .unwrap_or_default()
+}
+
 fn resolve_task_id(tasks: &HashMap<String, TaskRecord>, id_or_prefix: &str) -> Result<String> {
     if tasks.contains_key(id_or_prefix) {
         return Ok(id_or_prefix.to_string());
@@ -1849,5 +1870,71 @@ mod tests {
         );
 
         assert_eq!(default_tasks_dir(), temp_home.path().join("tasks"));
+    }
+
+    #[test]
+    fn a_tool_completion_resolves_to_the_wire_tool_use_id() {
+        // `item.started` announces the wire id; `item.completed` only
+        // names the runtime item.
+        let mut tool_ids = HashMap::new();
+        tool_ids.insert("item_deadbeef".to_string(), "toolu_1".to_string());
+        assert_eq!(
+            completed_tool_id(&mut tool_ids, Some("item_deadbeef"), Some("item_deadbeef")),
+            "toolu_1"
+        );
+        // No pair remembered (a restart lost it): the payload id is the
+        // best available.
+        assert_eq!(
+            completed_tool_id(&mut tool_ids, Some("item_other"), Some("item_other")),
+            "item_other"
+        );
+        assert_eq!(completed_tool_id(&mut tool_ids, None, None), "");
+    }
+
+    #[tokio::test]
+    async fn tool_call_summary_closes_on_the_completed_item() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        let task = manager
+            .add_task(NewTaskRequest::from_prompt("test tool call ids"))
+            .await?;
+        wait_for_terminal_state(&manager, &task.id, Duration::from_secs(10)).await?;
+
+        // The two journal payload shapes: the start names `toolu_1`, the
+        // completion only `item_deadbeef`.
+        let mut tool_ids = HashMap::new();
+        tool_ids.insert("item_deadbeef".to_string(), "toolu_1".to_string());
+        let completed =
+            completed_tool_id(&mut tool_ids, Some("item_deadbeef"), Some("item_deadbeef"));
+        manager
+            .apply_execution_event(
+                &task.id,
+                TaskExecutionEvent::ToolStarted {
+                    id: "toolu_1".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "README.md"}),
+                },
+            )
+            .await?;
+        manager
+            .apply_execution_event(
+                &task.id,
+                TaskExecutionEvent::ToolCompleted {
+                    id: completed,
+                    name: "read_file".to_string(),
+                    success: true,
+                    output: "read ok".to_string(),
+                    metadata: None,
+                },
+            )
+            .await?;
+        let record = manager.get_task(&task.id).await?;
+        let call = record.tool_calls.last().expect("a tool call");
+        assert_eq!(call.id, "toolu_1");
+        assert_eq!(call.status, TaskToolStatus::Success);
+        assert!(call.ended_at.is_some());
+        Ok(())
     }
 }
