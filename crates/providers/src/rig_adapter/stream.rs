@@ -31,12 +31,20 @@
 //! OpenAI-compat path compresses `finish_reason` into a crate-private
 //! two-value enum and skips `[DONE]` outright, and the Anthropic path reads
 //! `stop_reason` and then discards the string. The one public signal that
-//! survives is [`StreamedAssistantContent::Final`]: rig only yields it when
-//! the SSE loop closed without error. The mapper therefore treats `Final` as
-//! the termination proof. A stream that ends *without* one — the connection
-//! died silently mid-flight — is surfaced as a retryable `Err` (never a
-//! synthetic `MessageStop`), so the engine's transparent-retry machinery can
+//! survives is [`StreamedAssistantContent::Final`]: rig yields it whenever the
+//! SSE loop ended without an `Err` — after a `finish_reason`, and also when
+//! the HTTP body simply ends. The mapper therefore treats `Final` as the
+//! termination proof. A stream that ends *without* one — rig's provider layer
+//! surfaced an error on the way out — is surfaced as a retryable `Err` (never
+//! a synthetic `MessageStop`), so the engine's transparent-retry machinery can
 //! re-send zero-content rounds and surface partial ones as `Partial`.
+//!
+//! Known limitation: `Final` proves the body ended cleanly, not that the
+//! provider finished the message. A gateway that ends a 200 response before
+//! any `finish_reason` / `[DONE]` still yields `Final`, and that truncated
+//! output is closed out as an ordinary `end_turn` turn. This layer cannot
+//! tell the two apart — rig discards the finish evidence; only
+//! `H2FallbackClient::send_streaming` still sees the raw SSE bytes.
 //!
 //! `stop_reason` on the terminal `MessageDelta` is derived from what CAN be
 //! proven at this layer (see [`super::convert::derive_stop_reason`]): billed
@@ -126,8 +134,8 @@ where
                     }
                     // P0-3 — the stream ended with no termination proof: rig
                     // never yielded its Final payload, which on both provider
-                    // paths only happens when the SSE loop did NOT close
-                    // cleanly. This is an interrupted connection, not a
+                    // paths means the SSE loop ended with an error. This is
+                    // an interrupted connection, not a
                     // completion: surface a retryable error (the wording keeps
                     // the engine's text classifier on the Network category)
                     // instead of forging MessageDelta/MessageStop. The engine
@@ -919,9 +927,10 @@ mod tests {
     }
 
     /// P0-3 — a stream that ends without rig's `Final` payload carries no
-    /// termination proof (the connection may have died silently). The mapper
-    /// must surface a retryable error, never a synthetic MessageStop or a
-    /// forged end_turn.
+    /// termination proof (in practice rig's provider layer ended it with an
+    /// error; the synthetic stream here models the missing proof itself).
+    /// The mapper must surface a retryable error, never a synthetic
+    /// MessageStop or a forged end_turn.
     #[tokio::test]
     async fn stream_end_without_final_is_an_error_not_a_completion() {
         let resp = raw_stream(vec![
