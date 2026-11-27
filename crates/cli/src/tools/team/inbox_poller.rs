@@ -311,8 +311,19 @@ pub fn classify_inbox_messages(
 /// continuing to tick drained and permanently destroyed every remaining
 /// message while the task looped forever as a zombie. A closed channel ends
 /// the poller instead.
-async fn dispatch(tx_op: &TeamInboxTx, op: Op, team_name: &str) -> bool {
-    if let Err(err) = tx_op.send(op).await {
+async fn dispatch(
+    tx_op: &TeamInboxTx,
+    cancel_token: &CancellationToken,
+    op: Op,
+    team_name: &str,
+) -> bool {
+    // A full channel (a wedged engine) parks `send` forever: cancellation
+    // wins, and the stale op for a switched-away team is dropped.
+    let sent = tokio::select! {
+        _ = cancel_token.cancelled() => return false,
+        sent = tx_op.send(op) => sent,
+    };
+    if let Err(err) = sent {
         tracing::warn!(
             "engine dispatch channel closed ({err}); stopping the inbox poller for team {team_name}"
         );
@@ -421,6 +432,7 @@ pub async fn run_leader_inbox_poller(
             }
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::PlanApprovalAutoApprove {
                         from: entry.from,
@@ -440,6 +452,7 @@ pub async fn run_leader_inbox_poller(
         for entry in shutdown_requests {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ShutdownRequestMessage {
                         from: entry.from,
@@ -463,6 +476,7 @@ pub async fn run_leader_inbox_poller(
         for entry in sandbox_permission_requests {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
                         from: entry.agent_id.clone(),
@@ -483,6 +497,7 @@ pub async fn run_leader_inbox_poller(
         for entry in sandbox_permission_responses {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
                         from: "sandbox-permission".to_string(),
@@ -511,6 +526,7 @@ pub async fn run_leader_inbox_poller(
         for entry in shutdown_approvals {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ShutdownApprovalAction {
                         from: entry.from,
@@ -530,6 +546,7 @@ pub async fn run_leader_inbox_poller(
         for entry in shutdown_rejections {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ShutdownRejectionInfo {
                         from: entry.from,
@@ -549,6 +566,7 @@ pub async fn run_leader_inbox_poller(
         for entry in permission_requests {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::PermissionRequestPending {
                         request_id: entry.request_id,
@@ -570,6 +588,7 @@ pub async fn run_leader_inbox_poller(
         for entry in idle_notifications {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::IdleNotificationInfo {
                         from: entry.from,
@@ -591,6 +610,7 @@ pub async fn run_leader_inbox_poller(
         for entry in mode_set_requests {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ModeSetRequestAction {
                         from: entry.from,
@@ -609,6 +629,7 @@ pub async fn run_leader_inbox_poller(
         for entry in team_permission_updates {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeamPermissionUpdateInfo {
                         from: entry.from,
@@ -628,6 +649,7 @@ pub async fn run_leader_inbox_poller(
         for entry in task_assignments {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
                         from: entry.assigned_by,
@@ -647,6 +669,7 @@ pub async fn run_leader_inbox_poller(
         for entry in permission_responses {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::PermissionResponseReceived {
                         request_id: entry.request_id,
@@ -666,6 +689,7 @@ pub async fn run_leader_inbox_poller(
         for msg in regular_messages {
             if !dispatch(
                 &tx_op,
+                &cancel_token,
                 Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
                         from: msg.from,
