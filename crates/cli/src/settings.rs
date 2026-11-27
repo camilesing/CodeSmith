@@ -253,6 +253,14 @@ impl Settings {
         Ok(s)
     }
 
+    /// [`Self::load`] off the runtime worker: the read hits the file
+    /// system synchronously.
+    pub async fn load_off_runtime() -> Result<Self> {
+        tokio::task::spawn_blocking(Self::load)
+            .await
+            .map_err(|err| anyhow::anyhow!("settings load task failed: {err}"))?
+    }
+
     /// Save settings to disk
     pub fn save(&self) -> Result<()> {
         let path = Self::path()?;

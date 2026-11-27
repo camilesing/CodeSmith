@@ -104,7 +104,7 @@ type SharedWriter<W> = Arc<tokio::sync::Mutex<W>>;
 pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
     let store = FileSessionStore::default_location()
         .context("ACP sessions are saved sessions; the sessions directory must be usable")?;
-    let settings = Settings::load().unwrap_or_default();
+    let settings = Settings::load_off_runtime().await.unwrap_or_default();
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();

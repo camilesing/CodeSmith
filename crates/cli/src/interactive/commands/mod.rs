@@ -1216,24 +1216,25 @@ async fn cmd_model(state: &mut ReplState, arg: &str) {
     }
     // Persist the selection (mirrors the retired /model command): pinned
     // per provider in settings.toml so restarts keep it.
-    match crate::settings::Settings::load() {
-        Ok(mut settings) => {
-            let provider = state.api_provider.as_str().to_string();
-            settings
-                .provider_models
-                .get_or_insert_with(Default::default)
-                .insert(provider, state.model_selection_for_persistence());
-            if let Err(err) = settings.save() {
-                println!(
-                    "{}",
-                    format!("warning: could not persist model selection: {err}").yellow()
-                );
-            }
-        }
-        Err(err) => println!(
+    // The load and the save (which polls the file lock with a sleep) are
+    // blocking: the whole update runs on the blocking pool.
+    let provider = state.api_provider.as_str().to_string();
+    let selection = state.model_selection_for_persistence();
+    let persisted = tokio::task::spawn_blocking(move || {
+        let mut settings = crate::settings::Settings::load()?;
+        settings
+            .provider_models
+            .get_or_insert_with(Default::default)
+            .insert(provider, selection);
+        settings.save()
+    })
+    .await
+    .unwrap_or_else(|err| Err(anyhow::anyhow!("settings update task failed: {err}")));
+    if let Err(err) = persisted {
+        println!(
             "{}",
-            format!("warning: could not load settings to persist model: {err}").yellow()
-        ),
+            format!("warning: could not persist model selection: {err}").yellow()
+        );
     }
     println!("model set to {}", state.model_display_label());
 }

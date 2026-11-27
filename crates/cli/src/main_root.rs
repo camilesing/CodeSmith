@@ -3384,7 +3384,8 @@ pub(crate) async fn run_doctor(
     // know they can opt in via `prefer_external_pdftotext = true`, and
     // (b) so users who *did* opt in get a clean signal when the binary
     // is missing rather than discovering it on the next PDF read.
-    let prefer_external = crate::settings::Settings::load()
+    let prefer_external = crate::settings::Settings::load_off_runtime()
+        .await
         .map(|s| s.prefer_external_pdftotext)
         .unwrap_or(false);
     match pdftotext {
@@ -5995,7 +5996,8 @@ pub(crate) async fn run_interactive(
     // `App::new`: the settings-pinned provider outranks the config file.
     if !cli.skip_onboarding && !codesmith_agent_runtime::onboarding::is_onboarded() {
         let mut effective = config.clone();
-        if let Some(provider_str) = crate::settings::Settings::load()
+        if let Some(provider_str) = crate::settings::Settings::load_off_runtime()
+            .await
             .ok()
             .and_then(|settings| settings.default_provider)
             && let Some(parsed) = crate::config::ApiProvider::parse(&provider_str)
@@ -6407,7 +6409,9 @@ pub(crate) async fn run_exec_agent(
         .reasoning_effort
         .map(|effort| effort.as_setting().to_string());
 
-    let settings = crate::settings::Settings::load().unwrap_or_default();
+    let settings = crate::settings::Settings::load_off_runtime()
+        .await
+        .unwrap_or_default();
 
     let engine_config = headless_engine_config(
         config,
@@ -6931,7 +6935,9 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         .reasoning_effort
         .map(|effort| effort.as_setting().to_string());
 
-    let settings = crate::settings::Settings::load().unwrap_or_default();
+    let settings = crate::settings::Settings::load_off_runtime()
+        .await
+        .unwrap_or_default();
 
     let mut runtime_services = crate::tools::spec::RuntimeToolServices::default();
     runtime_services.team_sender = Some(args.name.clone());

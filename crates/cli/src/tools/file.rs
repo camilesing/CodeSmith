@@ -390,15 +390,12 @@ async fn read_pdf(
     // `pdftotext -layout` route by setting
     // `prefer_external_pdftotext = true` in `~/.config/deepseek/settings.toml`.
     //
-    // The settings read hits the config file synchronously — offload it to
-    // the blocking pool along with the CPU-heavy extraction below.
-    let prefer_external = tokio::task::spawn_blocking(|| {
-        crate::settings::Settings::load()
-            .map(|s| s.prefer_external_pdftotext)
-            .unwrap_or(false)
-    })
-    .await
-    .unwrap_or(false);
+    // The settings read hits the config file synchronously — it goes to
+    // the blocking pool, like the CPU-heavy extraction below.
+    let prefer_external = crate::settings::Settings::load_off_runtime()
+        .await
+        .map(|s| s.prefer_external_pdftotext)
+        .unwrap_or(false);
 
     if prefer_external {
         read_pdf_via_pdftotext(path, page_range, cancel_token).await

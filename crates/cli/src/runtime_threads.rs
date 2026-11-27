@@ -2433,7 +2433,9 @@ impl RuntimeThreadManager {
         let allow_shell = req_allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req_trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = req_auto_approve.unwrap_or(thread.auto_approve);
-        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let settings = crate::settings::Settings::load_off_runtime()
+            .await
+            .unwrap_or_default();
         let show_thinking = settings.show_thinking;
         let is_simple = settings.is_simple;
 
@@ -3172,7 +3174,9 @@ impl RuntimeThreadManager {
             .lsp
             .clone()
             .map(crate::config::LspConfigToml::into_runtime);
-        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let settings = crate::settings::Settings::load_off_runtime()
+            .await
+            .unwrap_or_default();
         let runtime_services = crate::tools::spec::RuntimeToolServices {
             task_manager: self
                 .task_manager
