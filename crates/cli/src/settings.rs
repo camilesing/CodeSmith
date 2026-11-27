@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::normalize_model_name;
 use crate::localization::normalize_configured_locale;
 /// Normalize a theme name to its canonical form (moved from the retired
-/// ratatui palette; settings validation is the surviving consumer).
+/// ratatui palette; settings validation is the surviving consumer). Every
+/// canonical name is one the renderer implements (`theme::THEME_NAMES`).
 pub(crate) fn normalize_theme_name(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "auto" | "system" | "default" => Some("system"),
@@ -24,9 +25,6 @@ pub(crate) fn normalize_theme_name(value: &str) -> Option<&'static str> {
         "tokyo-night" | "tokyonight" | "tokyo" => Some("tokyo-night"),
         "dracula" => Some("dracula"),
         "gruvbox-dark" | "gruvbox" => Some("gruvbox-dark"),
-        "claude" => Some("claude"),
-        "matrix" | "hacker" => Some("matrix"),
-        "solarized-light" | "solarized" => Some("solarized-light"),
         _ => None,
     }
 }
@@ -431,6 +429,20 @@ mod tests {
         assert!(body.contains("[status_icons]"), "{body}");
         let back: Settings = toml::from_str(&body).expect("serialized settings parse");
         assert_eq!(back.status_icons, settings.status_icons);
+    }
+
+    #[test]
+    fn theme_names_without_a_renderer_are_unrecognized() {
+        // Three entries of the retired ratatui palette survived the move
+        // with no accent behind them: they used to be accepted and then
+        // silently rendered in the default colour.
+        for name in ["claude", "matrix", "hacker", "solarized", "solarized-light"] {
+            assert_eq!(normalize_theme_name(name), None, "{name}");
+        }
+        // Every theme the renderer implements is still accepted, verbatim.
+        for name in crate::interactive::theme::THEME_NAMES {
+            assert_eq!(normalize_theme_name(name), Some(*name), "{name}");
+        }
     }
 
     #[test]
