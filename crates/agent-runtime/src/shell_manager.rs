@@ -1824,32 +1824,19 @@ impl ShellManager {
         let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
         let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
 
-        // Reader threads write into Arc-shared buffers and are joined with
-        // a bounded deadline below: a grandchild that escaped the process
-        // group (setsid, `nohup job &`) keeps the pipe write-ends open
-        // past the child's exit, so read_to_end never EOFs and an
-        // unbounded join would freeze the manager mutex forever — the
-        // same failure `BackgroundShell::collect_output` detaches for.
+        // The incremental readers publish every chunk as it arrives and are
+        // joined with a bounded deadline below: a grandchild that escaped the
+        // process group (setsid, `nohup job &`) keeps the pipe write-ends
+        // open past the child's exit, so the read never EOFs and an unbounded
+        // join would freeze the manager mutex forever — the same failure
+        // `BackgroundShell::collect_output` detaches for. What the child
+        // wrote before it exited is in the buffer either way; the
+        // publish-at-EOF readers this replaced had contributed nothing when
+        // they were detached.
         let stdout_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
         let stderr_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let stdout_sink = Arc::clone(&stdout_buffer);
-        let stdout_thread = std::thread::spawn(move || {
-            let mut reader = stdout_handle;
-            let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
-            if let Ok(mut sink) = stdout_sink.lock() {
-                *sink = buf;
-            }
-        });
-        let stderr_sink = Arc::clone(&stderr_buffer);
-        let stderr_thread = std::thread::spawn(move || {
-            let mut reader = stderr_handle;
-            let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
-            if let Ok(mut sink) = stderr_sink.lock() {
-                *sink = buf;
-            }
-        });
+        let stdout_thread = spawn_reader_thread(stdout_handle, Arc::clone(&stdout_buffer));
+        let stderr_thread = spawn_reader_thread(stderr_handle, Arc::clone(&stderr_buffer));
 
         if let Some(input) = stdin_data
             && let Some(mut stdin) = child.stdin.take()
@@ -3163,6 +3150,19 @@ mod manager_tests {
             err.to_string().contains("TTY mode requires background"),
             "got: {err:#}"
         );
+    }
+
+    /// A grandchild that keeps the pipes open must not cost the child its own
+    /// output: the readers publish as they read, not at EOF.
+    #[cfg(unix)] // unix command string
+    #[test]
+    fn sync_output_survives_a_grandchild_holding_the_pipes() {
+        let (_tmp, mut manager) = temp_manager();
+        let result = manager
+            .execute("echo parent-output; sleep 5 &", None, 10_000, false)
+            .expect("execute");
+        assert_eq!(result.status, ShellStatus::Completed, "{result:?}");
+        assert!(result.stdout.contains("parent-output"), "{result:?}");
     }
 
     /// Interactive execution inherits the test process's stdio — a command
