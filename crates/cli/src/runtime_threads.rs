@@ -2069,6 +2069,10 @@ impl RuntimeThreadManager {
         forked.updated_at = now;
         forked.latest_turn_id = None;
         forked.archived = false;
+        // Prompts parked on the source belong to the source: an inherited
+        // queue would run them a second time on the fork, against the same
+        // workspace, with no `queue.updated` record on the fork's stream.
+        forked.queue = Vec::new();
         self.store.save_thread(&forked)?;
 
         let source_turns = self.store.list_turns_for_thread(&source.id)?;
@@ -2188,6 +2192,10 @@ impl RuntimeThreadManager {
         forked.updated_at = now;
         forked.latest_turn_id = None;
         forked.archived = false;
+        // Prompts parked on the source belong to the source: an inherited
+        // queue would run them a second time on the fork, against the same
+        // workspace, with no `queue.updated` record on the fork's stream.
+        forked.queue = Vec::new();
         self.store.save_thread(&forked)?;
 
         for source_turn in source_turns.iter().take(target_turn_idx) {
@@ -7543,6 +7551,73 @@ mod tests {
             .count();
         assert_eq!(started, 2);
         assert_eq!(completed, 2);
+        Ok(())
+    }
+
+    fn create_request(auto_approve: Option<bool>) -> CreateThreadRequest {
+        CreateThreadRequest {
+            model: None,
+            workspace: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve,
+            archived: false,
+            system_prompt: None,
+            task_id: None,
+        }
+    }
+
+    fn start_request(prompt: &str) -> StartTurnRequest {
+        StartTurnRequest {
+            prompt: prompt.to_string(),
+            input_summary: None,
+            model: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    fn turn_complete(status: TurnOutcomeStatus) -> EngineEvent {
+        EngineEvent::TurnComplete {
+            usage: Usage::default(),
+            status,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+            reported_model: None,
+            failed_attempts: Vec::new(),
+        }
+    }
+
+    /// A fork starts with an empty queue: prompts parked on the source
+    /// belong to the source, and an inherited queue ran them a second time
+    /// on the fork.
+    #[tokio::test]
+    async fn fork_thread_starts_with_an_empty_queue() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let mut source = sample_thread("thr_fork_src");
+        source.queue.push(QueuedItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: "qitem_parked01".to_string(),
+            text: "run me on the source only".to_string(),
+            appendix: None,
+            image_paths: Vec::new(),
+            attachments_metadata: None,
+            rpc_id: None,
+            input_summary: "run me".to_string(),
+            created_at: Utc::now(),
+        });
+        manager.store.save_thread(&source)?;
+
+        let forked = manager.fork_thread(&source.id).await?;
+
+        assert!(forked.queue.is_empty(), "{:?}", forked.queue);
+        assert!(manager.get_thread(&forked.id).await?.queue.is_empty());
+        assert_eq!(manager.get_thread(&source.id).await?.queue.len(), 1);
         Ok(())
     }
 
