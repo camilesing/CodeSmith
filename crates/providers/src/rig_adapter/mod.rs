@@ -158,7 +158,7 @@ impl<C, S> RigLlmClient<C, S> {
 /// Build a rig `CompletionRequestBuilder` from a CodeSmith `MessageRequest`.
 ///
 /// The last CodeSmith message becomes the rig `prompt`; everything before it is
-/// `chat_history`. `system`, `tools`, `tool_choice`, `temperature`,
+/// `chat_history`. `system`, `tools`, `tool_choice`, `temperature`, `top_p`,
 /// `max_tokens`, and provider-specific extras are routed through the shaper.
 fn build_request<C, S>(
     client: &C,
@@ -226,6 +226,11 @@ where
     }
     if let Some(temp) = req.temperature {
         builder = builder.temperature(f64::from(temp));
+    }
+    // rig's builder has no `top_p` setter; the additional-params merge is
+    // how every other field without a first-class slot travels.
+    if let Some(top_p) = req.top_p {
+        builder = builder.additional_params(serde_json::json!({ "top_p": f64::from(top_p) }));
     }
     if let Some(tc) = req
         .tool_choice
@@ -381,5 +386,152 @@ where
         let base_url = self.base_url.clone();
         let api_key = self.api_key.clone().unwrap_or_default();
         Box::pin(async move { fim_translate::list_models(&http, &base_url, &api_key).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use codesmith_agent::models::{ContentBlock, Message};
+    use rig_core::http_client::{
+        Error as HttpError, HttpClientExt, LazyBody, MultipartForm, Request, Response,
+        Result as HttpResult, StreamingResponse,
+    };
+    use rig_core::wasm_compat::WasmCompatSend;
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+
+    const CANNED_COMPLETION: &[u8] = br#"{"id":"chatcmpl-test","object":"chat.completion","created":0,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+
+    /// Answers every request with one canned chat completion and keeps the
+    /// JSON bodies rig serialized — no network, so no proxy in the way.
+    #[derive(Clone, Debug, Default)]
+    struct RecordingTransport(Arc<StdMutex<Vec<Vec<u8>>>>);
+
+    impl RecordingTransport {
+        fn bodies(&self) -> Vec<serde_json::Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|body| serde_json::from_slice(body).expect("rig serializes JSON"))
+                .collect()
+        }
+    }
+
+    async fn canned<U>() -> HttpResult<Response<LazyBody<U>>>
+    where
+        U: From<Bytes> + WasmCompatSend + 'static,
+    {
+        let mut res = Response::builder().status(200);
+        if let Some(hs) = res.headers_mut() {
+            hs.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/json"),
+            );
+        }
+        let body: LazyBody<U> =
+            Box::pin(async move { Ok(U::from(Bytes::from_static(CANNED_COMPLETION))) });
+        res.body(body).map_err(HttpError::Protocol)
+    }
+
+    impl HttpClientExt for RecordingTransport {
+        fn send<T, U>(
+            &self,
+            req: Request<T>,
+        ) -> impl Future<Output = HttpResult<Response<LazyBody<U>>>> + WasmCompatSend + 'static
+        where
+            T: Into<Bytes> + WasmCompatSend,
+            U: From<Bytes> + WasmCompatSend + 'static,
+        {
+            let (_parts, body) = req.into_parts();
+            self.0.lock().unwrap().push(body.into().to_vec());
+            canned::<U>()
+        }
+
+        fn send_multipart<U>(
+            &self,
+            _req: Request<MultipartForm>,
+        ) -> impl Future<Output = HttpResult<Response<LazyBody<U>>>> + WasmCompatSend + 'static
+        where
+            U: From<Bytes> + WasmCompatSend + 'static,
+        {
+            canned::<U>()
+        }
+
+        fn send_streaming<T>(
+            &self,
+            _req: Request<T>,
+        ) -> impl Future<Output = HttpResult<StreamingResponse>> + WasmCompatSend
+        where
+            T: Into<Bytes> + WasmCompatSend,
+        {
+            std::future::ready(Err(HttpError::StreamEnded))
+        }
+    }
+
+    /// The adapter over the recorder — the openai factory's assembly minus
+    /// the HTTP backend.
+    fn recorded_client(transport: &RecordingTransport) -> impl LlmClient + use<> {
+        let client = rig_core::providers::openai::CompletionsClient::builder()
+            .api_key("test-key".to_string())
+            .http_client(transport.clone())
+            .build()
+            .expect("build the rig client over the recorder");
+        RigLlmClient::new(
+            client,
+            "test-model".to_string(),
+            shaper::GenericShaper::new("openai"),
+            String::new(),
+            None,
+            None,
+        )
+    }
+
+    fn user_request(top_p: Option<f32>) -> MessageRequest {
+        MessageRequest {
+            model: String::new(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "hi".to_string(),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 16,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: None,
+            top_p,
+        }
+    }
+
+    /// `top_p` used to be the one sampling field the adapter never
+    /// forwarded, while the persisted request envelope recorded it.
+    #[tokio::test]
+    async fn top_p_reaches_the_wire_only_when_set() {
+        let transport = RecordingTransport::default();
+        let client = recorded_client(&transport);
+        client
+            .create_message(user_request(Some(0.9)))
+            .await
+            .expect("canned completion");
+        client
+            .create_message(user_request(None))
+            .await
+            .expect("canned completion");
+
+        let bodies = transport.bodies();
+        assert_eq!(bodies[0]["top_p"].as_f64(), Some(f64::from(0.9_f32)));
+        assert!(
+            bodies[1].get("top_p").is_none(),
+            "an unset top_p must not travel"
+        );
     }
 }
