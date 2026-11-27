@@ -309,7 +309,11 @@ fn append_to_entrypoint(path: &std::path::Path, line: &str) -> std::io::Result<(
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .read(true)
         .open(path)?;
+    // Same hazard as `memory::append_entry`: a file saved without a final
+    // newline used to have the pointer line spliced onto its last line.
+    codesmith_agent_runtime::memory::ensure_trailing_newline(&mut file)?;
     use std::io::Write;
     writeln!(file, "{line}")?;
     Ok(())
@@ -588,6 +592,20 @@ mod tests {
             entry.matches("](").count(),
             1,
             "pointer line must contain exactly one link target: {entry}"
+        );
+    }
+
+    #[test]
+    fn append_to_entrypoint_starts_a_new_line_after_a_file_without_a_trailing_newline() {
+        let tmp = tempdir().unwrap();
+        let entrypoint = tmp.path().join("MEMORY.md");
+        std::fs::write(&entrypoint, "# Memory").unwrap();
+        append_to_entrypoint(&entrypoint, "- [ptr](ptr.md) — desc").unwrap();
+        let body = std::fs::read_to_string(&entrypoint).unwrap();
+        assert_eq!(body.lines().count(), 2, "{body}");
+        assert!(
+            body.lines().last().unwrap().starts_with("- [ptr]"),
+            "{body}"
         );
     }
 

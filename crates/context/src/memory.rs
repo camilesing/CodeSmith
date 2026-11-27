@@ -161,8 +161,30 @@ pub fn append_entry(path: &Path, entry: &str) -> io::Result<()> {
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .read(true)
         .open(path)?;
+    ensure_trailing_newline(&mut file)?;
     writeln!(file, "- ({timestamp}) {trimmed}")?;
+    Ok(())
+}
+
+/// Terminate the file's last line when it does not end with a newline, so
+/// the next append starts a line of its own. A file last written without a
+/// final `\n` (an editor, a model's write tool) used to have the new bullet
+/// spliced onto its last line. Appends go to the end regardless of the
+/// cursor, so the seeks here only read.
+pub fn ensure_trailing_newline(file: &mut fs::File) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = file.seek(SeekFrom::End(0))?;
+    if len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(len - 1))?;
+    let mut last = [0u8];
+    let ends_with_newline = file.read_exact(&mut last).is_ok() && last[0] == b'\n';
+    if !ends_with_newline {
+        file.write_all(b"\n")?;
+    }
     Ok(())
 }
 
@@ -311,6 +333,20 @@ mod tests {
         assert!(body.contains("second"));
         // Two bullets means two lines of `- (date) entry`.
         assert_eq!(body.matches("- (").count(), 2);
+    }
+
+    /// A file saved without a final newline used to get the next bullet
+    /// spliced onto its last line.
+    #[test]
+    fn append_entry_starts_a_new_line_after_a_file_without_a_trailing_newline() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("memory.md");
+        fs::write(&path, "- old note").unwrap();
+        append_entry(&path, "new").unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+        assert_eq!(body.lines().count(), 2, "{body}");
+        assert!(body.starts_with("- old note\n"), "{body}");
+        assert!(body.lines().last().unwrap().starts_with("- ("), "{body}");
     }
 
     #[test]
