@@ -434,7 +434,13 @@ fn redact_uri_for_diagnostics(uri: &str) -> String {
     }
 }
 
-fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_body: &str) {
+/// Gated forensic dump of the exact request a provider rejected: pretty
+/// JSON (redacted URI, status, both bodies) under
+/// `CODESMITH_DUMP_400_PAYLOAD_DIR`, then the error line that carries the
+/// dump path. The write is disk I/O on the async error path, so it goes to
+/// the blocking pool; a join error (pool panic, runtime shutdown) only costs
+/// the dump.
+async fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_body: &str) {
     if !env_flag_enabled(std::env::var("CODESMITH_DUMP_400_PAYLOAD").ok().as_deref()) {
         return;
     }
@@ -456,40 +462,12 @@ fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_
         "request_body": request_body,
     });
 
-    let mut note = String::new();
-    if let Ok(payload) = serde_json::to_string_pretty(&dump) {
-        // `create_new` + `0o600`: the dump carries the full request
-        // transcript (user code, tool outputs), so it must be owner-only —
-        // `fs::write`'s default mode is world-readable — and must never
-        // follow a pre-planted entry at the predictable path (symlink
-        // clobber). Known limitation: dumps accumulate without a cap; the
-        // flag is opt-in forensics, so cleanup stays manual.
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-        #[cfg(unix)]
-        let open = || {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)
-        };
-        #[cfg(not(unix))]
-        let open = || {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-        };
-        let write = open().and_then(|mut file| {
-            use std::io::Write;
-            file.write_all(payload.as_bytes())
-        });
-        match write {
-            Ok(()) => note = format!("dump written to {}", path.display()),
-            Err(error) => note = format!("dump write failed: {error}"),
-        }
-    }
+    let note = match serde_json::to_string_pretty(&dump) {
+        Ok(payload) => tokio::task::spawn_blocking(move || write_dump(&path, &payload))
+            .await
+            .unwrap_or_else(|error| format!("dump write failed: {error}")),
+        Err(_) => String::new(),
+    };
     let summary = wire_summary(&request_body);
     tracing::error!(
         uri = %redact_uri_for_diagnostics(&spec.uri),
@@ -500,6 +478,42 @@ fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_
         "{note}; provider rejected request: {}",
         truncate_for_log(response_body)
     );
+}
+
+/// Write one dump, owner-only; returns the note the error line carries.
+/// Blocking — only ever run through `spawn_blocking`.
+///
+/// `create_new` + `0o600`: the dump carries the full request transcript
+/// (user code, tool outputs), so it must be owner-only — `fs::write`'s
+/// default mode is world-readable — and must never follow a pre-planted
+/// entry at the predictable path (symlink clobber). Known limitation: dumps
+/// accumulate without a cap; the flag is opt-in forensics, so cleanup stays
+/// manual.
+fn write_dump(path: &std::path::Path, payload: &str) -> String {
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    #[cfg(unix)]
+    let open = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    };
+    #[cfg(not(unix))]
+    let open = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    };
+    match open().and_then(|mut file| {
+        use std::io::Write;
+        file.write_all(payload.as_bytes())
+    }) {
+        Ok(()) => format!("dump written to {}", path.display()),
+        Err(error) => format!("dump write failed: {error}"),
+    }
 }
 
 fn truncate_for_log(text: &str) -> String {
@@ -529,7 +543,7 @@ async fn non_success_status_error(
         .await
         .unwrap_or_else(|error| format!("failed to read error response body: {error}"));
     if let Some(spec) = spec {
-        dump_failed_request(spec, status, &message);
+        dump_failed_request(spec, status, &message).await;
     }
     HttpError::InvalidStatusCodeWithMessage(status, message)
 }
@@ -1102,8 +1116,9 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap()
     }
 
-    #[test]
-    fn dump_failed_request_writes_redacted_forensic_file() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn dump_failed_request_writes_redacted_forensic_file() {
         let _env = DUMP_ENV_LOCK.lock().unwrap();
         let dir = unique_dump_dir("ok");
         set_dump_env(&dir);
@@ -1116,7 +1131,8 @@ mod tests {
             &spec,
             reqwest::StatusCode::BAD_REQUEST,
             "{\"error\":\"boom\"}",
-        );
+        )
+        .await;
         clear_dump_env();
 
         let dump = single_dump_file(&dir);
@@ -1131,8 +1147,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn dump_failed_request_records_body_parse_errors() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn dump_failed_request_records_body_parse_errors() {
         let _env = DUMP_ENV_LOCK.lock().unwrap();
         let dir = unique_dump_dir("parse");
         set_dump_env(&dir);
@@ -1141,7 +1158,8 @@ mod tests {
             &dump_spec("https://api.example/v1", b"not json at all"),
             reqwest::StatusCode::UNPROCESSABLE_ENTITY,
             "bad",
-        );
+        )
+        .await;
         clear_dump_env();
 
         let dump = single_dump_file(&dir);
@@ -1156,8 +1174,9 @@ mod tests {
     /// The dump is best-effort forensics: an unwritable dump directory must
     /// degrade to the tracing note instead of panicking on the failing path.
     #[cfg(unix)]
-    #[test]
-    fn dump_failed_request_survives_unwritable_directory() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn dump_failed_request_survives_unwritable_directory() {
         use std::os::unix::fs::PermissionsExt;
         let _env = DUMP_ENV_LOCK.lock().unwrap();
         let dir = unique_dump_dir("locked");
@@ -1170,7 +1189,8 @@ mod tests {
             &dump_spec("https://api.example/v1", br#"{"messages":[]}"#),
             reqwest::StatusCode::BAD_REQUEST,
             "x",
-        );
+        )
+        .await;
         perms.set_mode(0o700);
         std::fs::set_permissions(&dir, perms).unwrap();
         clear_dump_env();
