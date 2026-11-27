@@ -25,7 +25,7 @@ pub struct PlanModeState {
     /// is the session's own state and needs no separate flag. No user mode
     /// switch writes it.
     pub active: bool,
-    /// Slug for the current plan file (e.g. "plan_a3f2b1c4").
+    /// Slug for the current plan file (`plan_` plus a UUID's hex digits).
     pub current_slug: Option<String>,
 }
 

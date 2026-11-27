@@ -1,7 +1,7 @@
 //! Plan file management — persistence, slug generation, directory resolution.
 //!
-//! Plans are stored at `~/.codesmith/plans/{slug}.md`. The slug is a short
-//! identifier derived from a UUID v4 (e.g. `plan_a3f2b1c4`), providing
+//! Plans are stored at `~/.codesmith/plans/{slug}.md`. The slug is `plan_`
+//! plus a UUID v4's 32 hex digits without dashes (37 characters), providing
 //! uniqueness without requiring the `rand` crate. A future iteration may
 //! switch to word-pair slugs (adjective-noun) for readability once `rand`
 //! is added as a workspace dependency.
@@ -28,9 +28,9 @@ pub fn plans_dir() -> Result<PathBuf> {
 
 /// Generate a unique plan slug.
 ///
-/// Uses the first 8 hex characters of a UUID v4, prefixed with `plan_`.
-/// Example: `plan_a3f2b1c4`. Checks for collision with existing plan files
-/// and retries up to 10 times if a collision is found.
+/// `plan_` plus a UUID v4's 32 hex digits without dashes, e.g.
+/// `plan_a3f2b1c40d4e4f5a6b7c8d9e0f1a2b3`. Checks for collision with
+/// existing plan files and retries up to 10 times if a collision is found.
 pub fn generate_plan_slug() -> Result<String> {
     let dir = plans_dir()?;
     for _ in 0..10 {
@@ -42,7 +42,8 @@ pub fn generate_plan_slug() -> Result<String> {
             return Ok(slug);
         }
     }
-    // Fallback: use full UUID to guarantee uniqueness
+    // Ten collisions in a row is not a realistic outcome: return one more
+    // UUID, dashes kept, unchecked.
     let uuid = uuid::Uuid::new_v4();
     Ok(format!("{PLAN_SLUG_PREFIX}{uuid}"))
 }
