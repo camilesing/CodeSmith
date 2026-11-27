@@ -200,14 +200,14 @@ impl IndexStore {
         Ok(id)
     }
 
-    /// Delete every symbol and occurrence row. Dirty detection is
-    /// (mtime, size)-only, so a backend or enabled-language change must
-    /// purge stale extractor output — unchanged files would otherwise
-    /// never be re-extracted and would serve mixed old/new rows forever.
+    /// Delete every inventory row, cascading to its symbols and
+    /// occurrences. Dirty detection is (mtime, size)-only, so a backend
+    /// change must purge stale extractor output — and the inventory rows
+    /// with it, or the unchanged files are never dirty again and the
+    /// index stays empty until each one changes.
     pub fn clear_symbols(&self) -> Result<()> {
         let conn = self.conn.lock().expect("index store mutex poisoned");
-        conn.execute("DELETE FROM occurrences", [])?;
-        conn.execute("DELETE FROM symbols", [])?;
+        conn.execute("DELETE FROM files", [])?;
         Ok(())
     }
 

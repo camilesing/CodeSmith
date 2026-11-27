@@ -145,8 +145,9 @@ pub fn build_service(
         )?;
         // Dirty detection is mtime+size: unchanged files are never
         // re-extracted, so rows produced by a previous backend would be
-        // served forever. Purge symbol data on backend mismatch, forcing
-        // re-extraction. Known limitation: changing only the enabled-
+        // served forever. Purge on backend mismatch — `clear_symbols`
+        // drops the inventory rows too, so every file is re-extracted on
+        // the next refresh. Known limitation: changing only the enabled-
         // LANGUAGE set keeps the same backend id and does not purge —
         // rows of a later-disabled language survive until the file
         // changes.
@@ -548,6 +549,35 @@ mod tests {
             .expect("files");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/alpha.rs");
+    }
+
+    /// `clear_symbols` (the backend-switch purge) drops the inventory rows
+    /// with the symbols: they used to survive, no unchanged file was ever
+    /// dirty again, and the workspace had no symbols until each file
+    /// changed.
+    #[tokio::test]
+    async fn a_symbol_purge_reextracts_unchanged_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write(&tmp, "a.rs", "fn a() {}");
+        write(&tmp, "b.rs", "fn b() {}");
+        let (service, backend) = service_for(&tmp);
+        let budget = RefreshBudget {
+            max_files: 100,
+            max_duration: Duration::from_secs(5),
+        };
+        service.refresh(budget).await.expect("first refresh");
+        assert_eq!(backend.extracts.load(Ordering::SeqCst), 2);
+
+        service.inner.store.clear_symbols().expect("purge");
+        service.refresh(budget).await.expect("refresh after purge");
+        assert_eq!(
+            backend.extracts.load(Ordering::SeqCst),
+            4,
+            "unchanged files are re-extracted after a purge"
+        );
+        let defs = service.find_definition("stub_a").await.expect("defs");
+        assert_eq!(defs.len(), 1, "a.rs has its symbol again");
+        assert_eq!(defs[0].name, "Stub_a");
     }
 
     #[tokio::test]
