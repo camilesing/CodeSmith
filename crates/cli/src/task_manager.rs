@@ -39,6 +39,8 @@ const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Grace period after a successfully delivered interrupt for the runtime to
 /// emit a terminal `turn.completed` before the executor abandons the turn.
 const CANCEL_GRACE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest a running task's record may trail its streamed text on disk.
+const STREAM_PERSIST_INTERVAL: Duration = Duration::from_millis(250);
 
 pub use codesmith_agent_runtime::host_services::TaskManagerHost;
 pub use codesmith_agent_runtime::tools::task_types::{
@@ -575,6 +577,9 @@ struct ManagerState {
     tasks: HashMap<String, TaskRecord>,
     queue: VecDeque<String>,
     running_cancel: HashMap<String, CancellationToken>,
+    /// When a running task's record was last written for streamed text
+    /// alone (see `apply_execution_events`).
+    stream_persisted_at: HashMap<String, std::time::Instant>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -639,6 +644,7 @@ impl TaskManager {
                 tasks,
                 queue,
                 running_cancel: HashMap::new(),
+                stream_persisted_at: HashMap::new(),
             }),
             notify: Notify::new(),
             cancel_token: cancel_token.clone(),
@@ -981,10 +987,16 @@ impl TaskManager {
         let result = loop {
             tokio::select! {
                 maybe_event = event_rx.recv() => {
-                    if let Some(event) = maybe_event
-                        && let Err(err) = self.apply_execution_event(&task_id, event).await
-                    {
-                        tracing::error!("Failed to apply task event for {task_id}: {err}");
+                    if let Some(event) = maybe_event {
+                        // Everything the executor has queued so far: one
+                        // record write for the batch, not one per event.
+                        let mut batch = vec![event];
+                        while let Ok(event) = event_rx.try_recv() {
+                            batch.push(event);
+                        }
+                        if let Err(err) = self.apply_execution_events(&task_id, batch).await {
+                            tracing::error!("Failed to apply task events for {task_id}: {err}");
+                        }
                     }
                 }
                 exec_result = &mut exec_fut => {
@@ -993,10 +1005,14 @@ impl TaskManager {
             }
         };
 
+        let mut trailing = Vec::new();
         while let Ok(event) = event_rx.try_recv() {
-            if let Err(err) = self.apply_execution_event(&task_id, event).await {
-                tracing::error!("Failed to apply trailing task event for {task_id}: {err}");
-            }
+            trailing.push(event);
+        }
+        if !trailing.is_empty()
+            && let Err(err) = self.apply_execution_events(&task_id, trailing).await
+        {
+            tracing::error!("Failed to apply trailing task events for {task_id}: {err}");
         }
 
         if let Err(err) = self
@@ -1007,10 +1023,57 @@ impl TaskManager {
         }
     }
 
-    async fn apply_execution_event(&self, task_id: &str, event: TaskExecutionEvent) -> Result<()> {
-        let mut state = self.state.lock().await;
-        let Some(task) = state.tasks.get_mut(task_id) else {
-            return Ok(());
+    /// Apply a drained batch of executor events and write the record once.
+    /// Deltas arrive many times a second and add no timeline entry of their
+    /// own; a batch that carried nothing but streamed text is written at
+    /// most every [`STREAM_PERSIST_INTERVAL`], so the record on disk may
+    /// trail the stream by that much — the next other event and
+    /// `finish_task` write it. Every other batch is written at once.
+    async fn apply_execution_events(
+        &self,
+        task_id: &str,
+        events: Vec<TaskExecutionEvent>,
+    ) -> Result<()> {
+        let mut streamed_only = true;
+        {
+            let mut state = self.state.lock().await;
+            let ManagerState {
+                tasks,
+                stream_persisted_at,
+                ..
+            } = &mut *state;
+            let Some(task) = tasks.get_mut(task_id) else {
+                return Ok(());
+            };
+            for event in events {
+                streamed_only &= self.apply_execution_event(task, event)?;
+            }
+            let now = std::time::Instant::now();
+            let due = !streamed_only
+                || stream_persisted_at
+                    .get(task_id)
+                    .is_none_or(|last| now.duration_since(*last) >= STREAM_PERSIST_INTERVAL);
+            if due {
+                stream_persisted_at.insert(task_id.to_string(), now);
+                self.persist_task_locked(task)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply one event to a task record. Returns whether it was streamed
+    /// text only (a delta), which may be persisted lazily.
+    fn apply_execution_event(
+        &self,
+        task: &mut TaskRecord,
+        event: TaskExecutionEvent,
+    ) -> Result<bool> {
+        let streamed = match &event {
+            TaskExecutionEvent::MessageDelta { .. } | TaskExecutionEvent::ToolProgress { .. } => {
+                true
+            }
+            TaskExecutionEvent::RuntimeEvent { event, .. } => event == "item.delta",
+            _ => false,
         };
 
         match event {
@@ -1034,12 +1097,7 @@ impl TaskManager {
             }
             TaskExecutionEvent::MessageDelta { content } => {
                 if !content.trim().is_empty() {
-                    task.timeline.push(TaskTimelineEntry {
-                        timestamp: Utc::now(),
-                        kind: "message".to_string(),
-                        summary: summarize_text(&content, TIMELINE_SUMMARY_LIMIT),
-                        detail_path: None,
-                    });
+                    append_streamed(&mut task.timeline, "message", "", &content);
                 }
             }
             TaskExecutionEvent::ToolStarted { id, name, input } => {
@@ -1067,15 +1125,12 @@ impl TaskManager {
                 });
             }
             TaskExecutionEvent::ToolProgress { id, output } => {
-                task.timeline.push(TaskTimelineEntry {
-                    timestamp: Utc::now(),
-                    kind: "tool_progress".to_string(),
-                    summary: format!(
-                        "{id}: {}",
-                        summarize_text(&output, TIMELINE_SUMMARY_LIMIT.saturating_sub(8))
-                    ),
-                    detail_path: None,
-                });
+                append_streamed(
+                    &mut task.timeline,
+                    "tool_progress",
+                    &format!("{id}: "),
+                    &output,
+                );
             }
             TaskExecutionEvent::ToolCompleted {
                 id,
@@ -1085,7 +1140,7 @@ impl TaskManager {
                 metadata,
             } => {
                 let now = Utc::now();
-                let detail_path = self.artifact_if_large(task_id, &name, &output)?;
+                let detail_path = self.artifact_if_large(&task.id, &name, &output)?;
                 let output_summary = summarize_text(&output, TIMELINE_SUMMARY_LIMIT);
                 let patch_ref = if name == "apply_patch" {
                     detail_path.clone()
@@ -1147,17 +1202,21 @@ impl TaskManager {
                 summary,
             } => {
                 task.runtime_event_count = task.runtime_event_count.saturating_add(1);
-                task.timeline.push(TaskTimelineEntry {
-                    timestamp: Utc::now(),
-                    kind: "runtime_event".to_string(),
-                    summary: format!("#{seq} {event}: {summary}"),
-                    detail_path: None,
-                });
+                // A delta is already captured as message / tool-progress
+                // text. One line per delta grew the record without bound,
+                // and every line meant a rewrite of the whole record.
+                if event != "item.delta" {
+                    task.timeline.push(TaskTimelineEntry {
+                        timestamp: Utc::now(),
+                        kind: "runtime_event".to_string(),
+                        summary: format!("#{seq} {event}: {summary}"),
+                        detail_path: None,
+                    });
+                }
             }
         }
 
-        self.persist_task_locked(task)?;
-        Ok(())
+        Ok(streamed)
     }
 
     async fn finish_task(
@@ -1451,6 +1510,42 @@ fn load_state(
     }
 
     Ok((tasks, queue))
+}
+
+/// Append a piece of streamed text to the timeline. Consecutive pieces of
+/// one stream share an entry — the previous one while it is the newest
+/// entry of the same kind and still under the summary limit — so a long
+/// stream costs a handful of entries instead of one per delta. Control
+/// characters are dropped the way `summarize_text` drops them.
+fn append_streamed(timeline: &mut Vec<TaskTimelineEntry>, kind: &str, prefix: &str, piece: &str) {
+    let room = |entry: &TaskTimelineEntry| {
+        TIMELINE_SUMMARY_LIMIT.saturating_sub(entry.summary.chars().count())
+    };
+    if let Some(last) = timeline.last_mut()
+        && last.kind == kind
+        && last.summary.starts_with(prefix)
+        && room(last) > 0
+    {
+        let taken: String = kept_chars(piece).take(room(last)).collect();
+        last.summary.push_str(&taken);
+        return;
+    }
+    let budget = TIMELINE_SUMMARY_LIMIT.saturating_sub(prefix.chars().count());
+    let head: String = kept_chars(piece).take(budget).collect();
+    if head.is_empty() {
+        return;
+    }
+    timeline.push(TaskTimelineEntry {
+        timestamp: Utc::now(),
+        kind: kind.to_string(),
+        summary: format!("{prefix}{head}"),
+        detail_path: None,
+    });
+}
+
+fn kept_chars(text: &str) -> impl Iterator<Item = char> + '_ {
+    text.chars()
+        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
 }
 
 /// The id a completion reports its tool call under. `item.completed`
@@ -1909,25 +2004,25 @@ mod tests {
         let completed =
             completed_tool_id(&mut tool_ids, Some("item_deadbeef"), Some("item_deadbeef"));
         manager
-            .apply_execution_event(
+            .apply_execution_events(
                 &task.id,
-                TaskExecutionEvent::ToolStarted {
+                vec![TaskExecutionEvent::ToolStarted {
                     id: "toolu_1".to_string(),
                     name: "read_file".to_string(),
                     input: json!({"path": "README.md"}),
-                },
+                }],
             )
             .await?;
         manager
-            .apply_execution_event(
+            .apply_execution_events(
                 &task.id,
-                TaskExecutionEvent::ToolCompleted {
+                vec![TaskExecutionEvent::ToolCompleted {
                     id: completed,
                     name: "read_file".to_string(),
                     success: true,
                     output: "read ok".to_string(),
                     metadata: None,
-                },
+                }],
             )
             .await?;
         let record = manager.get_task(&task.id).await?;
@@ -1935,6 +2030,48 @@ mod tests {
         assert_eq!(call.id, "toolu_1");
         assert_eq!(call.status, TaskToolStatus::Success);
         assert!(call.ended_at.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_deltas_do_not_grow_the_timeline_per_event() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        let task = manager
+            .add_task(NewTaskRequest::from_prompt("test streaming"))
+            .await?;
+        wait_for_terminal_state(&manager, &task.id, Duration::from_secs(10)).await?;
+        let before = manager.get_task(&task.id).await?;
+        let events_before = before.runtime_event_count;
+
+        // Two hundred streamed pieces, each a journal delta and a message
+        // delta: 400 events, about 1_400 characters of text.
+        let mut events = Vec::new();
+        for i in 0..200 {
+            events.push(TaskExecutionEvent::RuntimeEvent {
+                seq: i,
+                event: "item.delta".to_string(),
+                summary: format!(r#"{{"kind":"agent_message","delta":"{i}"}}"#),
+            });
+            events.push(TaskExecutionEvent::MessageDelta {
+                content: format!("word{i} "),
+            });
+        }
+        manager.apply_execution_events(&task.id, events).await?;
+
+        let after = manager.get_task(&task.id).await?;
+        assert_eq!(after.runtime_event_count, events_before + 200);
+        let grew = after.timeline.len() - before.timeline.len();
+        // 1_400 characters at 240 per entry: about six message entries.
+        assert!(grew <= 8, "{grew} timeline entries for 400 delta events");
+        let streamed: String = after.timeline[before.timeline.len()..]
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect();
+        assert!(streamed.contains("word0 "), "{streamed}");
+        assert!(streamed.contains("word199"), "{streamed}");
         Ok(())
     }
 }
