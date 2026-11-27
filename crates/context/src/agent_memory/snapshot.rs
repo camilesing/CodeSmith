@@ -88,10 +88,9 @@ fn write_snapshot_atomic(
     snapshot: &AgentMemorySnapshot,
 ) -> std::io::Result<()> {
     let payload = serde_json::to_string_pretty(snapshot).map_err(std::io::Error::from)?;
-    let target = snapshot_dir.join(file_name);
-    let tmp = snapshot_dir.join(format!("{file_name}.tmp"));
-    fs::write(&tmp, payload)?;
-    fs::rename(&tmp, &target)
+    // A unique temp file per writer: the fixed `<name>.tmp` used to make
+    // two same-type spawns race on it, and the second rename found it gone.
+    codesmith_session::primitives::write_atomic(&snapshot_dir.join(file_name), payload.as_bytes())
 }
 
 pub fn load_snapshot_status(
@@ -309,6 +308,52 @@ mod tests {
                 .path()
                 .join(".codesmith/agent-memory-snapshots/explore/snapshot.json")
                 .exists()
+        );
+    }
+
+    /// Two sub-agents of one type spawn in parallel and both write this
+    /// snapshot. The fixed `snapshot.json.tmp` made the writers race: the
+    /// rename that came second found the file already moved.
+    #[test]
+    fn concurrent_snapshot_writers_all_land_their_file() {
+        let dir = tempdir().unwrap();
+        let snapshot = AgentMemorySnapshot {
+            agent_type: "explore".to_string(),
+            scope: AgentMemoryScope::Project,
+            memory_dir: dir.path().to_path_buf(),
+            prompt_hash: "prompt".to_string(),
+            memory_hash: "memory".to_string(),
+            updated_at_ms: 0,
+        };
+        let writers = 4;
+        let barrier = std::sync::Barrier::new(writers);
+        // Failures are collected, never panicked: a thread that left early
+        // would leave the others waiting at the barrier forever, and the
+        // test would hang instead of failing.
+        let failures = std::sync::Mutex::new(Vec::new());
+
+        std::thread::scope(|scope| {
+            for _ in 0..writers {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        // Every writer enters the write-rename window together.
+                        barrier.wait();
+                        if let Err(err) =
+                            write_snapshot_atomic(dir.path(), "snapshot.json", &snapshot)
+                        {
+                            failures.lock().unwrap().push(err.to_string());
+                        }
+                    }
+                });
+            }
+        });
+
+        let failures = failures.into_inner().unwrap();
+        assert!(
+            failures.is_empty(),
+            "every writer lands its file; {} failed: {:?}",
+            failures.len(),
+            &failures[..failures.len().min(3)]
         );
     }
 
