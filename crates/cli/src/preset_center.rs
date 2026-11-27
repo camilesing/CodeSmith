@@ -685,9 +685,15 @@ fn definition_baseline(definition: &PresetDefinitionToml, path: &str) -> Option<
 }
 
 /// Catalog paths the folded CLI [`Config`] does not carry — file-layer
-/// keys read at load time elsewhere (`ConfigToml` / headless flags). Their
-/// snapshot value comes from the file itself.
-const NON_RUNTIME_KEYS: &[&str] = &["model", "output_mode", "log_level"];
+/// keys read at load time elsewhere (`ConfigToml` / headless flags; the
+/// app-server for the hook sink socket). Their snapshot value comes from the
+/// file itself.
+const NON_RUNTIME_KEYS: &[&str] = &[
+    "model",
+    "output_mode",
+    "log_level",
+    "hook_sinks.unix_socket_path",
+];
 
 /// Effective value of a catalog path in the running (folded) config.
 /// `None` ⇒ key unset (`null` on the wire, `set: false`).
@@ -750,7 +756,6 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
             .as_ref()
             .and_then(|l| l.poll_after_edit_ms)
             .map(|n| Json::Number(n.into())),
-        "hook_sinks.unix_socket_path" => s(None),
         "desktop.enabled" => b(config.desktop.as_ref().and_then(|d| d.enabled)),
         "tools.progressive_disclosure" => {
             b(config.tools.as_ref().and_then(|t| t.progressive_disclosure))
@@ -1513,6 +1518,23 @@ mod tests {
         assert_eq!(
             snap.file_tree.pointer("/tokens/1/label"),
             Some(&Json::String("n".to_string()))
+        );
+    }
+
+    /// `hook_sinks.unix_socket_path` lives only in config.toml (the
+    /// app-server reads it from `ConfigToml`): its snapshot value is the
+    /// file's, and setting it is not restart-pending against nothing.
+    #[test]
+    fn file_layer_hook_socket_path_reads_from_the_file() {
+        let (_dir, path) = temp_config("[hook_sinks]\nunix_socket_path = \"/tmp/hooks.sock\"\n");
+        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        assert_eq!(
+            key_state(&snap, "hook_sinks.unix_socket_path").value,
+            Json::String("/tmp/hooks.sock".to_string())
+        );
+        assert!(
+            !snap.restart_pending,
+            "nothing is pending for the process to pick up"
         );
     }
 
