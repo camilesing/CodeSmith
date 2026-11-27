@@ -433,28 +433,8 @@ impl ToolSpec for WritePlanFileTool {
                 .iter()
                 .map(|s| (s.text.as_str(), s.status.clone()))
                 .collect();
-        let mut in_fence = false;
-        let steps: Vec<crate::tools::plan::PlanItemArg> = content
-            .lines()
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-                    in_fence = !in_fence;
-                    return None;
-                }
-                if in_fence || !(trimmed.starts_with("## ") || trimmed.starts_with("### ")) {
-                    return None;
-                }
-                let text = trimmed.trim_start_matches('#').trim().to_string();
-                Some(crate::tools::plan::PlanItemArg {
-                    status: existing
-                        .get(text.as_str())
-                        .cloned()
-                        .unwrap_or(crate::tools::plan::StepStatus::Pending),
-                    step: text,
-                })
-            })
-            .collect();
+        let steps =
+            codesmith_agent_runtime::tool_state::plan::steps_from_plan_markdown(content, &existing);
 
         plan_state_guard.update(crate::tools::plan::UpdatePlanArgs {
             explanation: None,

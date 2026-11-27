@@ -107,6 +107,42 @@ impl PlanStep {
     }
 }
 
+/// The plan steps a plan file's markdown carries: every `## ` / `### `
+/// heading outside fenced code blocks, in order. A step keeps the status
+/// `existing` holds for its text, so a rewrite does not reset an
+/// in-progress or completed step; anything else starts pending. Empty when
+/// the file has no heading — the caller then syncs an empty plan, which is
+/// how a stale plan view clears. One function for the live writer
+/// (`WritePlanFileTool`) and the resume fold, so the two cannot drift.
+#[must_use]
+pub fn steps_from_plan_markdown(
+    content: &str,
+    existing: &std::collections::HashMap<&str, StepStatus>,
+) -> Vec<PlanItemArg> {
+    let mut in_fence = false;
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                return None;
+            }
+            if in_fence || !(trimmed.starts_with("## ") || trimmed.starts_with("### ")) {
+                return None;
+            }
+            let text = trimmed.trim_start_matches('#').trim().to_string();
+            Some(PlanItemArg {
+                status: existing
+                    .get(text.as_str())
+                    .cloned()
+                    .unwrap_or(StepStatus::Pending),
+                step: text,
+            })
+        })
+        .collect()
+}
+
 /// Serializable snapshot for display
 #[derive(Debug, Clone, Serialize)]
 pub struct PlanSnapshot {
@@ -168,7 +204,23 @@ impl PlanState {
                 else {
                     continue;
                 };
-                if name != "update_plan" || !executed.contains(id.as_str()) {
+                if !executed.contains(id.as_str()) {
+                    continue;
+                }
+                if name == "write_plan_file" {
+                    // Plan mode's writer is the second writer of the plan
+                    // state: it derives the steps from the file's headings
+                    // and syncs them with no explanation.
+                    if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
+                        let existing = state.statuses_by_text();
+                        state.update(UpdatePlanArgs {
+                            explanation: None,
+                            plan: steps_from_plan_markdown(content, &existing),
+                        });
+                    }
+                    continue;
+                }
+                if name != "update_plan" {
                     continue;
                 }
                 let explanation = input
@@ -236,6 +288,15 @@ impl PlanState {
             explanation: (!explanation.is_empty()).then_some(explanation),
             plan,
         });
+    }
+
+    /// Each step's status by its text — what `steps_from_plan_markdown`
+    /// keeps when a rewrite still names the step.
+    fn statuses_by_text(&self) -> std::collections::HashMap<&str, StepStatus> {
+        self.steps
+            .iter()
+            .map(|step| (step.text.as_str(), step.status.clone()))
+            .collect()
     }
 
     /// Check whether the plan is empty.
@@ -399,6 +460,42 @@ pub fn new_shared_plan_state() -> SharedPlanState {
 mod tests {
     use super::*;
     use crate::test_support::{assistant_tool_use, tool_result};
+
+    /// Plan mode writes its plan with `write_plan_file` and never calls
+    /// `update_plan`: the fold reads those writes too, so a resumed session
+    /// shows the file's headings with the statuses an earlier plan gave them.
+    #[test]
+    fn plan_projection_reads_write_plan_file() {
+        let messages = vec![
+            tool_result("call_1", false),
+            assistant_tool_use(
+                "call_1",
+                "update_plan",
+                serde_json::json!({"plan": [
+                    {"step": "Step A", "status": "completed"},
+                    {"step": "old step", "status": "pending"},
+                ]}),
+            ),
+            tool_result("call_2", false),
+            assistant_tool_use(
+                "call_2",
+                "write_plan_file",
+                serde_json::json!({"content": "# Plan\n\n## Step A\n\ntext\n\n### Step B\n\n```\n## fenced\n```\n"}),
+            ),
+        ];
+        let snap = PlanState::rebuild_from_messages(&messages).snapshot();
+        let steps: Vec<&str> = snap.items.iter().map(|item| item.step.as_str()).collect();
+        assert_eq!(steps, vec!["Step A", "Step B"]);
+        assert!(
+            snap.items[0].status == StepStatus::Completed,
+            "kept by text"
+        );
+        assert!(snap.items[1].status == StepStatus::Pending);
+        assert!(
+            snap.explanation.is_none(),
+            "the writer syncs no explanation"
+        );
+    }
 
     /// After a compaction the transcript no longer holds the `update_plan`
     /// call — only the reminder the engine re-injected. The fold reads it
