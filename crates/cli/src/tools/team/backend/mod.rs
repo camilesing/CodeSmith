@@ -60,6 +60,42 @@ impl PermissionMode {
     }
 }
 
+/// Whether a process-environment variable is one a pane teammate needs:
+/// the provider keys, base URLs and model overrides the config reads, the
+/// `CODESMITH_*` switches, and the proxy variables.
+#[must_use]
+pub fn is_provider_env_key(key: &str) -> bool {
+    key.ends_with("_API_KEY")
+        || key.ends_with("_BASE_URL")
+        || key.ends_with("_MODEL")
+        || key.starts_with("CODESMITH_")
+        || matches!(
+            key,
+            "HTTP_PROXY"
+                | "HTTPS_PROXY"
+                | "ALL_PROXY"
+                | "NO_PROXY"
+                | "http_proxy"
+                | "https_proxy"
+                | "all_proxy"
+                | "no_proxy"
+        )
+}
+
+/// The leader's provider-relevant process environment, for a pane
+/// teammate's [`TeammateSpawnSpec::env`]. A pane starts with the terminal
+/// server's environment, not this process's: a key or base URL read from the
+/// workspace `.env` or the invoking shell would otherwise be missing on the
+/// teammate's first model call, while the same spawn through the in-process
+/// backend works. The backends persist it in a 0600 file the pane sources
+/// and unlinks at start.
+#[must_use]
+pub fn provider_env_vars() -> HashMap<String, String> {
+    std::env::vars()
+        .filter(|(key, _)| is_provider_env_key(key))
+        .collect()
+}
+
 /// Backend-agnostic description of a teammate to spawn.
 ///
 /// Carries only portable fields — everything a pane backend needs to launch
@@ -524,6 +560,31 @@ pub(crate) fn is_shell_identifier(ident: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pane env channel carries the leader's provider variables —
+    /// and only those.
+    #[test]
+    fn provider_env_vars_carry_provider_keys_and_proxies_only() {
+        use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+        let _lock = lock_test_env();
+        let _key = EnvVarGuard::set("SOME_PROVIDER_API_KEY", "secret");
+        let _base = EnvVarGuard::set("SOME_PROVIDER_BASE_URL", "https://example.test");
+        let _proxy = EnvVarGuard::set("HTTPS_PROXY", "http://proxy.example:3128");
+        let _other = EnvVarGuard::set("CODESMITH_TEST_UNRELATED", "x");
+        let vars = provider_env_vars();
+        assert_eq!(
+            vars.get("SOME_PROVIDER_API_KEY").map(String::as_str),
+            Some("secret")
+        );
+        assert!(vars.contains_key("SOME_PROVIDER_BASE_URL"));
+        assert!(vars.contains_key("HTTPS_PROXY"));
+        assert!(vars.contains_key("CODESMITH_TEST_UNRELATED"));
+        assert!(
+            !vars.contains_key("PATH"),
+            "nothing outside the provider set rides along"
+        );
+    }
 
     #[test]
     fn spec_new_defaults() {

@@ -3409,6 +3409,9 @@ async fn spawn_team_teammate_in_pane(
     // Auto-approving the teammate is not trusting it with the sandbox
     // bypass: only a lead that is itself trusted passes that on.
     spec.trust_mode = runtime.context.trust_mode;
+    // A pane does not inherit this process's environment: hand the
+    // teammate the provider variables through the env file.
+    spec.env = crate::tools::team::backend::provider_env_vars();
 
     let backend: Box<dyn TeammateBackend> = match kind {
         crate::tools::team::backend::BackendKind::Tmux => Box::new(TmuxBackend::new()),
