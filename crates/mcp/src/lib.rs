@@ -713,7 +713,9 @@ fn build_stdio_state(initial_definitions: Vec<McpServerDefinition>) -> StdioMcpS
                 definition.filter.clone(),
                 default_stdio_client(&name),
             ) {
-                tracing::warn!("skipping MCP server {name}: {err:#}");
+                // No shipped binary installs a `tracing` subscriber, and the
+                // protocol is on stdout: the skip is only visible here.
+                eprintln!("warning: skipping MCP server {name}: {err:#}");
                 running.insert(name.clone(), false);
                 continue;
             }
