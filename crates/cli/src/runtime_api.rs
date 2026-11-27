@@ -2004,10 +2004,15 @@ async fn stream_thread_events(
     // snapshot and the subscription; the `seq <= last_seq` check inside the
     // stream deduplicates the overlap.
     let mut live = state.runtime_threads.subscribe_events();
-    let backlog = state
-        .runtime_threads
-        .events_since(&id, query.since_seq)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    // The backlog is the thread's whole journal, parsed line by line: on
+    // the blocking pool. Subscribed first, so the ordering above still holds.
+    let threads = state.runtime_threads.clone();
+    let backlog_id = id.clone();
+    let backlog =
+        tokio::task::spawn_blocking(move || threads.events_since(&backlog_id, query.since_seq))
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to load events: {e}")))?
+            .map_err(|e| ApiError::internal(e.to_string()))?;
     let mut last_seq = query.since_seq.unwrap_or(0);
     if let Some(last) = backlog.last() {
         last_seq = last.seq;
@@ -2120,9 +2125,12 @@ async fn stream_turn(
     // snapshot and the subscription would otherwise leave this stream
     // waiting on keepalives forever.
     let live = state.runtime_threads.subscribe_events();
-    let backlog = state
-        .runtime_threads
-        .events_since(&thread.id, None)
+    // The backlog is the thread's whole journal: on the blocking pool.
+    let threads = state.runtime_threads.clone();
+    let backlog_thread = thread.id.clone();
+    let backlog = tokio::task::spawn_blocking(move || threads.events_since(&backlog_thread, None))
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load stream backlog: {e}")))?
         .map_err(|e| ApiError::internal(format!("Failed to load stream backlog: {e}")))?;
     let thread_id = thread.id.clone();
     let turn_id = turn.id.clone();
