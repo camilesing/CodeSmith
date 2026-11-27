@@ -2116,14 +2116,14 @@ async fn stream_turn(
     // `stream_thread_events`): a `turn.completed` broadcast between the
     // snapshot and the subscription would otherwise leave this stream
     // waiting on keepalives forever.
-    let mut live = state.runtime_threads.subscribe_events();
+    let live = state.runtime_threads.subscribe_events();
     let backlog = state
         .runtime_threads
         .events_since(&thread.id, None)
         .map_err(|e| ApiError::internal(format!("Failed to load stream backlog: {e}")))?;
     let thread_id = thread.id.clone();
     let turn_id = turn.id.clone();
-    let mut last_seq = backlog.last().map(|event| event.seq).unwrap_or(0);
+    let last_seq = backlog.last().map(|event| event.seq).unwrap_or(0);
 
     let stream = stream! {
         yield Ok(sse_json("turn.started", json!({
@@ -2147,26 +2147,9 @@ async fn stream_turn(
             }
         }
 
-        loop {
-            let incoming = live.recv().await;
-            let Ok(event) = incoming else {
-                yield Ok(sse_json("error", json!({ "message": "event channel closed" })));
-                break;
-            };
-            if event.thread_id != thread_id || event.turn_id.as_deref() != Some(&turn_id) {
-                continue;
-            }
-            // Deduplicate the subscribe-before-snapshot overlap.
-            if event.seq <= last_seq {
-                continue;
-            }
-            last_seq = event.seq;
-            if let Some(mapped) = map_compat_stream_event(&event) {
-                yield Ok(mapped);
-            }
-            if event.event == "turn.completed" {
-                break;
-            }
+        let mut live_events = std::pin::pin!(follow_turn_events(live, thread_id, turn_id, last_seq));
+        while let Some(event) = futures_util::StreamExt::next(&mut live_events).await {
+            yield event;
         }
 
         yield Ok(sse_json("done", json!({})));
@@ -2197,6 +2180,52 @@ fn runtime_event_payload(event: crate::runtime_threads::RuntimeEventRecord) -> s
         extra: Default::default(),
     };
     serde_json::to_value(envelope).expect("serialize runtime event envelope")
+}
+
+/// The live half of `/v1/stream`: this turn's events off the process-wide
+/// broadcast, until its completion or the channel's close. A receiver that
+/// fell more than a channel's worth behind is told — `lagged`, as in
+/// `stream_thread_events` — and the turn is still followed: ending the
+/// stream there looked exactly like a normal end while the turn ran on and
+/// its approval requests and its real `turn.completed` went missing.
+fn follow_turn_events(
+    mut live: tokio::sync::broadcast::Receiver<crate::runtime_threads::RuntimeEventRecord>,
+    thread_id: String,
+    turn_id: String,
+    mut last_seq: u64,
+) -> impl futures_util::Stream<Item = Result<SseEvent, Infallible>> {
+    stream! {
+        loop {
+            let event = match live.recv().await {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    yield Ok(sse_json(
+                        "lagged",
+                        json!({ "skipped": skipped, "last_seq": last_seq }),
+                    ));
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    yield Ok(sse_json("error", json!({ "message": "event channel closed" })));
+                    break;
+                }
+            };
+            if event.thread_id != thread_id || event.turn_id.as_deref() != Some(&turn_id) {
+                continue;
+            }
+            // Deduplicate the subscribe-before-snapshot overlap.
+            if event.seq <= last_seq {
+                continue;
+            }
+            last_seq = event.seq;
+            if let Some(mapped) = map_compat_stream_event(&event) {
+                yield Ok(mapped);
+            }
+            if event.event == "turn.completed" {
+                break;
+            }
+        }
+    }
 }
 
 fn map_compat_stream_event(event: &crate::runtime_threads::RuntimeEventRecord) -> Option<SseEvent> {
@@ -5618,6 +5647,66 @@ mod tests {
             event: event.to_string(),
             payload,
         }
+    }
+
+    /// `/v1/stream` follows the turn through a lagging receiver: more than
+    /// a channel's worth of events while unpolled is reported, and the turn
+    /// is still followed — it used to end the stream with `error` + `done`
+    /// while the turn ran on.
+    #[tokio::test]
+    async fn turn_stream_follows_a_lagging_receiver() -> Result<()> {
+        use tokio::sync::broadcast;
+
+        let (tx, live) = broadcast::channel::<RuntimeEventRecord>(2);
+        // A kind the compat mapper drops: only the lag notice and the
+        // completion below reach the stream.
+        for seq in 0..5 {
+            let mut record = compat_record(
+                "item.delta",
+                json!({ "kind": "context_compaction", "delta": "x" }),
+            );
+            record.seq = seq;
+            let _ = tx.send(record);
+        }
+        let followed = follow_turn_events(live, "thr".to_string(), "turn".to_string(), 0);
+        let mut followed = std::pin::pin!(followed);
+        let first = followed
+            .next()
+            .await
+            .expect("a lag notice")
+            .expect("infallible");
+        assert!(format!("{first:?}").contains("lagged"), "{first:?}");
+
+        // A later seq than everything the receiver kept: the dedup below
+        // drops anything at or before the last delivered seq.
+        let mut completed = compat_record(
+            "turn.completed",
+            json!({ "turn": { "status": "completed" } }),
+        );
+        completed.seq = 9;
+        let _ = tx.send(completed);
+        let mut rest = Vec::new();
+        while let Some(event) = followed.next().await {
+            let event = event.expect("infallible");
+            let rendered = format!("{event:?}");
+            assert!(!rendered.contains("\"error\""), "{rendered}");
+            rest.push(rendered);
+        }
+        // Sending it drops one of the two events the small ring still held:
+        // that lag is reported too, then the completion ends the stream.
+        assert_eq!(
+            rest.iter()
+                .filter(|event| event.contains("turn.completed"))
+                .count(),
+            1,
+            "exactly one completion: {rest:?}"
+        );
+        assert!(
+            rest.iter()
+                .all(|event| event.contains("lagged") || event.contains("turn.completed")),
+            "{rest:?}"
+        );
+        Ok(())
     }
 
     #[test]
