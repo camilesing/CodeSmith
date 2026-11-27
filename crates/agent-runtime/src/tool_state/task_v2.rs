@@ -467,18 +467,6 @@ impl TaskV2Manager {
         Ok(())
     }
 
-    /// Delete a task by ID (raw physical deletion without reference cleanup).
-    pub fn delete_task(&mut self, id: &str) -> anyhow::Result<()> {
-        let mut lock = self.acquire_write_lock()?;
-        let _guard = lock.write()?;
-
-        let path = self.task_file(id)?;
-        if path.exists() {
-            fs::remove_file(&path)?;
-        }
-        Ok(())
-    }
-
     /// Claim a task by setting the owner. Fails if the agent already owns
     /// an in-progress task in this task list (busy check).
     pub fn claim_task(&mut self, id: &str, agent_name: &str) -> anyhow::Result<TaskV2Record> {

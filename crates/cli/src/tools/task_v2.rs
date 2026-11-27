@@ -204,9 +204,12 @@ impl ToolSpec for TaskV2CreateTool {
             let results = hook_executor.execute(crate::hooks::HookEvent::TaskCreated, &hook_ctx);
             for result in &results {
                 if result.exit_code == Some(2) {
-                    // Rollback: delete the just-created task
+                    // Rollback: remove the just-created task AND the links
+                    // it added to its blockers — the raw delete left task
+                    // 1 saying `blocks: ["2"]` for a task that no longer
+                    // exists.
                     manager
-                        .delete_task(&task_id)
+                        .soft_delete_task(&task_id)
                         .map_err(|e| ToolError::ExecutionFailed {
                             message: format!("Failed to rollback task creation: {e}"),
                         })?;
@@ -856,6 +859,64 @@ mod tests {
             .await
             .expect_err("a new task cannot start deleted");
         assert!(err.to_string().contains("deleted"), "{err}");
+    }
+
+    /// A `task_created` hook that blocks a creation (exit 2) rolls the
+    /// task back — including the link it added to its blocker. The raw
+    /// delete left task 1 saying `blocks: ["2"]` for a task that was gone.
+    #[tokio::test]
+    async fn task_v2_hook_blocked_creation_leaves_no_dangling_link() {
+        let _env = scratch_env();
+        let manager = scratch_manager("rollback");
+        TaskV2CreateTool::new(manager.clone())
+            .execute(
+                json!({"subject": "blocker", "description": "d"}),
+                &scratch_context(),
+            )
+            .await
+            .expect("task 1 is created with no hook attached");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("block.sh");
+        std::fs::write(&script, "exit 2\n").expect("hook script");
+        let mut ctx = scratch_context();
+        ctx.runtime.hook_executor = Some(std::sync::Arc::new(crate::hooks::HookExecutor::new(
+            crate::hooks::HooksConfig {
+                hooks: vec![crate::hooks::Hook::new(
+                    codesmith_agent_runtime::hooks::HookEvent::TaskCreated,
+                    &format!("sh {}", script.display()),
+                )],
+                enabled: true,
+                default_timeout_secs: None,
+                working_dir: None,
+            },
+            tmp.path().to_path_buf(),
+        )));
+
+        let blocked = TaskV2CreateTool::new(manager.clone())
+            .execute(
+                json!({"subject": "blocked", "description": "d", "blocked_by": ["1"]}),
+                &ctx,
+            )
+            .await
+            .expect("a blocked creation is a tool result, not an error");
+        assert!(
+            blocked.content.contains("blocked by hook"),
+            "{}",
+            blocked.content
+        );
+
+        let store = manager.lock().unwrap_or_else(|e| e.into_inner());
+        let blocker = store.get_task("1").expect("task 1 survives");
+        assert!(
+            blocker.blocks.is_empty(),
+            "no dangling link: {:?}",
+            blocker.blocks
+        );
+        assert!(
+            store.get_task("2").is_err(),
+            "the blocked task is not left on disk"
+        );
     }
 
     #[tokio::test]
