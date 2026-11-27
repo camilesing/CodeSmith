@@ -486,35 +486,40 @@ fn read_config_or_empty(config_path: &Path) -> std::io::Result<String> {
     }
 }
 
-fn edit_to_json(item: &toml_edit::Item, secret: bool) -> Json {
+/// An item as JSON. `path` is the item's dotted path in the document:
+/// secrets mask by it and nothing else decides; `None` renders everything in
+/// clear — for comparisons only, never for the served file tree.
+fn edit_to_json(item: &toml_edit::Item, path: Option<&str>) -> Json {
     use toml_edit::Item;
     match item {
         Item::None | Item::Table(_) | Item::ArrayOfTables(_) => Json::Null,
-        Item::Value(value) => value_to_json(value, secret),
+        Item::Value(value) => value_to_json(value, path),
     }
 }
 
-fn value_to_json(value: &toml_edit::Value, secret: bool) -> Json {
+/// A value as JSON, masking a string leaf whose dotted path is a secret. An
+/// inline table's members sit under its path — `providers.openai = { api_key
+/// = … }` masks exactly like `[providers.openai]` does; an array's elements
+/// reuse the parent path, the way every `[[providers.custom]]` entry answers
+/// to `providers.custom`.
+fn value_to_json(value: &toml_edit::Value, path: Option<&str>) -> Json {
     use toml_edit::Value;
+    let masked = path.is_some_and(is_secret_path);
     match value {
-        Value::String(s) => {
-            if secret {
-                Json::String("•••".to_string())
-            } else {
-                Json::String(s.value().to_string())
-            }
-        }
+        Value::String(_) if masked => Json::String("•••".to_string()),
+        Value::String(s) => Json::String(s.value().to_string()),
         Value::Integer(i) => Json::Number((*i.value()).into()),
         Value::Float(f) => serde_json::Number::from_f64(*f.value())
             .map(Json::Number)
             .unwrap_or(Json::Null),
         Value::Boolean(b) => Json::Bool(*b.value()),
         Value::Datetime(d) => Json::String(d.to_string()),
-        Value::Array(items) => Json::Array(items.iter().map(|v| value_to_json(v, false)).collect()),
+        Value::Array(items) => Json::Array(items.iter().map(|v| value_to_json(v, path)).collect()),
         Value::InlineTable(table) => {
             let mut map = serde_json::Map::new();
             for (key, val) in table.iter() {
-                map.insert(key.to_string(), value_to_json(val, false));
+                let member = path.map(|path| format!("{path}.{key}"));
+                map.insert(key.to_string(), value_to_json(val, member.as_deref()));
             }
             Json::Object(map)
         }
@@ -566,8 +571,8 @@ fn doc_lookup_json(doc: &DocumentMut, path: &str) -> Option<Json> {
     match doc_walk(doc, path)? {
         Walked::Item(toml_edit::Item::None) => None,
         Walked::Item(toml_edit::Item::Table(table)) => Some(table_to_json(table, path)),
-        Walked::Item(other) => Some(edit_to_json(other, false)),
-        Walked::Inline(value) => Some(value_to_json(value, false)),
+        Walked::Item(other) => Some(edit_to_json(other, None)),
+        Walked::Inline(value) => Some(value_to_json(value, None)),
     }
 }
 
@@ -613,7 +618,7 @@ fn table_to_json(table: &toml_edit::Table, prefix: &str) -> Json {
                     .map(|nested| table_to_json(nested, &path))
                     .collect(),
             ),
-            other => edit_to_json(other, is_secret_path(&path)),
+            other => edit_to_json(other, Some(&path)),
         };
         map.insert(key.to_string(), value);
     }
@@ -1480,6 +1485,34 @@ mod tests {
         assert_eq!(
             snap.file_tree.pointer("/providers/openai/base_url"),
             Some(&Json::String("https://x".to_string()))
+        );
+    }
+
+    /// A provider written as an inline table is the same data as
+    /// `[providers.openai]`; its credential must mask the same way, and so
+    /// must a secret nested in an array.
+    #[test]
+    fn inline_table_api_keys_are_masked_in_the_file_tree() {
+        let (_dir, path) = temp_config(
+            "providers.openai = { base_url = \"https://x\", api_key = \"sk-live\" }\n\
+             tokens = [\"a\", { api_key = \"sk-nested\", label = \"n\" }]\n",
+        );
+        let snap = snapshot_with(&folded_startup(), &path, &builtin_catalog()).expect("snapshot");
+        assert_eq!(
+            snap.file_tree.pointer("/providers/openai/api_key"),
+            Some(&Json::String("•••".to_string()))
+        );
+        assert_eq!(
+            snap.file_tree.pointer("/providers/openai/base_url"),
+            Some(&Json::String("https://x".to_string()))
+        );
+        assert_eq!(
+            snap.file_tree.pointer("/tokens/1/api_key"),
+            Some(&Json::String("•••".to_string()))
+        );
+        assert_eq!(
+            snap.file_tree.pointer("/tokens/1/label"),
+            Some(&Json::String("n".to_string()))
         );
     }
 
