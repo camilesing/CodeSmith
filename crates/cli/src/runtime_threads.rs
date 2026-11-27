@@ -3490,6 +3490,20 @@ impl RuntimeThreadManager {
         }
 
         let mut active = self.active.lock().await;
+        // Two callers can pass the loaded check above and each build an
+        // engine (the build spans awaits). One engine per thread: the
+        // later build stands down and both share the first. Replacing the
+        // entry instead orphaned the first engine — its reader never
+        // exited, and a turn claimed on it ran with no journal.
+        if let Some(loaded) = active
+            .engines
+            .get(thread.id.as_str())
+            .map(|state| state.engine.clone())
+        {
+            drop(active);
+            let _ = engine.send(Op::Shutdown).await;
+            return Ok(loaded);
+        }
         let evicted = enforce_lru_capacity(&mut active, self.manager_cfg.max_active_threads);
         active.engines.insert(
             thread.id.clone(),
@@ -7969,6 +7983,29 @@ mod tests {
             "{}",
             second.err().map(|err| err.to_string()).unwrap_or_default()
         );
+        Ok(())
+    }
+
+    /// Two loads of one thread that overlap each build one engine each. The
+    /// second used to replace the first silently: the first engine leaked
+    /// with its reader, and a turn claimed on it ran with no journal.
+    #[tokio::test]
+    async fn concurrent_loads_of_one_thread_share_one_engine() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager.create_thread(create_request(None)).await?;
+
+        let (first, second) = tokio::join!(
+            manager.ensure_engine_loaded(&thread),
+            manager.ensure_engine_loaded(&thread)
+        );
+        let first = first?;
+        let second = second?;
+        assert!(
+            Arc::ptr_eq(&first.rx_event, &second.rx_event),
+            "each caller built its own engine"
+        );
+        let active = manager.active.lock().await;
+        assert_eq!(active.engines.len(), 1);
         Ok(())
     }
 
