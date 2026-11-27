@@ -288,7 +288,6 @@ impl IndexStore {
         Ok(())
     }
 
-    /// Snapshot of every inventory row (used by the freshness diff).
     /// Every distinct symbol name the index defines.
     pub fn symbol_names(&self) -> Result<HashSet<String>> {
         let conn = self.conn.lock().expect("index store mutex poisoned");
@@ -306,6 +305,7 @@ impl IndexStore {
         Ok(())
     }
 
+    /// Snapshot of every inventory row (used by the freshness diff).
     pub fn all_files(&self) -> Result<Vec<FileRecord>> {
         let conn = self.conn.lock().expect("index store mutex poisoned");
         let mut stmt = conn.prepare("SELECT id, path, mtime_ms, size, language FROM files")?;
