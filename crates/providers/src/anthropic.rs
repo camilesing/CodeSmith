@@ -55,15 +55,17 @@ impl ProviderFactory for AnthropicFactory {
         let api_key = if !cfg.api_key.trim().is_empty() {
             cfg.api_key.clone()
         } else {
+            // Emptiness is checked inside the candidate loop: a set-but-empty
+            // `ANTHROPIC_API_KEY` used to end the search before
+            // `CLAUDE_API_KEY` was ever read.
             ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"]
                 .iter()
-                .find_map(|var| std::env::var(var).ok())
-                .filter(|key| !key.trim().is_empty())
+                .find_map(|var| std::env::var(var).ok().filter(|key| !key.trim().is_empty()))
                 .ok_or_else(|| {
                     anyhow::anyhow!(
                         "anthropic provider requires an api_key; set it in \
-                         ProviderConfig::api_key (or the ANTHROPIC_API_KEY \
-                         environment variable)"
+                         ProviderConfig::api_key (or the ANTHROPIC_API_KEY / \
+                         CLAUDE_API_KEY environment variable)"
                     )
                 })?
         };
@@ -121,5 +123,90 @@ impl ProviderFactory for AnthropicFactory {
             None,
         );
         Ok(Arc::new(adapter.with_headers(header_pairs(&cfg.http_headers))) as LlmClientHandle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codesmith_agent::llm_client::RetryConfig;
+    use codesmith_agent::provider::{ProviderConfig, ProviderId};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Serializes this module's environment edits; no other test in the crate
+    /// reads these variables (the registry tests pass a non-empty key).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores the previous values when dropped.
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            // SAFETY: ENV_LOCK is held for the guard's whole life.
+            unsafe {
+                for (key, previous) in self.0.drain(..) {
+                    match previous {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    fn no_key_cfg() -> ProviderConfig {
+        ProviderConfig {
+            provider: ProviderId::from("anthropic"),
+            api_key: String::new(),
+            base_url: String::new(),
+            default_model: String::new(),
+            retry: RetryConfig::disabled(),
+            http_headers: HashMap::new(),
+        }
+    }
+
+    /// A set-but-empty `ANTHROPIC_API_KEY` used to end the fallback search
+    /// before `CLAUDE_API_KEY` was read, although the host accepts either.
+    #[test]
+    fn an_empty_first_env_key_falls_through_to_the_second() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let keys = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
+        let _restore = EnvRestore(
+            keys.iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect(),
+        );
+        // SAFETY: under ENV_LOCK, restored on drop.
+        unsafe {
+            std::env::set_var("ANTHROPIC_API_KEY", "");
+            std::env::set_var("CLAUDE_API_KEY", "sk-ant-test");
+        }
+
+        AnthropicFactory::new(ProviderId::from("anthropic"), None, None)
+            .build(&no_key_cfg())
+            .expect("CLAUDE_API_KEY supplies the key");
+    }
+
+    #[test]
+    fn no_env_key_at_all_fails_loud() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let keys = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
+        let _restore = EnvRestore(
+            keys.iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect(),
+        );
+        // SAFETY: under ENV_LOCK, restored on drop.
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("CLAUDE_API_KEY");
+        }
+
+        let err = AnthropicFactory::new(ProviderId::from("anthropic"), None, None)
+            .build(&no_key_cfg())
+            .err()
+            .expect("no key anywhere fails loud");
+        assert!(err.to_string().contains("CLAUDE_API_KEY"), "{err:#}");
     }
 }
