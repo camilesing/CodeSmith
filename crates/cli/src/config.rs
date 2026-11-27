@@ -5270,6 +5270,25 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     false
 }
 
+/// A provider's own configured key: the `[providers.<p>] api_key` entry,
+/// or the root `api_key` for DeepSeek (its legacy mirror). Never another
+/// provider's, and never the keyring sentinel — that names a stored secret
+/// the caller resolves through the secret store, not a key to hand over.
+pub(crate) fn configured_provider_api_key(
+    config: &Config,
+    provider: ApiProvider,
+) -> Option<String> {
+    let slot = config
+        .provider_config_for(provider)
+        .and_then(|entry| entry.api_key.as_deref());
+    let root = (provider == ApiProvider::Deepseek)
+        .then_some(config.api_key.as_deref())
+        .flatten();
+    slot.or(root)
+        .filter(|key| !key.trim().is_empty() && *key != API_KEYRING_SENTINEL)
+        .map(str::to_string)
+}
+
 const KIMI_CODE_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const KIMI_CODE_CREDENTIAL_FILE: &str = "kimi-code.json";
 

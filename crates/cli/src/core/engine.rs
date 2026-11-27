@@ -664,6 +664,17 @@ fn retry_wrap(
     ))
 }
 
+/// The utility provider's own key where the host can read it without a
+/// prompt: its configured entry, else its environment variable. A keyring
+/// sentinel or an OAuth credential is not a key the host can hand over.
+fn utility_provider_own_key(api_config: &Config, provider: ApiProvider) -> Option<String> {
+    crate::config::configured_provider_api_key(api_config, provider).or_else(|| {
+        codesmith_config::ProviderKind::parse(provider.as_str())
+            .and_then(crate::provider_env_value)
+            .map(|(_var, value)| value)
+    })
+}
+
 /// Resolve the optional `[utility_model]` into a ready-to-use handle.
 ///
 /// Three outcomes:
@@ -717,9 +728,13 @@ pub(crate) fn resolve_utility_llm(
     } else if crate::config::has_api_key_for(api_config, provider)
         || crate::config::provider_is_self_hosted(provider)
     {
-        // The factory resolves the provider's own env/config key (never the
-        // main provider's) when the config key is empty.
-        String::new()
+        // The utility provider's own key as far as the host can read it
+        // without a prompt (its config entry, else its environment
+        // variable — never the main provider's). An empty key used to go
+        // out here on the assumption that the factories resolve it, and
+        // only the anthropic one did: deepseek / openai / openai-compat
+        // utilities answered every assist with `Bearer `.
+        utility_provider_own_key(api_config, provider).unwrap_or_default()
     } else {
         // Known limitation: a cross-provider utility key that exists only in
         // the credential store still lands here — `has_api_key_for` is

@@ -402,6 +402,41 @@ fn resolve_utility_llm_builds_cross_provider_client() {
     assert_eq!(utility.client.provider_name(), "anthropic");
 }
 
+/// The utility provider's own key, read by the host: the deepseek / openai /
+/// openai-compat factories resolve no environment of their own, and the host
+/// used to hand them an empty string — every assist went out as `Bearer `.
+#[test]
+fn utility_provider_own_key_reads_the_providers_config_and_env() {
+    let _guard = lock_test_env();
+    let _code_smith_key = EnvVarGuard::set("CODESMITH_API_KEY", "");
+    let _deepseek_key = EnvVarGuard::set("DEEPSEEK_API_KEY", "k-from-env");
+    let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", "k-openai");
+
+    let deepseek = crate::config::ApiProvider::Deepseek;
+    let from_env = super::utility_provider_own_key(&Config::default(), deepseek);
+    assert_eq!(from_env.as_deref(), Some("k-from-env"));
+    let from_openai =
+        super::utility_provider_own_key(&Config::default(), crate::config::ApiProvider::Openai);
+    assert_eq!(from_openai.as_deref(), Some("k-openai"));
+
+    let mut providers = crate::config::ProvidersConfig::default();
+    providers.deepseek.api_key = Some("k-from-config".to_string());
+    let cfg = Config {
+        providers: Some(providers),
+        ..Config::default()
+    };
+    let from_config = super::utility_provider_own_key(&cfg, deepseek);
+    assert_eq!(
+        from_config.as_deref(),
+        Some("k-from-config"),
+        "the config entry wins over the environment"
+    );
+
+    // Another provider's key is never picked up.
+    let anthropic = super::utility_provider_own_key(&cfg, crate::config::ApiProvider::Anthropic);
+    assert_eq!(anthropic, None);
+}
+
 /// Under `CODESMITH_RECORD_LLM` a same-provider `[utility_model]` stays the
 /// main handle: `build_engine` wraps the main client first and the utility
 /// branch reuses it, so wrapping it again recorded every utility call twice.
