@@ -7,8 +7,9 @@ use bash_arity::BashArityDict;
 use codesmith_protocol::NetworkPolicyAmendment;
 use serde::{Deserialize, Serialize};
 
-/// Priority layer for a permission ruleset. Higher ordinal = higher priority.
-/// On conflict, the highest-priority layer's longest matching prefix wins.
+/// Priority layer for a permission ruleset. Higher ordinal = higher
+/// priority, for matched-rule attribution. A deny prefix in any layer
+/// always wins over a trusted prefix in any layer (see `resolve_prefixes`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RulesetLayer {
@@ -244,8 +245,9 @@ pub struct ExecPolicyContext<'a> {
 
 #[derive(Debug, Clone, Default)]
 pub struct ExecPolicyEngine {
-    /// Layered rulesets (builtin → agent → user). When non-empty, takes precedence
-    /// over the legacy flat lists below.
+    /// Layered rulesets (builtin → agent → user). `resolve_prefixes`
+    /// flattens them after the legacy flat lists below, so a legacy entry is
+    /// the first match of its prefix.
     rulesets: Vec<Ruleset>,
     /// Legacy flat lists kept for backward compatibility with `new()`.
     trusted_prefixes: Vec<String>,
