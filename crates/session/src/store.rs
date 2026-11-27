@@ -552,7 +552,8 @@ pub struct SavedSession {
     pub approvals: Vec<ApprovalRecord>,
     /// Size in bytes of the session journal (`<id>.journal.jsonl`, round-9
     /// TODO-58) when this snapshot was written — stamped by
-    /// [`FileSessionStore::save_session`]. A load whose journal has grown
+    /// [`FileSessionStore::save_session`] and
+    /// [`FileSessionStore::save_checkpoint`]. A load whose journal has grown
     /// past it recovers the transcript from the journal. `None` when no
     /// journal existed, or the snapshot was written by a build that kept
     /// none (the snapshot then stays authoritative).
@@ -624,19 +625,7 @@ impl FileSessionStore {
     /// Save a session to disk using atomic write (temp file + fsync + rename).
     pub fn save_session(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let path = self.validated_session_path(&session.metadata.id)?;
-
-        // Stamp the journal size this snapshot covers (the engine journals
-        // before it reports a turn complete, so the journal already holds
-        // everything this snapshot shows).
-        let journal_bytes = self.journal_len(&session.metadata.id);
-        let content = if journal_bytes == session.journal_bytes {
-            serde_json::to_string_pretty(&session)
-        } else {
-            let mut stamped = session.clone();
-            stamped.journal_bytes = journal_bytes;
-            serde_json::to_string_pretty(&stamped)
-        }
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let content = self.stamped_json(session)?;
 
         // Atomic write via write_atomic (NamedTempFile + fsync + persist)
         write_atomic(&path, content.as_bytes())?;
@@ -651,25 +640,56 @@ impl FileSessionStore {
         Ok(path)
     }
 
-    /// Save a crash-recovery checkpoint for in-flight turns.
+    /// Save a crash-recovery checkpoint for in-flight turns: the transcript
+    /// as it stood at turn start, stamped with the journal size it covers
+    /// like any other persisted form. The turn that was in flight when the
+    /// process died may since have reached the journal, and the next launch
+    /// re-reads this copy through [`Self::load_checkpoint`] — an unstamped
+    /// one used to be re-stamped there as covering the whole journal, so
+    /// that turn was never recovered.
+    ///
+    /// Known limitation: the stamp is taken when the write runs, on the
+    /// blocking pool. A turn whose first op already flushed inside that
+    /// window is stamped as covered and is not recovered.
     pub fn save_checkpoint(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let checkpoints = self.sessions_dir.join("checkpoints");
         fs::create_dir_all(&checkpoints)?;
         let path = checkpoints.join("latest.json");
-        let content = serde_json::to_string_pretty(&session)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let content = self.stamped_json(session)?;
         write_atomic(&path, content.as_bytes())?;
         Ok(path)
     }
 
-    /// Load the most recent crash-recovery checkpoint if present.
+    /// Load the most recent crash-recovery checkpoint if present, folded up
+    /// to the journal like a snapshot: for a session whose turn-end save
+    /// never ran, this file is the only persisted copy of its transcript.
     pub fn load_checkpoint(&self) -> std::io::Result<Option<SavedSession>> {
         let path = self.sessions_dir.join("checkpoints").join("latest.json");
         if !path.exists() {
             return Ok(None);
         }
         let content = fs::read_to_string(&path)?;
-        Ok(Some(Self::decode_session(&content)?))
+        let mut session = Self::decode_session(&content)?;
+        self.recover_from_journal(&mut session);
+        Ok(Some(session))
+    }
+
+    /// The session serialized with the journal size it covers stamped in
+    /// (`None` when it has no journal). Every persisted form goes through
+    /// here. For a snapshot taken at a turn boundary the journal already
+    /// holds everything the transcript shows — the engine journals before it
+    /// reports a turn complete; for a checkpoint that is exactly what the
+    /// stamp lets a later load check.
+    fn stamped_json(&self, session: &SavedSession) -> std::io::Result<String> {
+        let journal_bytes = self.journal_len(&session.metadata.id);
+        let content = if journal_bytes == session.journal_bytes {
+            serde_json::to_string_pretty(&session)
+        } else {
+            let mut stamped = session.clone();
+            stamped.journal_bytes = journal_bytes;
+            serde_json::to_string_pretty(&stamped)
+        };
+        content.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Clear any crash-recovery checkpoint.
@@ -2738,6 +2758,81 @@ mod tests {
         let loaded = store.load_session(&id).expect("load");
         assert_eq!(loaded.messages.len(), 4, "{:?}", loaded.messages);
         assert_eq!(loaded.messages[3], make_test_message("assistant", "four"));
+    }
+
+    /// A checkpoint is written at turn start and re-read by the next launch.
+    /// The turn that was in flight may have reached the journal before the
+    /// process died: the checkpoint must carry the journal size it covers,
+    /// and loading it must fold that turn back in — an unstamped copy was
+    /// re-stamped at launch as covering the whole journal, and the turn was
+    /// lost for good.
+    #[test]
+    fn load_checkpoint_recovers_a_turn_that_reached_the_journal() {
+        use crate::journal::{FileSessionJournal, JournalEntry, SessionJournal};
+        let tmp = tempdir().expect("tempdir");
+        let store = FileSessionStore::new(tmp.path().join("sessions")).expect("new");
+        let journal = FileSessionJournal::new(store.sessions_dir());
+        let first = vec![
+            make_test_message("user", "one"),
+            make_test_message("assistant", "two"),
+        ];
+        let session = create_saved_session(&first, "test-model", tmp.path(), 0, None);
+        let id = session.metadata.id.clone();
+        journal
+            .append(
+                &id,
+                vec![JournalEntry::Append {
+                    messages: first.clone(),
+                }],
+            )
+            .expect("journal");
+        let journal_len = fs::metadata(
+            crate::journal::journal_path(store.sessions_dir(), &id).expect("journal path"),
+        )
+        .expect("journal metadata")
+        .len();
+
+        store.save_checkpoint(&session).expect("save checkpoint");
+        let written =
+            fs::read_to_string(store.sessions_dir().join("checkpoints").join("latest.json"))
+                .expect("read checkpoint");
+        let written: serde_json::Value = serde_json::from_str(&written).expect("checkpoint json");
+        assert_eq!(
+            written["journal_bytes"], journal_len,
+            "the checkpoint must record the journal size it covers"
+        );
+
+        journal
+            .append(
+                &id,
+                vec![JournalEntry::Append {
+                    messages: vec![
+                        make_test_message("user", "three"),
+                        make_test_message("assistant", "four"),
+                    ],
+                }],
+            )
+            .expect("journal the next turn");
+
+        let loaded = store
+            .load_checkpoint()
+            .expect("load checkpoint")
+            .expect("checkpoint present");
+        assert_eq!(loaded.messages.len(), 4, "{:?}", loaded.messages);
+        assert_eq!(loaded.messages[3], make_test_message("assistant", "four"));
+
+        // What the launcher does next: persist it as a regular session. That
+        // save must stamp the recovered transcript, so a later load of the
+        // session keeps all four messages.
+        store.save_session(&loaded).expect("persist");
+        assert_eq!(
+            store
+                .load_session(&id)
+                .expect("load session")
+                .messages
+                .len(),
+            4
+        );
     }
 
     /// A snapshot that recorded no journal size was written by a build

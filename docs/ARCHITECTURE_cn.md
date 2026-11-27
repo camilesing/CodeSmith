@@ -344,7 +344,7 @@ Chat Completions 驱动 turn。
 
 ### 崩溃恢复 + 离线队列
 
-1. 发送用户输入之前，REPL 会将检查点快照写入 `~/.codesmith/sessions/checkpoints/latest.json`
+1. 发送用户输入之前，REPL 会将检查点快照写入 `~/.codesmith/sessions/checkpoints/latest.json`（记录它所覆盖的 journal 大小；下次启动时，若在它写入之后有 turn 已经写入了会话 journal，会把那部分折回到恢复出的会话里）
 2. 启动默认保持全新状态；先前的会话通过 `--resume`/`--continue`（或 REPL 中的 `/resume` 命令）显式恢复
 3. 在降级/离线状态下，新的提示词会在内存中排队并镜像到 `~/.codesmith/sessions/checkpoints/offline_queue.json`
 4. 队列编辑（`/queue ...`）会持续持久化，因此草稿和已排队的提示词可在重启后保留

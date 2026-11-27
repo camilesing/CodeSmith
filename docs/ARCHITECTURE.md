@@ -379,7 +379,7 @@ live there).
 
 ### Crash Recovery + Offline Queue
 
-1. Before sending user input, the REPL writes a checkpoint snapshot to `~/.codesmith/sessions/checkpoints/latest.json`
+1. Before sending user input, the REPL writes a checkpoint snapshot to `~/.codesmith/sessions/checkpoints/latest.json` (stamped with the journal size it covers; the next launch folds back in any turn that reached the session journal after it was written)
 2. Startup remains fresh by default; prior sessions are resumed explicitly via `--resume`/`--continue` (or the `/resume` command in the REPL)
 3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.codesmith/sessions/checkpoints/offline_queue.json`
 4. Queue edits (`/queue ...`) are persisted continuously so drafts and queued prompts survive restarts
