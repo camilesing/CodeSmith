@@ -610,8 +610,44 @@ impl RuntimeThreadStore {
         Ok(out)
     }
 
+    /// A turn's items, oldest first. One file per item, through the ids
+    /// the turn record keeps (`TurnRecord::item_ids`); the shared `items/`
+    /// directory is not scanned. A record with no ids is empty or
+    /// predates the field, so the directory answers for it — nothing an
+    /// older build wrote disappears from a thread view.
     pub fn list_items_for_turn(&self, turn_id: &str) -> Result<Vec<TurnItemRecord>> {
         validated_record_id(turn_id, "turn id")?;
+        let turn = self.load_turn(turn_id)?;
+        let mut out = Vec::new();
+        if turn.item_ids.is_empty() {
+            out.extend(self.scan_items_for_turn(turn_id)?);
+        } else {
+            for item_id in &turn.item_ids {
+                let path = self.item_path(item_id)?;
+                // A listed item whose file is gone was simply absent
+                // from the directory scan; it stays absent, said so.
+                if !path.exists() {
+                    tracing::warn!(
+                        target: "codesmith_runtime_threads",
+                        item_id = %item_id,
+                        "turn lists an item whose file is missing"
+                    );
+                    continue;
+                }
+                out.push(self.load_item(item_id)?);
+            }
+        }
+        out.sort_by(|a, b| {
+            let left = a.started_at.unwrap_or_else(Utc::now);
+            let right = b.started_at.unwrap_or_else(Utc::now);
+            left.cmp(&right)
+        });
+        Ok(out)
+    }
+
+    /// The reading from before `item_ids`: parse every file in `items/`
+    /// and keep the ones that name `turn_id`.
+    fn scan_items_for_turn(&self, turn_id: &str) -> Result<Vec<TurnItemRecord>> {
         let mut out = Vec::new();
         for entry in fs::read_dir(&self.items_dir)
             .with_context(|| format!("Failed to read {}", self.items_dir.display()))?
@@ -647,8 +683,7 @@ impl RuntimeThreadStore {
     /// Completed `create_goal`/`update_goal` items of one thread, oldest
     /// first — the goal-journal slice `goal_seed_from_items` consumes. Two
     /// directory scans total (turns, then one pass over items filtered by
-    /// the thread's turn ids), unlike `get_thread_detail`, which re-scans
-    /// the whole items directory once per turn.
+    /// the thread's turn ids).
     pub fn goal_items_for_thread(&self, thread_id: &str) -> Result<Vec<TurnItemRecord>> {
         let turn_ids: HashSet<String> = self
             .list_turns_for_thread(thread_id)?
@@ -7618,6 +7653,44 @@ mod tests {
         assert!(forked.queue.is_empty(), "{:?}", forked.queue);
         assert!(manager.get_thread(&forked.id).await?.queue.is_empty());
         assert_eq!(manager.get_thread(&source.id).await?.queue.len(), 1);
+        Ok(())
+    }
+
+    /// Items are read through the ids the turn keeps. The whole-directory
+    /// scan it replaces failed every listing once one unrelated file in
+    /// `items/` was unreadable; a record from before `item_ids` still finds
+    /// its items on disk.
+    #[test]
+    fn list_items_for_turn_reads_by_id_and_tolerates_unrelated_files() -> Result<()> {
+        let store = RuntimeThreadStore::open(test_runtime_dir())?;
+        let mut turn = sample_turn("thr_items", "turn_listed", RuntimeTurnStatus::Completed);
+        let item = sample_item(
+            "turn_listed",
+            "item_listed",
+            TurnItemLifecycleStatus::Completed,
+        );
+        turn.item_ids.push(item.id.clone());
+        store.save_turn(&turn)?;
+        store.save_item(&item)?;
+        store.save_item(&sample_item(
+            "turn_legacy",
+            "item_legacy",
+            TurnItemLifecycleStatus::Completed,
+        ))?;
+        store.save_turn(&sample_turn(
+            "thr_items",
+            "turn_legacy",
+            RuntimeTurnStatus::Completed,
+        ))?;
+        let legacy = store.list_items_for_turn("turn_legacy")?;
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].id, "item_legacy");
+
+        std::fs::write(store.items_dir.join("garbage.json"), "not json")?;
+
+        let listed = store.list_items_for_turn("turn_listed")?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "item_listed");
         Ok(())
     }
 
