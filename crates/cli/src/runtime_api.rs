@@ -1323,10 +1323,20 @@ async fn set_skill_enabled(
         )));
     }
 
+    // A file read and an fsync'd atomic write: off the runtime worker. The
+    // guard stays held so a concurrent toggle cannot interleave.
     let mut store = state.skill_state.lock().await;
-    store
-        .set_enabled(&name, req.enabled)
-        .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
+    *store = tokio::task::spawn_blocking({
+        let mut store = (*store).clone();
+        let name = name.clone();
+        move || {
+            store.set_enabled(&name, req.enabled)?;
+            Ok::<_, anyhow::Error>(store)
+        }
+    })
+    .await
+    .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?
+    .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
     Ok(Json(SetSkillEnabledResponse {
         name,
         enabled: req.enabled,
