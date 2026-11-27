@@ -1116,7 +1116,7 @@ impl Runtime {
         req: PromptRequest,
         cli_overrides: &CliRuntimeOverrides,
     ) -> Result<PromptResponse> {
-        let resolved = self.config.resolve_runtime_options(cli_overrides);
+        let resolved = self.config.resolve_runtime_options(cli_overrides)?;
         let requested_model = req.model.clone().unwrap_or_else(|| resolved.model.clone());
         let selection = self
             .model_registry
@@ -1215,7 +1215,7 @@ impl Runtime {
         };
         let resolved = self
             .config
-            .resolve_runtime_options(&CliRuntimeOverrides::default());
+            .resolve_runtime_options(&CliRuntimeOverrides::default())?;
         let policy_path = policy_subject_path(&call.payload);
         let decision = self.exec_policy.check(ExecPolicyContext {
             command: &command,

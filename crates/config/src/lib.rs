@@ -1821,8 +1821,10 @@ impl ConfigToml {
     /// → environment. Call `resolve_runtime_options_with_secrets` when a
     /// user-facing dispatcher should recover credentials from the configured
     /// secret store.
-    #[must_use]
-    pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
+    pub fn resolve_runtime_options(
+        &self,
+        cli: &CliRuntimeOverrides,
+    ) -> Result<ResolvedRuntimeOptions> {
         let no_keyring = Secrets::new(std::sync::Arc::new(
             codesmith_secrets::InMemoryKeyringStore::new(),
         ));
@@ -1832,13 +1834,22 @@ impl ConfigToml {
     /// Resolve runtime options using an explicit secrets façade.
     ///
     /// API-key precedence is **CLI flag → config-file → secret store → environment**.
-    #[must_use]
     pub fn resolve_runtime_options_with_secrets(
         &self,
         cli: &CliRuntimeOverrides,
         secrets: &Secrets,
+    ) -> Result<ResolvedRuntimeOptions> {
+        // An unreadable environment override is an error, never a silent
+        // fallback to config.toml.
+        Ok(self.resolve_with(cli, secrets, EnvRuntimeOverrides::load()?))
+    }
+
+    fn resolve_with(
+        &self,
+        cli: &CliRuntimeOverrides,
+        secrets: &Secrets,
+        env: EnvRuntimeOverrides,
     ) -> ResolvedRuntimeOptions {
-        let env = EnvRuntimeOverrides::load();
         let provider = cli.provider.or(env.provider).unwrap_or(self.provider);
 
         let provider_cfg = self.providers.for_provider(provider);
@@ -2868,12 +2879,25 @@ pub fn codesmith_env(suffix: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+/// Read `CODESMITH_{suffix}` and parse it. A set but unreadable value is
+/// an error that names the variable — never a silent fallback to
+/// config.toml (`CODESMITH_PROVIDER=openai_compatible` used to send the
+/// session to the configured provider without a word).
+fn parsed_codesmith_env<T>(suffix: &str, parse: impl Fn(&str) -> Result<T>) -> Result<Option<T>> {
+    codesmith_env(suffix)
+        .map(|value| {
+            parse(value.trim())
+                .with_context(|| format!("CODESMITH_{suffix}='{value}' is not a valid value"))
+        })
+        .transpose()
+}
+
 impl EnvRuntimeOverrides {
-    fn load() -> Self {
-        Self {
-            provider: std::env::var("CODESMITH_PROVIDER")
-                .ok()
-                .and_then(|v| ProviderKind::parse(&v)),
+    fn load() -> Result<Self> {
+        let overrides = Self {
+            provider: parsed_codesmith_env("PROVIDER", |value| {
+                ProviderKind::parse(value).with_context(|| format!("unknown provider '{value}'"))
+            })?,
             model: std::env::var("CODESMITH_MODEL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -2898,12 +2922,11 @@ impl EnvRuntimeOverrides {
             output_mode: codesmith_env("OUTPUT_MODE"),
             auth_mode: codesmith_env("AUTH_MODE"),
             log_level: codesmith_env("LOG_LEVEL"),
-            telemetry: codesmith_env("TELEMETRY").and_then(|v| parse_bool(&v).ok()),
+            telemetry: parsed_codesmith_env("TELEMETRY", parse_bool)?,
             approval_policy: codesmith_env("APPROVAL_POLICY"),
             sandbox_mode: codesmith_env("SANDBOX_MODE"),
-            yolo: codesmith_env("YOLO").and_then(|v| parse_bool(&v).ok()),
-            http_headers: codesmith_env("HTTP_HEADERS")
-                .and_then(|value| parse_http_headers(&value).ok())
+            yolo: parsed_codesmith_env("YOLO", parse_bool)?,
+            http_headers: parsed_codesmith_env("HTTP_HEADERS", parse_http_headers)?
                 .filter(|headers| !headers.is_empty()),
             deepseek_base_url: std::env::var("CODESMITH_BASE_URL")
                 .ok()
@@ -2964,7 +2987,8 @@ impl EnvRuntimeOverrides {
             anthropic_base_url: std::env::var("ANTHROPIC_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-        }
+        };
+        Ok(overrides)
     }
 
     fn base_url_for(&self, provider: ProviderKind) -> Option<String> {
@@ -3396,7 +3420,9 @@ mod tests {
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Deepseek);
         assert_eq!(resolved.api_key.as_deref(), Some("root-key"));
@@ -3410,7 +3436,9 @@ mod tests {
         let _env = EnvGuard::without_runtime_overrides();
         let config = ConfigToml::default();
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Deepseek);
         assert_eq!(resolved.base_url, DEFAULT_DEEPSEEK_BASE_URL);
@@ -3431,7 +3459,9 @@ mod tests {
         config.providers.deepseek.base_url = Some("https://gateway.example/v1".to_string());
         config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
         assert_eq!(resolved.base_url, "https://gateway.example/v1");
@@ -3465,7 +3495,9 @@ mod tests {
             .http_headers
             .insert("X-Shared".to_string(), "provider".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
         assert_eq!(resolved.base_url, "https://gateway.example/v1");
@@ -3496,7 +3528,9 @@ mod tests {
             env::set_var("CODESMITH_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
         }
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(
             resolved
@@ -3516,7 +3550,9 @@ mod tests {
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         assert_eq!(resolved.base_url, DEFAULT_NVIDIA_NIM_BASE_URL);
@@ -3535,7 +3571,9 @@ mod tests {
         config.providers.nvidia_nim.base_url = Some("https://nim.example/v1".to_string());
         config.providers.nvidia_nim.model = Some("deepseek-ai/deepseek-v4-pro".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         assert_eq!(resolved.api_key.as_deref(), Some("nim-key"));
@@ -3553,7 +3591,9 @@ mod tests {
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_FLASH_MODEL);
@@ -3571,7 +3611,9 @@ mod tests {
         }
 
         let config = ConfigToml::default();
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         assert_eq!(resolved.api_key.as_deref(), Some("nim-env-key"));
@@ -3591,10 +3633,44 @@ mod tests {
         }
 
         let config = ConfigToml::default();
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         assert_eq!(resolved.base_url, "https://short-nim.example/v1");
+    }
+
+    /// A set but unreadable override used to read as "unset": the session
+    /// silently ran on whatever config.toml said.
+    #[test]
+    fn an_unreadable_env_override_is_an_error_not_a_fallback() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("CODESMITH_PROVIDER", "not-a-provider");
+            let err = EnvRuntimeOverrides::load().expect_err("an unknown provider must fail loud");
+            assert!(format!("{err:#}").contains("CODESMITH_PROVIDER"), "{err:#}");
+
+            env::remove_var("CODESMITH_PROVIDER");
+            env::set_var("CODESMITH_TELEMETRY", "maybe");
+            let err =
+                EnvRuntimeOverrides::load().expect_err("an unreadable boolean must fail loud");
+            assert!(
+                format!("{err:#}").contains("CODESMITH_TELEMETRY"),
+                "{err:#}"
+            );
+
+            env::remove_var("CODESMITH_TELEMETRY");
+            env::set_var("CODESMITH_HTTP_HEADERS", "Authorization: Bearer x");
+            let err =
+                EnvRuntimeOverrides::load().expect_err("a malformed header list must fail loud");
+            assert!(
+                format!("{err:#}").contains("CODESMITH_HTTP_HEADERS"),
+                "{err:#}"
+            );
+        }
     }
 
     #[test]
@@ -3609,7 +3685,7 @@ mod tests {
             env::set_var("CODESMITH_APPROVAL_POLICY", "on-request");
         }
 
-        let overrides = EnvRuntimeOverrides::load();
+        let overrides = EnvRuntimeOverrides::load().expect("env overrides");
 
         assert_eq!(overrides.yolo, Some(true));
         assert_eq!(overrides.approval_policy.as_deref(), Some("on-request"));
@@ -3625,7 +3701,7 @@ mod tests {
             env::set_var("CODESMITH_SANDBOX_MODE", "   ");
         }
 
-        let overrides = EnvRuntimeOverrides::load();
+        let overrides = EnvRuntimeOverrides::load().expect("env overrides");
 
         assert_eq!(overrides.yolo, Some(true));
         assert_eq!(overrides.sandbox_mode, None);
@@ -3642,7 +3718,9 @@ mod tests {
         }
 
         let config = ConfigToml::default();
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
         // DEEPSEEK_API_KEY is deliberately not a nvidia-nim candidate
@@ -3849,7 +3927,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         // Safety: test-only env mutation guarded by env_lock().
         unsafe { env::set_var("CODESMITH_PROVIDER", "moonshot") };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
         assert_eq!(resolved.base_url, DEFAULT_KIMI_CODE_BASE_URL);
@@ -4285,7 +4365,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Openrouter);
         assert_eq!(resolved.base_url, DEFAULT_OPENROUTER_BASE_URL);
@@ -4301,7 +4383,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::XiaomiMimo);
         assert_eq!(resolved.base_url, DEFAULT_XIAOMI_MIMO_BASE_URL);
@@ -4317,7 +4401,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Novita);
         assert_eq!(resolved.base_url, DEFAULT_NOVITA_BASE_URL);
@@ -4333,7 +4419,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Fireworks);
         assert_eq!(resolved.base_url, DEFAULT_FIREWORKS_BASE_URL);
@@ -4349,7 +4437,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Siliconflow);
         assert_eq!(resolved.base_url, DEFAULT_SILICONFLOW_BASE_URL);
@@ -4365,7 +4455,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
         assert_eq!(resolved.base_url, DEFAULT_MOONSHOT_BASE_URL);
@@ -4382,7 +4474,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         };
         config.providers.moonshot.auth_mode = Some("kimi_oauth".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
         assert_eq!(resolved.auth_mode.as_deref(), Some("kimi_oauth"));
@@ -4403,7 +4497,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         config.providers.moonshot.api_key = Some("kimi-code-key".to_string());
         config.providers.moonshot.base_url = Some(DEFAULT_KIMI_CODE_BASE_URL.to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
         assert_eq!(resolved.auth_mode, None);
@@ -4434,7 +4530,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         config.providers.moonshot.api_key = Some("kimi-code-key".to_string());
         config.providers.moonshot.base_url = Some(DEFAULT_KIMI_CODE_BASE_URL.to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
         assert_eq!(resolved.base_url, DEFAULT_KIMI_CODE_BASE_URL);
@@ -4456,7 +4554,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         }
         let config = ConfigToml::default();
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
         assert_eq!(resolved.model, "custom-kimi-test-model");
@@ -4473,7 +4573,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         }
         let config = ConfigToml::default();
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Moonshot);
         assert_eq!(resolved.model, DEFAULT_MOONSHOT_MODEL);
@@ -4488,7 +4590,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::WanjieArk);
         assert_eq!(resolved.base_url, DEFAULT_WANJIE_ARK_BASE_URL);
@@ -4504,7 +4608,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Sglang);
         assert_eq!(resolved.base_url, DEFAULT_SGLANG_BASE_URL);
@@ -4520,7 +4626,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.base_url, DEFAULT_VLLM_BASE_URL);
@@ -4536,7 +4644,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Ollama);
         assert_eq!(resolved.base_url, DEFAULT_OLLAMA_BASE_URL);
@@ -4562,7 +4672,8 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             };
 
             let resolved = config
-                .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+                .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+                .expect("runtime options");
 
             assert_eq!(resolved.provider, provider);
             assert_eq!(resolved.api_key, None);
@@ -4586,8 +4697,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved =
-            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        let resolved = config
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+            .expect("runtime options");
 
         assert_eq!(resolved.api_key.as_deref(), Some("secret-store-key"));
         assert_eq!(store.gets.lock().unwrap().as_slice(), ["ollama"]);
@@ -4604,8 +4716,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved =
-            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        let resolved = config
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+            .expect("runtime options");
 
         assert_eq!(resolved.api_key.as_deref(), Some("secret-store-key"));
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
@@ -4623,8 +4736,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..ConfigToml::default()
         };
 
-        let resolved =
-            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        let resolved = config
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Deepseek);
         assert_eq!(resolved.base_url, "http://127.0.0.1:8000/v1");
@@ -4645,7 +4759,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Ollama);
         assert_eq!(resolved.model, "deepseek-coder-v2:16b");
@@ -4662,8 +4778,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             env::set_var("OLLAMA_API_KEY", "ollama-env-key");
         }
 
-        let resolved =
-            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Ollama);
         assert_eq!(resolved.base_url, "http://ollama.example/v1");
@@ -4680,8 +4797,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             env::set_var("OPENROUTER_API_KEY", "or-env-key");
         }
 
-        let resolved =
-            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Openrouter);
         assert_eq!(resolved.api_key.as_deref(), Some("or-env-key"));
@@ -4700,8 +4818,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             env::set_var("MIMO_MODEL", "mimo-v2.5");
         }
 
-        let resolved =
-            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::XiaomiMimo);
         assert_eq!(resolved.api_key.as_deref(), Some("mimo-env-key"));
@@ -4719,8 +4838,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             env::set_var("NOVITA_API_KEY", "novita-env-key");
         }
 
-        let resolved =
-            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Novita);
         assert_eq!(resolved.api_key.as_deref(), Some("novita-env-key"));
@@ -4737,8 +4857,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             env::set_var("FIREWORKS_API_KEY", "fw-env-key");
         }
 
-        let resolved =
-            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Fireworks);
         assert_eq!(resolved.api_key.as_deref(), Some("fw-env-key"));
@@ -4757,8 +4878,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             env::set_var("SILICONFLOW_MODEL", "deepseek-v4-flash");
         }
 
-        let resolved =
-            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Siliconflow);
         assert_eq!(resolved.api_key.as_deref(), Some("sf-env-key"));
@@ -4786,8 +4908,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
                 env::set_var("SILICONFLOW_MODEL", alias);
             }
 
-            let resolved =
-                ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+            let resolved = ConfigToml::default()
+                .resolve_runtime_options(&CliRuntimeOverrides::default())
+                .expect("runtime options");
 
             assert_eq!(resolved.provider, ProviderKind::Siliconflow);
             assert_eq!(resolved.base_url, "https://api.siliconflow.cn/v1");
@@ -4807,8 +4930,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             env::set_var("WANJIE_ARK_MODEL", "account-model-id");
         }
 
-        let resolved =
-            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::WanjieArk);
         assert_eq!(resolved.api_key.as_deref(), Some("wanjie-env-key"));
@@ -4826,7 +4950,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Openrouter);
         assert_eq!(resolved.model, DEFAULT_OPENROUTER_FLASH_MODEL);
@@ -4856,7 +4982,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
                 ..CliRuntimeOverrides::default()
             };
 
-            let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+            let resolved = ConfigToml::default()
+                .resolve_runtime_options(&cli)
+                .expect("runtime options");
 
             assert_eq!(resolved.provider, ProviderKind::Openrouter);
             assert_eq!(resolved.model, expected);
@@ -4873,7 +5001,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Novita);
         assert_eq!(resolved.model, DEFAULT_NOVITA_FLASH_MODEL);
@@ -4889,7 +5019,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Siliconflow);
         assert_eq!(resolved.model, DEFAULT_SILICONFLOW_FLASH_MODEL);
@@ -4907,7 +5039,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
                 ..CliRuntimeOverrides::default()
             };
 
-            let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+            let resolved = ConfigToml::default()
+                .resolve_runtime_options(&cli)
+                .expect("runtime options");
 
             assert_eq!(resolved.provider, ProviderKind::Siliconflow);
             assert_eq!(resolved.model, DEFAULT_SILICONFLOW_MODEL);
@@ -4924,7 +5058,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Siliconflow);
         assert_eq!(resolved.model, "deepseek-v3.2");
@@ -4940,7 +5076,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Sglang);
         assert_eq!(resolved.model, DEFAULT_SGLANG_FLASH_MODEL);
@@ -4956,7 +5094,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             ..CliRuntimeOverrides::default()
         };
 
-        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options(&cli)
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.model, DEFAULT_VLLM_FLASH_MODEL);
@@ -4973,7 +5113,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         config.providers.openrouter.api_key = Some("file-key".to_string());
         config.providers.openrouter.base_url = Some("https://or-mirror.example/v1".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
         assert_eq!(resolved.base_url, "https://or-mirror.example/v1");
@@ -4990,7 +5132,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         config.providers.openrouter.base_url = Some("https://gateway.example.com/v1".to_string());
         config.providers.openrouter.model = Some("DeepSeek-V4-Pro".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Openrouter);
         assert_eq!(resolved.base_url, "https://gateway.example.com/v1");
@@ -5008,7 +5152,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         config.providers.fireworks.base_url = Some("https://my-gateway.example/v1".to_string());
         config.providers.fireworks.model = Some("DeepSeek-V4-Pro".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Fireworks);
         assert_eq!(resolved.base_url, "https://my-gateway.example/v1");
@@ -5027,7 +5173,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         config.providers.siliconflow.base_url = Some("https://my-gateway.example/v1".to_string());
         config.providers.siliconflow.model = Some("DeepSeek-V4-Pro".to_string());
 
-        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+        let resolved = config
+            .resolve_runtime_options(&CliRuntimeOverrides::default())
+            .expect("runtime options");
 
         assert_eq!(resolved.provider, ProviderKind::Siliconflow);
         assert_eq!(resolved.base_url, "https://my-gateway.example/v1");
@@ -5049,8 +5197,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let mut config = ConfigToml::default();
         config.providers.deepseek.api_key = Some("file-key".to_string());
 
-        let resolved =
-            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        let resolved = config
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+            .expect("runtime options");
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
         assert_eq!(
             resolved.api_key_source,
@@ -5073,8 +5222,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         ));
         let config = ConfigToml::default();
 
-        let resolved =
-            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        let resolved = config
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+            .expect("runtime options");
         assert_eq!(resolved.api_key.as_deref(), Some("env-key"));
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
 
@@ -5093,8 +5243,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let mut config = ConfigToml::default();
         config.providers.deepseek.api_key = Some("file-key".to_string());
 
-        let resolved =
-            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        let resolved = config
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+            .expect("runtime options");
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
         assert_eq!(
             resolved.api_key_source,
@@ -5115,7 +5266,8 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         let secrets = Secrets::new(store);
 
         let resolved = ConfigToml::default()
-            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets)
+            .expect("runtime options");
         assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
 
@@ -5137,7 +5289,9 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             api_key: Some("cli-key".to_string()),
             ..CliRuntimeOverrides::default()
         };
-        let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options_with_secrets(&cli, &secrets)
+            .expect("runtime options");
         assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Cli));
     }
@@ -6047,7 +6201,7 @@ backend = "openai-compat"
             ("NOVITA_BASE_URL", "https://novita-mirror.example/v1"),
         ]);
 
-        let overrides = EnvRuntimeOverrides::load();
+        let overrides = EnvRuntimeOverrides::load().expect("env overrides");
 
         assert_eq!(overrides.output_mode.as_deref(), Some("plain"));
         assert_eq!(overrides.auth_mode.as_deref(), Some("oauth"));
@@ -6121,7 +6275,7 @@ backend = "openai-compat"
         let _env = EnvGuard::without_runtime_overrides();
         let _scoped = ScopedEnvVars::set(&[("VOLCENGINE_ARK_MODEL", "   ")]);
 
-        let overrides = EnvRuntimeOverrides::load();
+        let overrides = EnvRuntimeOverrides::load().expect("env overrides");
 
         assert_eq!(overrides.volcengine_model, None);
     }
