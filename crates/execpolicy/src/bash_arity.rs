@@ -588,32 +588,34 @@ fn has_executing_transport(tokens: &[&str]) -> bool {
 /// naming the prefix authorize the payload itself.
 fn is_exec_by_positioning(tokens: &[&str]) -> bool {
     const CONTAINER_CARRIERS: &[&str] = &["kubectl", "docker", "podman", "nerdctl"];
+    // The subcommand is looked for among the tokens right after the base,
+    // with flags dropped — never read from raw `tokens[1]`, where a global
+    // flag sits in `docker -D run …`. A bounded window, so a word deep in
+    // the arguments does not count; a flag's value inside it can only make
+    // the denial broader.
+    let lead: Vec<&str> = tokens.iter().skip(1).take(4).copied().collect();
+    let words: Vec<String> = lead
+        .iter()
+        .filter(|t| !t.starts_with('-'))
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+    let has = |word: &str| words.iter().any(|w| w == word);
     let base = tokens
         .first()
         .copied()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if tokens.len() >= 2
-        && CONTAINER_CARRIERS.contains(&base.as_str())
-        && (tokens[1].eq_ignore_ascii_case("exec") || tokens[1].eq_ignore_ascii_case("run"))
-    {
+    if CONTAINER_CARRIERS.contains(&base.as_str()) && (has("exec") || has("run")) {
         return true;
     }
-    if tokens.len() >= 2
-        && matches!(
-            base.as_str(),
-            "go" | "cargo" | "bun" | "deno" | "python" | "python3"
-        )
+    if matches!(base.as_str(), "go" | "cargo" | "bun" | "deno") && has("run") {
+        return true;
+    }
+    // `-m` runs a module, `-c` runs inline code.
+    if matches!(base.as_str(), "python" | "python3")
+        && lead.iter().any(|t| *t == "-m" || *t == "-c")
     {
-        let sub = tokens[1].to_ascii_lowercase();
-        let base_execs = match base.as_str() {
-            // `-m` runs a module, `-c` runs inline code.
-            "python" | "python3" => sub == "-m" || sub == "-c",
-            _ => sub == "run",
-        };
-        if base_execs {
-            return true;
-        }
+        return true;
     }
     matches!(base.as_str(), "ssh" | "xargs" | "sudo" | "npx")
 }
@@ -845,6 +847,13 @@ mod tests {
         // rule naming the prefix authorize the payload itself.
         for (pattern, command) in [
             ("docker run", "docker run -v /:/host alpine sh"),
+            ("docker run", "docker -D run -v /:/host alpine sh"),
+            ("docker run", "docker --log-level=error run alpine sh"),
+            (
+                "docker run",
+                "docker -H unix:///var/run/docker.sock run alpine sh",
+            ),
+            ("podman", "podman --log-level=debug run alpine sh"),
             ("kubectl exec", "kubectl exec pod -- rm -rf /"),
             ("go run", "go run ./exploit"),
             ("cargo run", "cargo run --bin evil"),
