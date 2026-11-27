@@ -9,10 +9,13 @@ use std::path::{Path, PathBuf};
 ///
 /// Given the existing `memory_path` (e.g. `~/.codesmith/projects/<hash>/memory.md`),
 /// the memory directory is the same parent directory with `/memory/` appended.
-/// When a custom `directory_override` is provided, it takes priority.
+/// When a custom `directory_override` is provided, it takes priority; a
+/// leading `~` in it is expanded like `memory_path`'s (the sibling key is
+/// tilde-expanded, so `~/Notes/memory` is the natural spelling — it used
+/// to resolve against the process cwd).
 pub fn resolve_memory_dir(memory_path: &Path, directory_override: Option<&str>) -> PathBuf {
     if let Some(override_dir) = directory_override {
-        return PathBuf::from(override_dir);
+        return crate::workspace_trust::expand_path(override_dir);
     }
     if let Some(parent) = memory_path.parent() {
         parent.join("memory")
@@ -60,6 +63,24 @@ mod tests {
         let mp = Path::new("/home/.codesmith/projects/abc123/memory.md");
         let dir = resolve_memory_dir(mp, Some("/custom/dir"));
         assert_eq!(dir, PathBuf::from("/custom/dir"));
+    }
+
+    /// `~` in the override used to come back as the relative path `~/notes`,
+    /// so memories landed in a literal `~` directory under whatever the
+    /// process cwd was.
+    #[test]
+    fn tilde_in_the_override_expands_against_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path());
+
+        let dir = resolve_memory_dir(Path::new("/x/memory.md"), Some("~/notes"));
+
+        assert_eq!(
+            dir,
+            tmp.path().join("notes"),
+            "not a relative `~` directory"
+        );
     }
 
     #[test]

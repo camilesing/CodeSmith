@@ -1198,7 +1198,8 @@ and the capacity controller remains disabled unless configured.
     per-turn prefetch). Requires `enabled = true` and the
     `knowledge_on_demand` feature flag.
   - `[memory].directory` (string, optional): memory directory override;
-    defaults to the parent of `memory_path` with `/memory/` appended.
+    defaults to the parent of `memory_path` with `/memory/` appended. A
+    leading `~` is expanded.
   - `[memory].excludes` (array, optional): paths dropped from the
     four-tier CLAUDE.md memory merge. Entries are `~`/env-expanded and
     canonicalized; the list is resolved into the
