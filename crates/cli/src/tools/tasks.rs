@@ -336,43 +336,54 @@ impl ToolSpec for TaskStopTool {
                 let task_mgr = ctx.task_v2_manager.clone();
                 let team_name = ctx.team_name.clone();
                 drop(slot);
-                {
-                    let mut task_mgr = task_mgr.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Ok(tasks) = task_mgr.list_tasks() {
-                        for task in tasks {
-                            if task.owner.as_deref() == Some(target) {
-                                // Only in-flight work goes back to the pool.
-                                // Resetting every owned task re-queued the
-                                // teammate's completed tasks, and the next
-                                // idle teammate redid them.
-                                let status = (task.status
-                                    == crate::tools::task_v2::TaskV2Status::InProgress)
-                                    .then_some(crate::tools::task_v2::TaskV2Status::Pending);
-                                let _ = task_mgr.update_task(
-                                    &task.id,
-                                    status,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    Some(metadata.clone()),
-                                    None,
-                                    None,
-                                );
+                // The task store and the roster are flock-guarded file
+                // work: the whole release runs on the blocking pool.
+                let (target_owned, team_owned) = (target.to_string(), team_name.clone());
+                let released = tokio::task::spawn_blocking(move || {
+                    {
+                        let mut task_mgr = task_mgr.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Ok(tasks) = task_mgr.list_tasks() {
+                            for task in tasks {
+                                if task.owner.as_deref() == Some(target_owned.as_str()) {
+                                    // Only in-flight work goes back to the pool.
+                                    // Resetting every owned task re-queued the
+                                    // teammate's completed tasks, and the next
+                                    // idle teammate redid them.
+                                    let status = (task.status
+                                        == crate::tools::task_v2::TaskV2Status::InProgress)
+                                        .then_some(crate::tools::task_v2::TaskV2Status::Pending);
+                                    let _ = task_mgr.update_task(
+                                        &task.id,
+                                        status,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        Some(metadata.clone()),
+                                        None,
+                                        None,
+                                    );
+                                }
                             }
                         }
+                        let _ = task_mgr.unassign_teammate_tasks(&target_owned);
                     }
-                    let _ = task_mgr.unassign_teammate_tasks(target);
-                }
-                // One locked read-modify-write: an unguarded
-                // read→set_inactive→write could erase a concurrent roster
-                // change from another agent process.
-                if let Err(err) = crate::tools::team::with_team_file(&team_name, |team_file| {
-                    crate::tools::team::set_member_inactive(team_file, target)
-                }) {
-                    crate::logging::warn(format!(
+                    // One locked read-modify-write: an unguarded
+                    // read→set_inactive→write could erase a concurrent roster
+                    // change from another agent process.
+                    crate::tools::team::with_team_file(&team_owned, |team_file| {
+                        crate::tools::team::set_member_inactive(team_file, &target_owned)
+                    })
+                })
+                .await;
+                match released {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => crate::logging::warn(format!(
                         "failed to mark teammate '{target}' inactive in '{team_name}': {err:#}"
-                    ));
+                    )),
+                    Err(err) => crate::logging::warn(format!(
+                        "failed to release the tasks of teammate '{target}': worker failed: {err}"
+                    )),
                 }
                 return Ok(ToolResult::success(format!("Stopped teammate: {target}"))
                     .with_metadata(json!({
@@ -1160,6 +1171,9 @@ fn write_runtime_artifact(
     ))
 }
 
+// Known limitation (the blocking-call convention): the three tools that
+// record an artifact write it inline — one small local file each. The
+// task-store and roster work in this file runs on the blocking pool.
 fn write_task_artifact_for(
     context: &ToolContext,
     task_id: &str,

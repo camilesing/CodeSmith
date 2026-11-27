@@ -24,6 +24,14 @@ pub use codesmith_agent_runtime::tool_state::task_v2::{
 #[allow(dead_code)]
 const VERIFICATION_NUDGE_THRESHOLD: u32 = 3;
 
+/// A task worker's panic or cancellation surfaces as a tool failure that
+/// names it.
+fn worker_failed(err: tokio::task::JoinError) -> ToolError {
+    ToolError::ExecutionFailed {
+        message: format!("task worker failed: {err}"),
+    }
+}
+
 // === TaskV2CreateTool ===
 
 pub struct TaskV2CreateTool {
@@ -176,21 +184,33 @@ impl ToolSpec for TaskV2CreateTool {
         let metadata = input.get("metadata").cloned();
 
         let subject_display = subject.clone();
-        let mut manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
-        let task_id = manager
-            .create_task(
-                subject,
-                description,
-                active_form,
-                Some(status),
-                owner,
-                blocked_by,
-                blocks,
-                metadata,
-            )
+        // The store is blocking fs + flock work under a std Mutex: every
+        // manager call runs on the blocking pool, and the hook — a child
+        // process the executor waits on, up to its timeout — never runs
+        // with the manager lock held.
+        let task_id = {
+            let manager = self.manager.clone();
+            tokio::task::spawn_blocking(move || {
+                manager
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .create_task(
+                        subject,
+                        description,
+                        active_form,
+                        Some(status),
+                        owner,
+                        blocked_by,
+                        blocks,
+                        metadata,
+                    )
+            })
+            .await
+            .map_err(worker_failed)?
             .map_err(|e| ToolError::ExecutionFailed {
                 message: format!("Failed to create task: {e}"),
-            })?;
+            })?
+        };
 
         // Fire TaskCreated hook (can block creation with exit code 2)
         if let Some(hook_executor) = &context.runtime.hook_executor
@@ -201,18 +221,31 @@ impl ToolSpec for TaskV2CreateTool {
                 .with_task_id(&task_id)
                 .with_task_subject(&subject_display)
                 .with_task_status(status_str.as_str());
-            let results = hook_executor.execute(crate::hooks::HookEvent::TaskCreated, &hook_ctx);
+            let hook_executor = std::sync::Arc::clone(hook_executor);
+            let results = tokio::task::spawn_blocking(move || {
+                hook_executor.execute(crate::hooks::HookEvent::TaskCreated, &hook_ctx)
+            })
+            .await
+            .map_err(worker_failed)?;
             for result in &results {
                 if result.exit_code == Some(2) {
                     // Rollback: remove the just-created task AND the links
                     // it added to its blockers — the raw delete left task
                     // 1 saying `blocks: ["2"]` for a task that no longer
                     // exists.
-                    manager
-                        .soft_delete_task(&task_id)
-                        .map_err(|e| ToolError::ExecutionFailed {
-                            message: format!("Failed to rollback task creation: {e}"),
-                        })?;
+                    let manager = self.manager.clone();
+                    let task_id = task_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        manager
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .soft_delete_task(&task_id)
+                    })
+                    .await
+                    .map_err(worker_failed)?
+                    .map_err(|e| ToolError::ExecutionFailed {
+                        message: format!("Failed to rollback task creation: {e}"),
+                    })?;
                     let reason = result.stderr.lines().next().unwrap_or("no reason given");
                     return Ok(ToolResult::error(format!(
                         "Task creation blocked by hook: {reason}"
@@ -331,14 +364,22 @@ impl ToolSpec for TaskV2UpdateTool {
             ),
         };
 
-        // Handle deletion as a special case
+        // Handle deletion as a special case (the store is blocking file
+        // work: on the pool)
         if status == Some(TaskV2Status::Deleted) {
-            let mut manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
-            manager
-                .soft_delete_task(&task_id)
-                .map_err(|e| ToolError::ExecutionFailed {
-                    message: format!("Failed to delete task {task_id}: {e}"),
-                })?;
+            let manager = self.manager.clone();
+            let task_id_owned = task_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                manager
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .soft_delete_task(&task_id_owned)
+            })
+            .await
+            .map_err(worker_failed)?
+            .map_err(|e| ToolError::ExecutionFailed {
+                message: format!("Failed to delete task {task_id}: {e}"),
+            })?;
             return Ok(ToolResult::success(format!(
                 "Task {task_id} deleted and references cleaned up"
             )));
@@ -389,24 +430,35 @@ impl ToolSpec for TaskV2UpdateTool {
 
         let completed = status == Some(TaskV2Status::Completed);
 
-        let mut manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
-        let updated = manager
-            .update_task(
-                &task_id,
-                status,
-                owner,
-                subject,
-                description,
-                active_form,
-                metadata_merge,
-                add_blocks,
-                add_blocked_by,
-            )
+        let updated = {
+            let manager = self.manager.clone();
+            let task_id_owned = task_id.clone();
+            tokio::task::spawn_blocking(move || {
+                manager
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .update_task(
+                        &task_id_owned,
+                        status,
+                        owner,
+                        subject,
+                        description,
+                        active_form,
+                        metadata_merge,
+                        add_blocks,
+                        add_blocked_by,
+                    )
+            })
+            .await
+            .map_err(worker_failed)?
             .map_err(|e| ToolError::ExecutionFailed {
                 message: format!("Failed to update task {task_id}: {e}"),
-            })?;
+            })?
+        };
 
-        // Fire TaskCompleted hook when status transitions to completed (observer-only)
+        // Fire TaskCompleted hook when status transitions to completed
+        // (observer-only). A child process the executor waits on: on the
+        // pool, and with no manager guard held.
         if completed
             && let Some(hook_executor) = &context.runtime.hook_executor
             && hook_executor.has_hooks_for_event(crate::hooks::HookEvent::TaskCompleted)
@@ -416,7 +468,11 @@ impl ToolSpec for TaskV2UpdateTool {
                 .with_task_id(&updated.id)
                 .with_task_subject(&updated.subject)
                 .with_task_status("completed");
-            let _ = hook_executor.execute(crate::hooks::HookEvent::TaskCompleted, &hook_ctx);
+            let hook_executor = std::sync::Arc::clone(hook_executor);
+            let _ = tokio::task::spawn_blocking(move || {
+                hook_executor.execute(crate::hooks::HookEvent::TaskCompleted, &hook_ctx)
+            })
+            .await;
         }
 
         // Send mailbox notification when owner changes
@@ -496,12 +552,19 @@ impl ToolSpec for TaskV2GetTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("task_id"))?;
 
-        let manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
-        let record = manager
-            .get_task(task_id)
-            .map_err(|e| ToolError::ExecutionFailed {
-                message: format!("Failed to get task {task_id}: {e}"),
-            })?;
+        let manager = self.manager.clone();
+        let task_id_owned = task_id.to_string();
+        let record = tokio::task::spawn_blocking(move || {
+            manager
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_task(&task_id_owned)
+        })
+        .await
+        .map_err(worker_failed)?
+        .map_err(|e| ToolError::ExecutionFailed {
+            message: format!("Failed to get task {task_id}: {e}"),
+        })?;
 
         let content =
             serde_json::to_string_pretty(&record).map_err(|e| ToolError::ExecutionFailed {
@@ -555,12 +618,18 @@ impl ToolSpec for TaskV2ListTool {
         _input: serde_json::Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let manager = self.manager.lock().unwrap_or_else(|e| e.into_inner());
-        let tasks = manager
-            .list_tasks()
-            .map_err(|e| ToolError::ExecutionFailed {
-                message: format!("Failed to list tasks: {e}"),
-            })?;
+        let manager = self.manager.clone();
+        let tasks = tokio::task::spawn_blocking(move || {
+            manager
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .list_tasks()
+        })
+        .await
+        .map_err(worker_failed)?
+        .map_err(|e| ToolError::ExecutionFailed {
+            message: format!("Failed to list tasks: {e}"),
+        })?;
 
         if tasks.is_empty() {
             return Ok(ToolResult::success("No tasks."));
