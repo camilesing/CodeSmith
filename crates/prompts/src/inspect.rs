@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::runtime::{
-    PromptCachePolicy, PromptSectionStability, parse_rendered_sections, system_prompt_to_text,
+    PromptCachePolicy, PromptSectionStability, SECTION_HEADER_PREFIX, parse_rendered_sections,
+    system_prompt_to_text,
 };
 use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use codesmith_session::primitives::sha256_hex;
@@ -510,18 +511,47 @@ fn stable_system_prompt(system: Option<&SystemPrompt>) -> Option<SystemPrompt> {
     let instructions = system
         .as_ref()
         .and_then(|system| system_prompt_to_text(system))?;
-    let stable = split_system_layers(&instructions)
-        .into_iter()
-        .filter_map(|(_, stability, body)| {
-            (stability == PromptLayerStability::Static).then_some(body)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let stable = stable_system_prefix(&instructions);
     if stable.trim().is_empty() {
         None
     } else {
-        Some(SystemPrompt::Text(stable))
+        Some(SystemPrompt::Text(stable.into_owned()))
     }
+}
+
+/// The real system text up to its first section that is not static, section
+/// headers included — a byte-prefix the provider cache can share with the
+/// real request. Re-joining the static bodies without their headers differed
+/// from the real text at byte 0 and primed nothing. Without section markers
+/// the marker-delimited static layers are re-joined as before.
+fn stable_system_prefix(instructions: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(sections) = parse_rendered_sections(instructions) {
+        let first_volatile = sections.iter().find(|section| {
+            prompt_layer_stability_for_section(section.stability, section.cache_policy)
+                != PromptLayerStability::Static
+        });
+        return match first_volatile {
+            Some(section) => {
+                // `body` is a slice of `instructions`: its offset leads back
+                // to the header line that introduced it.
+                let body_at = section.body.as_ptr() as usize - instructions.as_ptr() as usize;
+                match instructions[..body_at].rfind(SECTION_HEADER_PREFIX) {
+                    Some(cut) => std::borrow::Cow::Borrowed(&instructions[..cut]),
+                    None => std::borrow::Cow::Borrowed(""),
+                }
+            }
+            None => std::borrow::Cow::Borrowed(instructions),
+        };
+    }
+    std::borrow::Cow::Owned(
+        split_system_layers(instructions)
+            .into_iter()
+            .filter_map(|(_, stability, body)| {
+                (stability == PromptLayerStability::Static).then_some(body)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
 }
 
 fn stable_history_messages(messages: &[Message]) -> Vec<Message> {
@@ -1392,6 +1422,7 @@ mod inspect_entry_tests {
     //! classification, and the cache-warmup request shape. Migrated from the
     //! former tui `client` module (ROADMAP §A slice 41).
     use super::*;
+    use crate::runtime::{PromptSection, PromptSectionSource};
     use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
     use serde_json::{Value, json};
 
@@ -1659,5 +1690,56 @@ mod inspect_entry_tests {
                 .any(|value| value.to_string().contains("Dynamic latest user task")),
             "warmup must not include the dynamic latest user task"
         );
+    }
+
+    /// The warmup's system text has to be a byte-prefix of the real one.
+    /// Re-joining the static section bodies without their headers differed
+    /// from the real text at byte 0 and primed nothing.
+    #[test]
+    fn cache_warmup_system_text_is_a_byte_prefix_of_the_real_one() {
+        let real = format!(
+            "{}\n\n{}",
+            PromptSection::new(
+                "base",
+                "Base",
+                "Static rules.",
+                PromptSectionStability::Static,
+                PromptCachePolicy::Cacheable,
+                PromptSectionSource::Builtin,
+            )
+            .render(),
+            PromptSection::new(
+                "relay",
+                "Previous Session Relay",
+                "Dynamic relay.",
+                PromptSectionStability::Session,
+                PromptCachePolicy::Cacheable,
+                PromptSectionSource::Handoff,
+            )
+            .render(),
+        );
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: Vec::new(),
+            max_tokens: 8,
+            system: Some(SystemPrompt::Text(real.clone())),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let warmup = build_cache_warmup_request(&request);
+        let SystemPrompt::Text(warmup_system) = warmup.system.expect("a stable prefix") else {
+            panic!("the warmup system prompt is text");
+        };
+
+        assert!(real.starts_with(&warmup_system), "{warmup_system:?}");
+        assert!(warmup_system.contains("Static rules."));
+        assert!(!warmup_system.contains("Dynamic relay."));
     }
 }
