@@ -94,7 +94,9 @@ impl TeammateBackend for ITermBackend {
                 // The kill may land AFTER `write text` already typed the
                 // command, in which case the (possibly starting) teammate
                 // owns the prompt/env files — deleting them here can break
-                // it, so leave them; the temp-dir sweep covers true leaks.
+                // it, so leave them. Known limit: a file leaked here stays
+                // in the temp directory until the OS cleans it — there is
+                // no sweep.
                 return Err(BackendError::SpawnFailed {
                     backend: "iterm",
                     message: "osascript timed out after 30s (Automation permission prompt \
