@@ -890,9 +890,6 @@ pub fn project_tree(root: &Path, max_depth: usize) -> String {
 
 // === Filesystem Helpers ===
 
-/// The GitHub repository this project is published under (`owner/repo`).
-/// Single source of truth for user-facing URLs (feedback, share footers,
-/// user-agent strings); the web app mirrors this in `web/lib/constants.ts`.
 /// Identify if a file is a "key" file for project identification.
 #[must_use]
 pub fn is_key_file(path: &Path) -> bool {
