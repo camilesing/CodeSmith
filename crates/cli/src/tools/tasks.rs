@@ -341,9 +341,16 @@ impl ToolSpec for TaskStopTool {
                     if let Ok(tasks) = task_mgr.list_tasks() {
                         for task in tasks {
                             if task.owner.as_deref() == Some(target) {
+                                // Only in-flight work goes back to the pool.
+                                // Resetting every owned task re-queued the
+                                // teammate's completed tasks, and the next
+                                // idle teammate redid them.
+                                let status = (task.status
+                                    == crate::tools::task_v2::TaskV2Status::InProgress)
+                                    .then_some(crate::tools::task_v2::TaskV2Status::Pending);
                                 let _ = task_mgr.update_task(
                                     &task.id,
-                                    Some(crate::tools::task_v2::TaskV2Status::Pending),
+                                    status,
                                     None,
                                     None,
                                     None,
@@ -1301,6 +1308,9 @@ fn sanitize_filename(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use crate::tools::spec::ToolSpec;
 
@@ -1552,6 +1562,88 @@ mod tests {
             .await
             .expect_err("missing id must fail");
         assert!(err.to_string().contains("id"), "{err}");
+    }
+
+    /// `task_stop <teammate>` returns the teammate's in-flight work to the
+    /// pool; its completed tasks used to be rewritten as pending too, and
+    /// the next idle teammate redid them.
+    #[tokio::test]
+    async fn task_stop_requeues_only_a_teammates_in_progress_tasks() {
+        use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
+
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tasks =
+            crate::tools::task_v2::new_shared_task_v2_manager("stop-teammate").expect("manager");
+        {
+            let mut store = tasks.lock().unwrap();
+            let _done = store
+                .create_task(
+                    "done".to_string(),
+                    "d".to_string(),
+                    None,
+                    Some(crate::tools::task_v2::TaskV2Status::Completed),
+                    Some("tester".to_string()),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                )
+                .expect("a completed task owned by tester");
+            let _wip = store
+                .create_task(
+                    "wip".to_string(),
+                    "d".to_string(),
+                    None,
+                    Some(crate::tools::task_v2::TaskV2Status::InProgress),
+                    Some("tester".to_string()),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                )
+                .expect("an in-progress task owned by tester");
+        }
+        // The teammate branch fires on a name it has a cancel token for.
+        let team_context: crate::tools::team::SharedTeamContext =
+            std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        *team_context.lock().await = Some(crate::tools::team::TeamContext {
+            team_name: "stop-teammate".to_string(),
+            team_file_path: std::path::PathBuf::new(),
+            lead_agent_id: crate::tools::team::format_lead_agent_id("stop-teammate"),
+            task_v2_manager: tasks.clone(),
+            teammates: std::collections::HashMap::new(),
+            teammate_cancel_tokens: [(
+                "tester".to_string(),
+                tokio_util::sync::CancellationToken::new(),
+            )]
+            .into_iter()
+            .collect(),
+        });
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        context.runtime.team_context = Some(team_context);
+
+        TaskStopTool
+            .execute(json!({"id": "tester"}), &context)
+            .await
+            .expect("the teammate is stopped");
+
+        let statuses: Vec<(crate::tools::task_v2::TaskV2Status, Option<String>)> = {
+            let store = tasks.lock().unwrap();
+            let mut records = store.list_tasks().expect("list");
+            records.sort_by(|a, b| a.subject.cmp(&b.subject));
+            records
+                .into_iter()
+                .map(|record| (record.status, record.owner))
+                .collect()
+        };
+        assert_eq!(
+            statuses,
+            vec![
+                (crate::tools::task_v2::TaskV2Status::Completed, None),
+                (crate::tools::task_v2::TaskV2Status::Pending, None),
+            ],
+            "done stays completed, in-flight work returns to the pool unowned"
+        );
     }
 
     #[tokio::test]
