@@ -989,12 +989,17 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
         match execute_teammate_prompt(&rt, rt.initial_prompt.clone()).await {
             Ok(result_summary) => {
                 summary = result_summary.clone();
-                let _ = send_idle_notification(
+                if let Err(err) = send_idle_notification(
                     &rt.agent_name,
                     &rt.team_name,
                     result_summary.or_else(|| Some("initial prompt complete".to_string())),
                     None,
-                );
+                ) {
+                    crate::logging::warn(format!(
+                        "teammate '{}' could not send its idle notification: {err:#}",
+                        rt.agent_name
+                    ));
+                }
             }
             Err(error) => {
                 summary = Some(format!("initial prompt failed: {error}"));
@@ -1039,21 +1044,31 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                     match execute_teammate_prompt(&rt, pending_prompt).await {
                         Ok(result_summary) => {
                             summary = result_summary.clone();
-                            let _ = send_idle_notification(
+                            if let Err(err) = send_idle_notification(
                                 &rt.agent_name,
                                 &rt.team_name,
                                 result_summary.or_else(|| Some("messages handled".to_string())),
                                 None,
-                            );
+                            ) {
+                                crate::logging::warn(format!(
+                                    "teammate '{}' could not send its idle notification: {err:#}",
+                                    rt.agent_name
+                                ));
+                            }
                         }
                         Err(error) => {
                             summary = Some(format!("message handling failed: {error}"));
-                            let _ = send_idle_notification(
+                            if let Err(err) = send_idle_notification(
                                 &rt.agent_name,
                                 &rt.team_name,
                                 summary.clone(),
                                 None,
-                            );
+                            ) {
+                                crate::logging::warn(format!(
+                                    "teammate '{}' could not send its idle notification: {err:#}",
+                                    rt.agent_name
+                                ));
+                            }
                         }
                     }
                 }
@@ -1109,21 +1124,31 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                 match execute_teammate_prompt(&rt, prompt).await {
                     Ok(result_summary) => {
                         summary = result_summary.clone();
-                        let _ = send_idle_notification(
+                        if let Err(err) = send_idle_notification(
                             &rt.agent_name,
                             &rt.team_name,
                             result_summary.or_else(|| Some("message handled".to_string())),
                             None,
-                        );
+                        ) {
+                            crate::logging::warn(format!(
+                                "teammate '{}' could not send its idle notification: {err:#}",
+                                rt.agent_name
+                            ));
+                        }
                     }
                     Err(error) => {
                         summary = Some(format!("message handling failed: {error}"));
-                        let _ = send_idle_notification(
+                        if let Err(err) = send_idle_notification(
                             &rt.agent_name,
                             &rt.team_name,
                             summary.clone(),
                             None,
-                        );
+                        ) {
+                            crate::logging::warn(format!(
+                                "teammate '{}' could not send its idle notification: {err:#}",
+                                rt.agent_name
+                            ));
+                        }
                     }
                 }
             }
@@ -1137,12 +1162,17 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                         task_attempts.remove(&task.id);
                         summary = result_summary.clone();
                         mark_task_completed(&rt, &task.id, summary.as_deref()).await;
-                        let _ = send_idle_notification(
+                        if let Err(err) = send_idle_notification(
                             &rt.agent_name,
                             &rt.team_name,
                             result_summary.or_else(|| Some("task complete".to_string())),
                             Some(task.id),
-                        );
+                        ) {
+                            crate::logging::warn(format!(
+                                "teammate '{}' could not send its idle notification: {err:#}",
+                                rt.agent_name
+                            ));
+                        }
                     }
                     Err(error) => {
                         let attempts = task_attempts.entry(task.id.clone()).or_default();
@@ -1152,12 +1182,17 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                         // One notification per attempt, and none once this
                         // teammate gave the task up.
                         if let Some(backoff) = retry_backoff(*attempts) {
-                            let _ = send_idle_notification(
+                            if let Err(err) = send_idle_notification(
                                 &rt.agent_name,
                                 &rt.team_name,
                                 summary.clone(),
                                 Some(task.id),
-                            );
+                            ) {
+                                crate::logging::warn(format!(
+                                    "teammate '{}' could not send its idle notification: {err:#}",
+                                    rt.agent_name
+                                ));
+                            }
                             // The next wait's first tick fires at once; a
                             // shutdown still interrupts the pause.
                             tokio::select! {
