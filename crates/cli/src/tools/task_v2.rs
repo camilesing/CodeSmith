@@ -123,11 +123,30 @@ impl ToolSpec for TaskV2CreateTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let status_str = input
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("pending");
-        let status = TaskV2Status::from_str_opt(status_str).unwrap_or(TaskV2Status::Pending);
+        // Tool input is not schema-validated, so the enum in `input_schema`
+        // is documentation only: an unknown word is refused here instead of
+        // silently creating a pending task. `deleted` is not a state a new
+        // task can be in (`list_tasks` would hide it forever).
+        let status_str = match input.get("status") {
+            None => "pending".to_string(),
+            Some(v) => v
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| ToolError::invalid_input(format!("invalid status {v}")))?,
+        };
+        let status = match TaskV2Status::from_str_opt(&status_str) {
+            Some(TaskV2Status::Deleted) => {
+                return Err(ToolError::invalid_input(
+                    "invalid status \"deleted\": a new task cannot start deleted",
+                ));
+            }
+            Some(status) => status,
+            None => {
+                return Err(ToolError::invalid_input(format!(
+                    "invalid status {status_str:?}"
+                )));
+            }
+        };
 
         let owner = input
             .get("owner")
@@ -181,7 +200,7 @@ impl ToolSpec for TaskV2CreateTool {
                 .with_tool_name("task_create_v2")
                 .with_task_id(&task_id)
                 .with_task_subject(&subject_display)
-                .with_task_status(status_str);
+                .with_task_status(status_str.as_str());
             let results = hook_executor.execute(crate::hooks::HookEvent::TaskCreated, &hook_ctx);
             for result in &results {
                 if result.exit_code == Some(2) {
@@ -298,10 +317,16 @@ impl ToolSpec for TaskV2UpdateTool {
             .ok_or_else(|| ToolError::missing_field("task_id"))?
             .to_string();
 
-        let status = input
-            .get("status")
-            .and_then(|v| v.as_str())
-            .and_then(TaskV2Status::from_str_opt);
+        // An unknown status is refused: ignored, the update reported
+        // success and the task was never marked done.
+        let status = match input.get("status") {
+            None => None,
+            Some(v) => Some(
+                v.as_str()
+                    .and_then(TaskV2Status::from_str_opt)
+                    .ok_or_else(|| ToolError::invalid_input(format!("invalid status {v}")))?,
+            ),
+        };
 
         // Handle deletion as a special case
         if status == Some(TaskV2Status::Deleted) {
@@ -789,6 +814,48 @@ mod tests {
             .await
             .expect_err("get also requires task_id");
         assert!(err.to_string().contains("task_id"), "{err}");
+    }
+
+    /// Tool input is not schema-validated, so a slip like `in-progress`
+    /// used to be ignored: the update reported success and nothing changed.
+    #[tokio::test]
+    async fn task_v2_rejects_an_unknown_status_on_update_and_create() {
+        let _env = scratch_env();
+        let manager = scratch_manager("status");
+        let ctx = scratch_context();
+        TaskV2CreateTool::new(manager.clone())
+            .execute(json!({"subject": "s", "description": "d"}), &ctx)
+            .await
+            .expect("create");
+
+        let err = TaskV2UpdateTool::new(manager.clone())
+            .execute(json!({"task_id": "1", "status": "in-progress"}), &ctx)
+            .await
+            .expect_err("a hyphenated status is refused");
+        assert!(err.to_string().contains("invalid status"), "{err}");
+        let record = manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_task("1")
+            .expect("task 1 survives");
+        assert_eq!(record.status, TaskV2Status::Pending, "nothing changed");
+
+        let err = TaskV2CreateTool::new(manager.clone())
+            .execute(
+                json!({"subject": "s2", "description": "d", "status": "complete"}),
+                &ctx,
+            )
+            .await
+            .expect_err("an unknown create status is refused");
+        assert!(err.to_string().contains("invalid status"), "{err}");
+        let err = TaskV2CreateTool::new(manager.clone())
+            .execute(
+                json!({"subject": "s3", "description": "d", "status": "deleted"}),
+                &ctx,
+            )
+            .await
+            .expect_err("a new task cannot start deleted");
+        assert!(err.to_string().contains("deleted"), "{err}");
     }
 
     #[tokio::test]
