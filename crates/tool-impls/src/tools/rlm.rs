@@ -182,7 +182,7 @@ impl ToolSpec for RlmOpenTool {
         let source_count = rlm_open_source_count(&input);
         if source_count != 1 {
             return Err(ToolError::invalid_input(
-                "rlm_open: provide exactly one of `file_path`, `content`, or `url`",
+                "rlm_open: provide exactly one of `file_path`, `content`, `url`, or `session_object`",
             ));
         }
 
