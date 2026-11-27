@@ -266,6 +266,12 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     if let Some(journal) = journal.as_ref() {
         journal.record(ChildSessionEvent::Started).await;
     }
+    // A drop before the outcome below — a workflow's per-child or run-level
+    // bound cancels by dropping this future — must still close the child's
+    // session: a token cancel writes `Finished { Cancelled }`, and so does this.
+    let mut unfinished = UnfinishedChildGuard {
+        journal: journal.clone(),
+    };
     // Follow-up input is journaled on delivery. The loop announces each
     // steer it actually pushes to the transcript (`TurnDeps::steer_delivered`);
     // the announcement queues here and is written ahead of the next settled
@@ -400,6 +406,7 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     let final_text = (status == ChildTurnStatus::Completed)
         .then(|| last_assistant_text(&messages[opening.min(messages.len())..]))
         .flatten();
+    unfinished.disarm();
     // The child's terminal record lands before the lease is released: a
     // reload/eviction drain that waits for the lease to drop can then rely
     // on the journal already naming a terminal status. Input delivered
@@ -433,6 +440,39 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         child_messages_start: opening.min(messages.len()),
         messages,
         usage,
+    }
+}
+
+/// Closes a child session whose turn was dropped before it settled.
+struct UnfinishedChildGuard {
+    journal: Option<Arc<dyn ChildSessionJournal>>,
+}
+
+impl UnfinishedChildGuard {
+    fn disarm(&mut self) {
+        self.journal.take();
+    }
+}
+
+impl Drop for UnfinishedChildGuard {
+    fn drop(&mut self) {
+        let Some(journal) = self.journal.take() else {
+            return;
+        };
+        // `record` is async and a drop cannot await: the terminal record
+        // lands on a task of its own. Best effort — nothing runs once the
+        // runtime itself is gone.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                journal
+                    .record(ChildSessionEvent::Finished {
+                        status: ChildSessionStatus::Cancelled,
+                        final_text: None,
+                        usage: Usage::default(),
+                    })
+                    .await;
+            });
+        }
     }
 }
 
@@ -865,6 +905,54 @@ mod tests {
                 })
             ),
             "the terminal record is last: {events:?}"
+        );
+    }
+
+    /// A child dropped mid-run — a workflow's per-child or run-level bound
+    /// cancels by dropping the future — gets its terminal record too. It
+    /// used to stay open, where the same child cancelled through its token
+    /// wrote `Finished`.
+    #[tokio::test]
+    async fn a_dropped_child_turn_still_journals_its_finish() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = Arc::new(GatedTool {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let journal = Arc::new(RecordingJournal::default());
+        let mock = Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+            "call_gated",
+            "gated",
+            "{}",
+        )]));
+        let (child, _input_tx) =
+            gated_child(4, mock, tool.clone(), journal.clone(), workspace.path());
+
+        let turn = tokio::spawn(run_child_turn(child));
+        tool.started.notified().await;
+        turn.abort();
+        assert!(turn.await.expect_err("aborted").is_cancelled());
+
+        // The record lands on a task of its own: give it a moment.
+        for _ in 0..200 {
+            if matches!(
+                journal.events.lock().await.last(),
+                Some(ChildSessionEvent::Finished { .. })
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let events = journal.events.lock().await;
+        assert!(
+            matches!(
+                events.last(),
+                Some(ChildSessionEvent::Finished {
+                    status: ChildSessionStatus::Cancelled,
+                    ..
+                })
+            ),
+            "a dropped child closes as cancelled: {events:?}"
         );
     }
 
