@@ -4763,124 +4763,133 @@ impl RuntimeThreadManager {
             turn_status = RuntimeTurnStatus::Interrupted;
         }
 
-        // The turn's provider usage settles with the final agent item: this
-        // flush runs after `TurnComplete` was consumed, so the item's
-        // completion payload can carry it (additive key — clients that don't
-        // read it ignore it). Exactly one item takes it, so a turn with a
-        // trailing message AND reasoning doesn't double-account.
-        let mut final_usage = turn_usage
-            .as_ref()
-            .map(|usage| serde_json::to_value(usage).unwrap_or(Value::Null))
-            .filter(|usage| !usage.is_null());
+        // Released below on every outcome. A finalization that failed (a
+        // transient store error) used to return early with the claim still
+        // set, and with the engine turn over nothing drove it to release:
+        // every later prompt was refused with "Thread already has an active
+        // turn".
+        let finalized: Result<()> = async {
+            // The turn's provider usage settles with the final agent item: this
+            // flush runs after `TurnComplete` was consumed, so the item's
+            // completion payload can carry it (additive key — clients that don't
+            // read it ignore it). Exactly one item takes it, so a turn with a
+            // trailing message AND reasoning doesn't double-account.
+            let mut final_usage = turn_usage
+                .as_ref()
+                .map(|usage| serde_json::to_value(usage).unwrap_or(Value::Null))
+                .filter(|usage| !usage.is_null());
 
-        // A message that settled during the turn emits now (deferred, see
-        // `pending_message_emit`) — first in line for the usage, because a
-        // text message outranks a trailing reasoning item.
-        if let Some((item_id, item)) = pending_message_emit.take() {
-            let mut payload = json!({ "item": item });
-            if let Some(usage) = final_usage.take() {
-                payload["usage"] = usage;
+            // A message that settled during the turn emits now (deferred, see
+            // `pending_message_emit`) — first in line for the usage, because a
+            // text message outranks a trailing reasoning item.
+            if let Some((item_id, item)) = pending_message_emit.take() {
+                let mut payload = json!({ "item": item });
+                if let Some(usage) = final_usage.take() {
+                    payload["usage"] = usage;
+                }
+                self.emit_event(
+                    &thread_id,
+                    Some(&turn_id),
+                    Some(&item_id),
+                    "item.completed",
+                    payload,
+                )
+                .await?;
             }
-            self.emit_event(
-                &thread_id,
-                Some(&turn_id),
-                Some(&item_id),
-                "item.completed",
-                payload,
-            )
-            .await?;
-        }
 
-        if let Some((item_id, text)) = current_message_item.take() {
-            let mut item = self.store.load_item(&item_id)?;
-            if turn_status == RuntimeTurnStatus::Interrupted {
-                item.status = TurnItemLifecycleStatus::Interrupted;
-            } else {
-                item.status = TurnItemLifecycleStatus::Completed;
-            }
-            item.summary = summarize_text(&text, SUMMARY_LIMIT);
-            item.detail = Some(text);
-            item.ended_at = Some(Utc::now());
-            self.store.save_item(&item)?;
-            let mut payload = json!({ "item": item });
-            if let Some(usage) = final_usage.take() {
-                payload["usage"] = usage;
-            }
-            self.emit_event(
-                &thread_id,
-                Some(&turn_id),
-                Some(&item_id),
-                if item.status == TurnItemLifecycleStatus::Interrupted {
-                    "item.interrupted"
+            if let Some((item_id, text)) = current_message_item.take() {
+                let mut item = self.store.load_item(&item_id)?;
+                if turn_status == RuntimeTurnStatus::Interrupted {
+                    item.status = TurnItemLifecycleStatus::Interrupted;
                 } else {
-                    "item.completed"
-                },
-                payload,
-            )
-            .await?;
-        }
+                    item.status = TurnItemLifecycleStatus::Completed;
+                }
+                item.summary = summarize_text(&text, SUMMARY_LIMIT);
+                item.detail = Some(text);
+                item.ended_at = Some(Utc::now());
+                self.store.save_item(&item)?;
+                let mut payload = json!({ "item": item });
+                if let Some(usage) = final_usage.take() {
+                    payload["usage"] = usage;
+                }
+                self.emit_event(
+                    &thread_id,
+                    Some(&turn_id),
+                    Some(&item_id),
+                    if item.status == TurnItemLifecycleStatus::Interrupted {
+                        "item.interrupted"
+                    } else {
+                        "item.completed"
+                    },
+                    payload,
+                )
+                .await?;
+            }
 
-        if let Some((item_id, text)) = current_reasoning_item.take() {
-            let mut item = self.store.load_item(&item_id)?;
-            if turn_status == RuntimeTurnStatus::Interrupted {
-                item.status = TurnItemLifecycleStatus::Interrupted;
-            } else {
-                item.status = TurnItemLifecycleStatus::Completed;
+            if let Some((item_id, text)) = current_reasoning_item.take() {
+                let mut item = self.store.load_item(&item_id)?;
+                if turn_status == RuntimeTurnStatus::Interrupted {
+                    item.status = TurnItemLifecycleStatus::Interrupted;
+                } else {
+                    item.status = TurnItemLifecycleStatus::Completed;
+                }
+                item.summary = summarize_text(&text, SUMMARY_LIMIT);
+                item.detail = Some(text);
+                item.ended_at = Some(Utc::now());
+                self.store.save_item(&item)?;
+                let mut payload = json!({ "item": item });
+                if let Some(usage) = final_usage.take() {
+                    payload["usage"] = usage;
+                }
+                self.emit_event(
+                    &thread_id,
+                    Some(&turn_id),
+                    Some(&item_id),
+                    if item.status == TurnItemLifecycleStatus::Interrupted {
+                        "item.interrupted"
+                    } else {
+                        "item.completed"
+                    },
+                    payload,
+                )
+                .await?;
             }
-            item.summary = summarize_text(&text, SUMMARY_LIMIT);
-            item.detail = Some(text);
-            item.ended_at = Some(Utc::now());
-            self.store.save_item(&item)?;
-            let mut payload = json!({ "item": item });
-            if let Some(usage) = final_usage.take() {
-                payload["usage"] = usage;
-            }
+
+            let ended_at = Utc::now();
+            let mut turn = self.store.load_turn(&turn_id)?;
+            turn.status = turn_status;
+            turn.ended_at = Some(ended_at);
+            turn.duration_ms = turn.started_at.map(|start| duration_ms(start, ended_at));
+            turn.usage = turn_usage;
+            turn.error = turn_error;
+            turn.tool_catalog = turn_tool_catalog;
+            turn.base_url = turn_base_url;
+            turn.model = turn_reported_model.or(turn.model);
+            self.store.save_turn(&turn)?;
+
+            let mut thread = self.get_thread(&thread_id).await?;
+            thread.latest_turn_id = Some(turn_id.clone());
+            thread.updated_at = Utc::now();
+            self.save_thread_queue_synced(&mut thread).await?;
+
             self.emit_event(
                 &thread_id,
                 Some(&turn_id),
-                Some(&item_id),
-                if item.status == TurnItemLifecycleStatus::Interrupted {
-                    "item.interrupted"
-                } else {
-                    "item.completed"
-                },
-                payload,
+                None,
+                "turn.completed",
+                // Event-stream dedup design (see EngineEvent::LlmRequest in
+                // agent-runtime events.rs): the authoritative tool catalog rides
+                // the TURN RECORD (save_turn above); embedding the full turn
+                // clone here would duplicate the whole catalog into the
+                // append-only stream on every completed turn. The event carries
+                // the turn view with the catalog reduced to its length — the
+                // SSE compat layer reads only `turn.usage`.
+                turn_completed_payload(&mut turn),
             )
             .await?;
+            Ok(())
         }
-
-        let ended_at = Utc::now();
-        let mut turn = self.store.load_turn(&turn_id)?;
-        turn.status = turn_status;
-        turn.ended_at = Some(ended_at);
-        turn.duration_ms = turn.started_at.map(|start| duration_ms(start, ended_at));
-        turn.usage = turn_usage;
-        turn.error = turn_error;
-        turn.tool_catalog = turn_tool_catalog;
-        turn.base_url = turn_base_url;
-        turn.model = turn_reported_model.or(turn.model);
-        self.store.save_turn(&turn)?;
-
-        let mut thread = self.get_thread(&thread_id).await?;
-        thread.latest_turn_id = Some(turn_id.clone());
-        thread.updated_at = Utc::now();
-        self.save_thread_queue_synced(&mut thread).await?;
-
-        self.emit_event(
-            &thread_id,
-            Some(&turn_id),
-            None,
-            "turn.completed",
-            // Event-stream dedup design (see EngineEvent::LlmRequest in
-            // agent-runtime events.rs): the authoritative tool catalog rides
-            // the TURN RECORD (save_turn above); embedding the full turn
-            // clone here would duplicate the whole catalog into the
-            // append-only stream on every completed turn. The event carries
-            // the turn view with the catalog reduced to its length — the
-            // SSE compat layer reads only `turn.usage`.
-            turn_completed_payload(&mut turn),
-        )
-        .await?;
+        .await;
 
         {
             let mut active = self.active.lock().await;
@@ -4895,7 +4904,7 @@ impl RuntimeThreadManager {
             touch_lru(&mut active.lru, &thread_id);
         }
 
-        Ok(())
+        finalized
     }
 
     fn attach_item_to_turn(&self, turn_id: &str, item_id: &str) -> Result<()> {
@@ -7873,6 +7882,87 @@ mod tests {
         // And the thread takes a new turn right away.
         let second = manager
             .start_turn(&thread.id, start_request("after the interrupt"))
+            .await;
+        assert!(
+            second.is_ok(),
+            "{}",
+            second.err().map(|err| err.to_string()).unwrap_or_default()
+        );
+        Ok(())
+    }
+
+    /// A finalization that fails must still release the turn claim: with the
+    /// engine turn over nothing else drives the claim, and the thread then
+    /// refused every later prompt with "Thread already has an active turn".
+    #[tokio::test]
+    async fn a_failed_finalization_releases_the_turn_claim() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager.create_thread(create_request(None)).await?;
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        let turn = manager
+            .start_turn(&thread.id, start_request("break on finalize"))
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage { .. })
+        ));
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "engine_turn_finalize".to_string(),
+                synthesized: false,
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::MessageStarted { index: 0 })
+            .await?;
+        wait_for_thread_event(&manager, &thread.id, Duration::from_secs(2), |event| {
+            event.event == "item.started"
+                && event.payload["item"]["kind"].as_str() == Some("agent_message")
+        })
+        .await?;
+
+        // The message item is on disk now; the turn-end flush reads it back.
+        let item_id = manager
+            .store
+            .list_items_for_turn(&turn.id)?
+            .into_iter()
+            .find(|item| item.kind == TurnItemKind::AgentMessage)
+            .context("agent message item")?
+            .id;
+        std::fs::write(manager.store.item_path(&item_id)?, "not json")?;
+        harness
+            .tx_event
+            .send(turn_complete(TurnOutcomeStatus::Completed))
+            .await?;
+
+        // The finalization fails reading the item back; the claim must go.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline
+            && manager
+                .active_turn_flags(&thread.id, &turn.id)
+                .await
+                .is_some()
+        {
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            manager
+                .active_turn_flags(&thread.id, &turn.id)
+                .await
+                .is_none(),
+            "the claim outlived its turn"
+        );
+        assert!(
+            !manager
+                .events_since(&thread.id, None)?
+                .iter()
+                .any(|event| event.event == "turn.completed")
+        );
+
+        let second = manager
+            .start_turn(&thread.id, start_request("after the failed finalization"))
             .await;
         assert!(
             second.is_ok(),
