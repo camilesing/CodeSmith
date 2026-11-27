@@ -297,9 +297,17 @@ impl TaskExecutor for EngineTaskExecutor {
                 }
             }
 
-            let batch = match self
-                .runtime_threads
-                .events_since(&thread.id, Some(seen_seq))
+            // `events_since` reads the whole journal file: blocking work.
+            let polled = {
+                let runtime_threads = self.runtime_threads.clone();
+                let thread_id = thread.id.clone();
+                tokio::task::spawn_blocking(move || {
+                    runtime_threads.events_since(&thread_id, Some(seen_seq))
+                })
+                .await
+            };
+            let batch = match polled
+                .unwrap_or_else(|err| Err(anyhow!("journal poll task failed: {err}")))
             {
                 Ok(batch) => batch,
                 Err(err) => {
