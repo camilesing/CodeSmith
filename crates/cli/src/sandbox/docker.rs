@@ -79,6 +79,13 @@ const ENGINE_LABEL_KEY: &str = "codesmith.engine";
 /// never a crashed predecessor's leftovers.
 const PRODUCT_LABEL: &str = "codesmith.sandbox=container";
 
+/// `docker ps` accepts a closed set of filter keys; a label goes through
+/// the `label=` key. A bare `codesmith.sandbox=container` is rejected by
+/// the daemon, and the sweep that sent it silently removed nothing.
+fn label_filter(label: &str) -> String {
+    format!("label={label}")
+}
+
 /// Exit code docker reports for a SIGKILLed container (`docker kill`).
 const DOCKER_KILL_EXIT_CODE: i32 = 137;
 
@@ -195,7 +202,10 @@ impl ContainerEngine {
     /// engine-shutdown teardown (`stop`): this instance's own tasks,
     /// running ones included.
     fn sweep_labelled_containers(&self) {
-        self.rm_matching_containers(&[format!("{ENGINE_LABEL_KEY}={}", self.engine_label)]);
+        self.rm_matching_containers(&[label_filter(&format!(
+            "{ENGINE_LABEL_KEY}={}",
+            self.engine_label
+        ))]);
     }
 
     /// Reap *exited* containers carrying the stable product label — crash
@@ -206,7 +216,7 @@ impl ContainerEngine {
     /// leftovers finish their command, become exited, and are reaped by
     /// the next startup.
     fn sweep_exited_corpses(&self) {
-        self.rm_matching_containers(&[PRODUCT_LABEL.to_string(), "status=exited".to_string()]);
+        self.rm_matching_containers(&[label_filter(PRODUCT_LABEL), "status=exited".to_string()]);
     }
 
     /// Full task output (no follow) — used by the one-shot `exec` combo.
@@ -707,6 +717,21 @@ mod tests {
         }
     }
 
+    /// `docker ps --filter` knows a closed set of keys: the sweeps sent
+    /// the bare `key=value` form, the daemon rejected the listing, and
+    /// nothing was ever removed.
+    #[test]
+    fn sweeps_name_labels_in_docker_filter_syntax() {
+        assert_eq!(
+            label_filter("codesmith.sandbox=container"),
+            "label=codesmith.sandbox=container"
+        );
+        assert_eq!(
+            label_filter("codesmith.engine=abc"),
+            "label=codesmith.engine=abc"
+        );
+    }
+
     fn args_contains(args: &[String], needle: &str) -> bool {
         args.iter().any(|arg| arg == needle)
     }
@@ -937,7 +962,10 @@ mod tests {
                 "ps".to_string(),
                 "-aq".into(),
                 "--filter".into(),
-                format!("{ENGINE_LABEL_KEY}={}", backend.engine.engine_label),
+                label_filter(&format!(
+                    "{ENGINE_LABEL_KEY}={}",
+                    backend.engine.engine_label
+                )),
             ])
             .expect("docker ps");
         String::from_utf8_lossy(&out.stdout)
@@ -968,7 +996,7 @@ mod tests {
             return;
         }
         let mut manager = ShellManager::new(std::env::temp_dir());
-        manager.set_sandbox_backend(Some(backend));
+        manager.set_sandbox_backend(Some(backend.clone()));
 
         // Background job settles with output and the backend id stamped.
         let spawned = manager
@@ -984,6 +1012,13 @@ mod tests {
             )
             .expect("spawn");
         let task_id = spawned.task_id.expect("task id");
+        // The sweep's own filter: it must list the live task (it used to
+        // be a bare `key=value`, which docker rejects with an empty list).
+        assert_eq!(
+            labelled_containers(&backend).len(),
+            1,
+            "the label filter finds the running task"
+        );
         assert_eq!(spawned.status, ShellStatus::Running);
         assert_eq!(spawned.sandbox_backend.as_deref(), Some("docker"));
         let mut settled = None;
