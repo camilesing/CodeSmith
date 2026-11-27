@@ -237,8 +237,7 @@ pub struct QueuedItemRecord {
     pub text: String,
     /// The attachment intake's content appendix (durable file references
     /// folded into the engine message at drain). `None` once the item has
-    /// no attachments, including after a text-only edit (upstream parity:
-    /// an edit drops attachments).
+    /// no attachments; a text-only edit keeps the attachments as enqueued.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appendix: Option<String>,
     /// Content-addressed image store paths handed to the engine at drain.
@@ -3176,9 +3175,8 @@ impl RuntimeThreadManager {
     /// `POST /threads/{id}/queue/{item_id}/steer`: pull one queued item out
     /// and steer the running turn with it (upstream's queue steer). The pop
     /// is durable before the steer is sent; a steer the engine refuses puts
-    /// the item back at the head. Text-only items only — the steer channel
-    /// takes text, so an attachment-carrying item refuses loudly instead of
-    /// silently dropping its files.
+    /// the item back at the head. Attachments ride along: image store paths
+    /// on the steer payload, the appendix folded into the text.
     pub async fn steer_queued(&self, thread_id: &str, item_id: &str) -> Result<TurnRecord> {
         let thread = self.get_thread(thread_id).await?;
         self.ensure_engine_loaded(&thread).await?;
