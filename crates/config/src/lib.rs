@@ -1110,10 +1110,25 @@ impl ConfigToml {
                     self.custom_provider = Some(trimmed.to_string());
                 }
             }
-            "api_key" => self.api_key = Some(value.to_string()),
-            "base_url" => self.base_url = Some(value.to_string()),
-            "http_headers" => self.http_headers = parse_http_headers(value)?,
-            "default_text_model" => self.default_text_model = Some(value.to_string()),
+            // The root DeepSeek keys are the legacy mirror of the
+            // `providers.deepseek.*` slot: a write to either lands in both,
+            // or the other slot keeps serving a key the user replaced.
+            "api_key" => {
+                self.api_key = Some(value.to_string());
+                self.providers.deepseek.api_key = self.api_key.clone();
+            }
+            "base_url" => {
+                self.base_url = Some(value.to_string());
+                self.providers.deepseek.base_url = self.base_url.clone();
+            }
+            "http_headers" => {
+                self.http_headers = parse_http_headers(value)?;
+                self.providers.deepseek.http_headers = self.http_headers.clone();
+            }
+            "default_text_model" => {
+                self.default_text_model = Some(value.to_string());
+                self.providers.deepseek.model = self.default_text_model.clone();
+            }
             "model" => self.model = Some(value.to_string()),
             "auth.mode" => self.auth_mode = Some(value.to_string()),
             "output_mode" => self.output_mode = Some(value.to_string()),
@@ -1394,10 +1409,22 @@ impl ConfigToml {
         match key {
             "provider" => self.provider = ProviderKind::Deepseek,
             "custom_provider" => self.custom_provider = None,
-            "api_key" => self.api_key = None,
-            "base_url" => self.base_url = None,
-            "http_headers" => self.http_headers.clear(),
-            "default_text_model" => self.default_text_model = None,
+            "api_key" => {
+                self.api_key = None;
+                self.providers.deepseek.api_key = None;
+            }
+            "base_url" => {
+                self.base_url = None;
+                self.providers.deepseek.base_url = None;
+            }
+            "http_headers" => {
+                self.http_headers.clear();
+                self.providers.deepseek.http_headers.clear();
+            }
+            "default_text_model" => {
+                self.default_text_model = None;
+                self.providers.deepseek.model = None;
+            }
             "model" => self.model = None,
             "auth.mode" => self.auth_mode = None,
             "output_mode" => self.output_mode = None,
@@ -4278,6 +4305,40 @@ unix_socket_path = "/tmp/cw-hooks.sock"
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// `config unset api_key` used to clear the root field only: the key
+    /// stayed under `providers.deepseek.api_key`, on disk and in use.
+    #[test]
+    fn root_deepseek_keys_write_both_slots_on_set_and_unset() {
+        let mut config = ConfigToml::default();
+        config
+            .set_value("providers.deepseek.api_key", "old-key")
+            .expect("set the provider slot");
+        config
+            .set_value("api_key", "new-key")
+            .expect("set the root");
+        assert_eq!(
+            config.providers.deepseek.api_key.as_deref(),
+            Some("new-key")
+        );
+
+        config.unset_value("api_key").expect("unset the root");
+        assert!(config.api_key.is_none());
+        assert!(
+            config.providers.deepseek.api_key.is_none(),
+            "the removed credential does not survive in the provider slot"
+        );
+
+        config
+            .set_value("base_url", "https://x.example")
+            .expect("set");
+        assert_eq!(
+            config.providers.deepseek.base_url.as_deref(),
+            Some("https://x.example")
+        );
+        config.unset_value("base_url").expect("unset");
+        assert!(config.providers.deepseek.base_url.is_none());
     }
 
     #[test]
