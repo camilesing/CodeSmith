@@ -302,7 +302,7 @@ live there).
   - `tasks.rs` / `task_v2.rs` - Model-visible durable task, gate, background shell, and PR-attempt tools
   - `github.rs` - Read-only GitHub context and guarded comment/closure tools backed by `gh`
   - `automation.rs` - Model-visible scheduling tools over `AutomationManager`
-  - `subagent/` - Persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` — sandboxed Python REPLs with semantic helper calls and `var_handle` output support; runtime in `crates/cli/src/rlm/`)
+  - `subagent/` - Persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` — Python REPLs with semantic helper calls and `var_handle` output support; the kernel is a plain `python3` child, not sandboxed; runtime in `crates/cli/src/rlm/`)
   - `skill.rs` / `plugin.rs` / `web_search.rs` / `goal.rs` / `large_output_router.rs` and friends - remaining tool surfaces
 
 ### Extension Systems

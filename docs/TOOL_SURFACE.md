@@ -256,8 +256,10 @@ prefix cache can be reused, then appends the child role instructions and task.
 ### Workflow orchestration
 
 The `workflow` tool is model-writable orchestration: the model writes one
-Python script, it runs on a one-shot sandboxed kernel, and it coordinates
-sub-agents through helpers injected before the script.
+Python script, it runs on a one-shot kernel, and it coordinates
+sub-agents through helpers injected before the script. The kernel is a
+plain `python3` child with the user's privileges — not sandboxed — and the
+call is auto-approved.
 
 | Tool | Niche |
 |---|---|
@@ -293,6 +295,10 @@ RLM is now persistent as well:
 | `rlm_eval` | Run bounded Python against that session, using deterministic code and in-REPL semantic helpers such as `sub_query_batch`. |
 | `rlm_configure` | Adjust output feedback and child-query timeout/depth. |
 | `rlm_close` | Shut down the Python runtime and return final session stats. |
+
+`rlm_eval` executes its code in a plain `python3` child — the user's
+privileges, no sandbox — and is auto-approved; `exec_shell` is the gated path
+for anything that should prompt.
 
 `rlm_open` also accepts `session_object`, a stable ref returned by
 `rlm_session_objects`, such as `session://active/system_prompt`,

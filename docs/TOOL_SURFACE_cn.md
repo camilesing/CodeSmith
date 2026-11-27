@@ -242,7 +242,8 @@ Coordinator 模式下会话自身的工具面是 Router 的：spawn 家族加上
 ### Workflow 编排
 
 `workflow` 工具是模型可写的编排：模型写一段 Python 脚本，它跑在一个
-一次性沙箱内核上，通过注入（在脚本之前）的辅助函数协调子代理。
+一次性内核上，通过注入（在脚本之前）的辅助函数协调子代理。该内核是以用户
+权限运行的普通 `python3` 子进程——没有沙箱——且调用会被自动批准。
 
 | 工具 | 定位 |
 |---|---|
@@ -275,6 +276,9 @@ RLM 现在同样是持久化的：
 | `rlm_eval` | 在该会话中运行有界 Python，使用确定性代码和 REPL 内语义辅助函数（如 `sub_query_batch`）。 |
 | `rlm_configure` | 调整输出反馈以及子查询超时/深度。 |
 | `rlm_close` | 关闭 Python 运行时并返回最终会话统计。 |
+
+`rlm_eval` 的代码在一个普通的 `python3` 子进程里执行——用户权限、没有沙箱——且被
+自动批准；需要审批的动作应走 `exec_shell`。
 
 `rlm_open` 还接受 `session_object`，即 `rlm_session_objects` 返回的
 稳定引用，例如 `session://active/system_prompt`、
