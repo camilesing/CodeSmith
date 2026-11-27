@@ -407,7 +407,7 @@ pub struct RuntimeThreadStore {
     items_dir: PathBuf,
     events_dir: PathBuf,
     state_path: PathBuf,
-    state: Arc<Mutex<RuntimeStoreState>>,
+    state: Arc<StdMutex<RuntimeStoreState>>,
 }
 
 impl RuntimeThreadStore {
@@ -443,7 +443,7 @@ impl RuntimeThreadStore {
             items_dir,
             events_dir,
             state_path,
-            state: Arc::new(Mutex::new(state)),
+            state: Arc::new(StdMutex::new(state)),
         })
     }
 
@@ -738,12 +738,46 @@ impl RuntimeThreadStore {
         Ok(out)
     }
 
+    /// Append one event line to the thread's journal. The file work — the
+    /// state rewrite, the torn-tail repair, the append and its fsync — runs
+    /// on the blocking pool: this is called for every streamed delta, and
+    /// inline it spent three fsyncs per token chunk on a runtime worker,
+    /// under the store-wide lock every thread's events share.
     pub async fn append_event(
+        self: &Arc<Self>,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        item_id: Option<&str>,
+        event: impl Into<String> + Send + 'static,
+        payload: Value,
+    ) -> Result<RuntimeEventRecord> {
+        let store = Arc::clone(self);
+        let thread_id = thread_id.to_string();
+        let turn_id = turn_id.map(ToString::to_string);
+        let item_id = item_id.map(ToString::to_string);
+        let event = event.into();
+        tokio::task::spawn_blocking(move || {
+            store.append_event_blocking(
+                &thread_id,
+                turn_id.as_deref(),
+                item_id.as_deref(),
+                event,
+                payload,
+            )
+        })
+        .await?
+    }
+
+    /// `append_event`'s body, synchronous. The state lock is a std mutex
+    /// held across the tail repair and the append: concurrent appenders
+    /// (turn monitor, HTTP handlers, the workflow recorder) must not
+    /// interleave the torn-tail check with another writer's partial line.
+    fn append_event_blocking(
         &self,
         thread_id: &str,
         turn_id: Option<&str>,
         item_id: Option<&str>,
-        event: impl Into<String>,
+        event: String,
         payload: Value,
     ) -> Result<RuntimeEventRecord> {
         validated_record_id(thread_id, "thread id")?;
@@ -755,7 +789,10 @@ impl RuntimeThreadStore {
         }
         let path = self.events_path(thread_id)?;
 
-        let mut state = self.state.lock().await;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seq = state.next_seq;
         state.next_seq = state.next_seq.saturating_add(1);
         write_json_atomic(&self.state_path, &*state)?;
@@ -767,14 +804,10 @@ impl RuntimeThreadStore {
             thread_id: thread_id.to_string(),
             turn_id: turn_id.map(ToString::to_string),
             item_id: item_id.map(ToString::to_string),
-            event: event.into(),
+            event,
             payload,
         };
 
-        // The seq-allocating state lock is held across the tail repair and
-        // the append: concurrent appenders (turn monitor, HTTP handlers,
-        // the workflow recorder) must not interleave the torn-tail check
-        // with another writer's partial line.
         if path.exists() {
             // A crash mid-write can leave bytes without the closing newline;
             // appending after it would fuse the fragment into an unreadable
@@ -853,9 +886,12 @@ impl RuntimeThreadStore {
         Ok(out)
     }
 
-    pub async fn current_seq(&self) -> u64 {
-        let state = self.state.lock().await;
-        state.next_seq.saturating_sub(1)
+    pub fn current_seq(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next_seq
+            .saturating_sub(1)
     }
 }
 
@@ -1302,11 +1338,22 @@ pub type SharedRuntimeThreadManager = Arc<RuntimeThreadManager>;
 /// - `RuntimeThreadManager::active` — protects the set of loaded engine handles.
 ///
 /// **No code path holds both locks simultaneously.** The `state` lock is only
-/// acquired inside `RuntimeThreadStore::append_event` (where it is explicitly
-/// dropped before any I/O) and `current_seq`. All `emit_event` calls (which
-/// call `append_event`) happen *after* `active` has been released. If you add
-/// new code that touches both, always acquire `state` before `active` to
-/// preserve a consistent ordering.
+/// acquired inside `RuntimeThreadStore::append_event_blocking` (held across
+/// its tail repair, append and fsync by design) and `current_seq`. All
+/// `emit_event` calls (which call `append_event`) happen *after* `active` has
+/// been released. If you add new code that touches both, always acquire
+/// `state` before `active` to preserve a consistent ordering.
+///
+/// # Known limitation
+///
+/// Only the event journal runs off the runtime thread: `append_event`
+/// moves its file work to the blocking pool, because it is written for
+/// every streamed delta — except `turn.completed`, appended in the
+/// same step as the terminal turn record so the two are never seen
+/// apart. The per-item and per-request store reads and writes
+/// (`save_item`, `load_turn`, `save_thread`, the directory listings)
+/// are still called inline from async functions and block a runtime
+/// worker for their fsyncs.
 #[derive(Clone)]
 pub struct RuntimeThreadManager {
     config: Config,
@@ -1597,20 +1644,47 @@ impl RuntimeThreadManager {
         thread_id: &str,
         turn_id: Option<&str>,
         item_id: Option<&str>,
-        event: impl Into<String>,
+        event: impl Into<String> + Send + 'static,
         payload: Value,
     ) -> Result<RuntimeEventRecord> {
         let record = self
             .store
             .append_event(thread_id, turn_id, item_id, event, payload)
             .await?;
+        self.broadcast_event(&record);
+        Ok(record)
+    }
+
+    /// `emit_event` that stays on the caller's thread, for the one event
+    /// that must land in the same step as the record it announces:
+    /// `turn.completed` follows the terminal turn save, and a reader that
+    /// sees the terminal record must also see the event. One journal append
+    /// per turn stays inline, like the record writes around it.
+    fn emit_event_inline(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        event: &str,
+        payload: Value,
+    ) -> Result<RuntimeEventRecord> {
+        let record = self.store.append_event_blocking(
+            thread_id,
+            turn_id,
+            None,
+            event.to_string(),
+            payload,
+        )?;
+        self.broadcast_event(&record);
+        Ok(record)
+    }
+
+    fn broadcast_event(&self, record: &RuntimeEventRecord) {
         if let Err(e) = self.event_tx.send(record.clone()) {
             tracing::debug!(
                 "Runtime event broadcast failed (no receivers or channel full): {}",
                 e
             );
         }
-        Ok(record)
     }
 
     pub async fn create_thread(&self, req: CreateThreadRequest) -> Result<ThreadRecord> {
@@ -1904,7 +1978,7 @@ impl RuntimeThreadManager {
         for turn in &turns {
             items.extend(self.store.list_items_for_turn(&turn.id)?);
         }
-        let latest_seq = self.store.current_seq().await;
+        let latest_seq = self.store.current_seq();
         let queue = thread.queue.clone();
         Ok(ThreadDetail {
             thread,
@@ -2884,7 +2958,8 @@ impl RuntimeThreadManager {
     /// the engine is loaded; the thread record is overwritten from it
     /// inside the same `active` lock, so the two homes cannot disagree (the
     /// record load/save takes no store lock — the module's lock-ordering
-    /// invariant concerns `store::state`, which only `append_event` takes),
+    /// invariant concerns `store::state`, which only `append_event_blocking`
+    /// takes),
     /// and `queue.updated` is emitted after the lock is released.
     async fn mutate_queue<T>(
         &self,
@@ -4924,10 +4999,9 @@ impl RuntimeThreadManager {
             })
             .await?;
 
-            self.emit_event(
+            self.emit_event_inline(
                 &thread_id,
                 Some(&turn_id),
-                None,
                 "turn.completed",
                 // Event-stream dedup design (see EngineEvent::LlmRequest in
                 // agent-runtime events.rs): the authoritative tool catalog rides
@@ -4937,8 +5011,7 @@ impl RuntimeThreadManager {
                 // the turn view with the catalog reduced to its length — the
                 // SSE compat layer reads only `turn.usage`.
                 turn_completed_payload(&mut turn),
-            )
-            .await?;
+            )?;
             Ok(())
         }
         .await;
@@ -9836,7 +9909,7 @@ mod tests {
     #[tokio::test]
     async fn torn_event_tail_is_dropped_before_the_next_append() {
         let dir = test_runtime_dir();
-        let store = RuntimeThreadStore::open(dir.clone()).expect("store");
+        let store = Arc::new(RuntimeThreadStore::open(dir.clone()).expect("store"));
         store
             .append_event("thr_child", None, None, "subagent.descriptor", json!({}))
             .await
@@ -10516,7 +10589,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_events_append_replay_and_seq_filtering() -> Result<()> {
-        let store = RuntimeThreadStore::open(test_runtime_dir())?;
+        let store = Arc::new(RuntimeThreadStore::open(test_runtime_dir())?);
         store.save_thread(&sample_thread("thr_events"))?;
 
         let first = store
@@ -10547,7 +10620,7 @@ mod tests {
                 json!({ "n": 3 }),
             )
             .await?;
-        assert_eq!(store.current_seq().await, 3);
+        assert_eq!(store.current_seq(), 3);
 
         let all = store.events_since("thr_events", None)?;
         assert_eq!(all.len(), 3);
@@ -10566,7 +10639,7 @@ mod tests {
 
     #[tokio::test]
     async fn appending_after_a_torn_tail_repairs_the_stream() -> Result<()> {
-        let store = RuntimeThreadStore::open(test_runtime_dir())?;
+        let store = Arc::new(RuntimeThreadStore::open(test_runtime_dir())?);
         store.save_thread(&sample_thread("thr_torn"))?;
         store
             .append_event("thr_torn", None, None, "first", json!({}))

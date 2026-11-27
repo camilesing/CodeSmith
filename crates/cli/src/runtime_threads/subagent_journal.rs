@@ -678,7 +678,7 @@ impl RuntimeChildJournal {
                 &self.descriptor.agent_id,
                 Some(turn_id),
                 Some(&item.id),
-                event,
+                event.to_string(),
                 payload,
             )
             .await
@@ -700,7 +700,7 @@ impl RuntimeChildJournal {
                 &self.descriptor.agent_id,
                 Some(turn_id),
                 None,
-                event,
+                event.to_string(),
                 payload,
             )
             .await
