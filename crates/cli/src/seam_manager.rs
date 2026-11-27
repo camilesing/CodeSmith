@@ -139,6 +139,19 @@ impl std::fmt::Debug for SeamManager {
     }
 }
 
+impl SeamConfig {
+    /// Index where the verbatim window begins: the last
+    /// [`Self::verbatim_window_turns`] turns (two messages each,
+    /// roughly) are kept whole and never summarized.
+    #[must_use]
+    pub fn verbatim_window_start(&self, message_count: usize) -> usize {
+        let turn_count = message_count / 2; // Rough: user+assistant per turn
+        let verbatim_turns = self.verbatim_window_turns.min(turn_count);
+        let verbatim_messages = (verbatim_turns * 2).min(message_count);
+        message_count.saturating_sub(verbatim_messages)
+    }
+}
+
 impl SeamManager {
     /// Create a new seam manager with a Flash client.
     pub fn new(flash_client: LlmClientHandle, config: SeamConfig) -> Self {
@@ -183,10 +196,7 @@ impl SeamManager {
     /// Compute the verbatim window: the last N message indices that must
     /// never be summarized. Returns the start index of the verbatim window.
     pub fn verbatim_window_start(&self, message_count: usize) -> usize {
-        let turn_count = message_count / 2; // Rough: user+assistant per turn
-        let verbatim_turns = self.config.verbatim_window_turns.min(turn_count);
-        let verbatim_messages = (verbatim_turns * 2).min(message_count);
-        message_count.saturating_sub(verbatim_messages)
+        self.config.verbatim_window_start(message_count)
     }
 
     /// Produce a soft seam for the given message range and level.
@@ -705,13 +715,11 @@ mod tests {
         };
         // 4 verbatim turns = 8 messages
         // 20 messages: 20 - (4*2) = 12
-        assert_eq!(20usize.saturating_sub(8), 12);
+        assert_eq!(config.verbatim_window_start(20), 12);
         // 8 messages: 8 - 8 = 0
-        assert_eq!(8usize.saturating_sub(8), 0);
+        assert_eq!(config.verbatim_window_start(8), 0);
         // 4 messages: 4 - 4 = 0
-        assert_eq!(4usize.saturating_sub(4), 0);
-
-        let _ = config;
+        assert_eq!(config.verbatim_window_start(4), 0);
     }
 
     /// The Flash path used to return whatever the model wrote, over the
@@ -772,6 +780,8 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        assert!(!config.enabled);
+        // The switch is read where it matters: no seam level fires
+        // while the feature is off, whatever the input size.
+        assert_eq!(seam_level_for_active_input(&config, 900_000, None), None);
     }
 }
