@@ -101,12 +101,17 @@ impl ToolSpec for UpdatePlanTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid_input("Plan item missing 'step'"))?;
 
-            let status_str = item
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pending");
-
-            let status = StepStatus::from_str(status_str).unwrap_or(StepStatus::Pending);
+            // Absent keeps the default; an unrecognized value is refused,
+            // as the checklist tools do — it used to read as `pending`
+            // behind a success message.
+            let status = match item.get("status") {
+                None | Some(serde_json::Value::Null) => StepStatus::Pending,
+                Some(v) => v.as_str().and_then(StepStatus::from_str).ok_or_else(|| {
+                    ToolError::invalid_input(format!(
+                        "invalid 'status' value: {v} (expected pending, in_progress, or completed)"
+                    ))
+                })?,
+            };
 
             plan_args.push(PlanItemArg {
                 step: step.to_string(),
@@ -132,5 +137,34 @@ impl ToolSpec for UpdatePlanTool {
         Ok(ToolResult::success(format!(
             "Plan updated: {pending} pending, {in_progress} in progress, {completed} completed ({progress}% done)\n{result}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn update_plan_refuses_an_unrecognized_step_status() {
+        let tool = UpdatePlanTool::new(new_shared_plan_state());
+        let err = tool
+            .execute(
+                json!({"plan": [{"step": "a", "status": "complete"}]}),
+                &ToolContext::new("."),
+            )
+            .await
+            .expect_err("an unrecognized status is refused, not stored as pending");
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+
+        // An absent status keeps its default.
+        let ok = tool
+            .execute(json!({"plan": [{"step": "a"}]}), &ToolContext::new("."))
+            .await
+            .expect("absent status defaults");
+        assert!(
+            ok.content.contains("1 pending, 0 in progress, 0 completed"),
+            "{}",
+            ok.content
+        );
     }
 }

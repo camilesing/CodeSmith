@@ -538,11 +538,11 @@ impl ToolSpec for RlmConfigureTool {
                 }
             };
         }
-        if let Some(timeout) = input.get("sub_query_timeout_secs").and_then(Value::as_u64) {
-            session.config.sub_query_timeout_secs = timeout.clamp(1, 600);
+        if let Some(value) = input.get("sub_query_timeout_secs") {
+            session.config.sub_query_timeout_secs = configure_timeout(value)?;
         }
-        if let Some(depth) = input.get("sub_rlm_max_depth").and_then(Value::as_u64) {
-            session.config.sub_rlm_max_depth = (depth as u32).min(HARD_SUB_RLM_DEPTH_CAP);
+        if let Some(value) = input.get("sub_rlm_max_depth") {
+            session.config.sub_rlm_max_depth = configure_depth(value)?;
         }
 
         ToolResult::json(&json!({
@@ -618,6 +618,29 @@ impl ToolSpec for RlmCloseTool {
 
         ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
+}
+
+/// `sub_query_timeout_secs`: a whole number of seconds, kept within 1..=600.
+fn configure_timeout(value: &Value) -> Result<u64, ToolError> {
+    value
+        .as_u64()
+        .map(|secs| secs.clamp(1, 600))
+        .ok_or_else(|| invalid_configure_value("sub_query_timeout_secs", value))
+}
+
+/// `sub_rlm_max_depth`: a whole number, capped before it is narrowed to
+/// `u32` — `as` alone truncated values above `u32::MAX` first.
+fn configure_depth(value: &Value) -> Result<u32, ToolError> {
+    value
+        .as_u64()
+        .map(|depth| depth.min(u64::from(HARD_SUB_RLM_DEPTH_CAP)) as u32)
+        .ok_or_else(|| invalid_configure_value("sub_rlm_max_depth", value))
+}
+
+fn invalid_configure_value(field: &str, value: &Value) -> ToolError {
+    ToolError::invalid_input(format!(
+        "rlm_configure: invalid {field} value: {value} (expected a whole number)"
+    ))
 }
 
 /// Load the one source the input names: `(body, type, hint, truncated)`.
@@ -1197,6 +1220,19 @@ mod tests {
             .execute(json!({"name": "json-final"}), &ctx)
             .await
             .expect("close");
+    }
+
+    #[test]
+    fn rlm_configure_numeric_fields_need_whole_numbers_and_cap_before_narrowing() {
+        assert_eq!(configure_timeout(&json!(0)).ok(), Some(1));
+        assert_eq!(configure_timeout(&json!(900)).ok(), Some(600));
+        assert!(configure_timeout(&json!(1.5)).is_err());
+        assert!(configure_timeout(&json!(-3)).is_err());
+        assert_eq!(
+            configure_depth(&json!(u64::from(u32::MAX) + 1)).ok(),
+            Some(HARD_SUB_RLM_DEPTH_CAP)
+        );
+        assert!(configure_depth(&json!("2")).is_err());
     }
 
     #[tokio::test]

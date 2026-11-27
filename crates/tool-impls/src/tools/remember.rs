@@ -72,12 +72,21 @@ impl ToolSpec for RememberTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let note = required_str(&input, "note")?;
-        let memory_type_str = input
-            .get("memory_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("feedback");
-        let memory_type =
-            MemoryType::from_str_loose(memory_type_str).unwrap_or(MemoryType::Feedback);
+        // Absent keeps the default; an unrecognized value is refused — it
+        // used to be written as a `feedback` memory.
+        let memory_type = match input.get("memory_type") {
+            None | Some(Value::Null) => MemoryType::Feedback,
+            Some(Value::String(name)) => MemoryType::from_str_loose(name).ok_or_else(|| {
+                ToolError::invalid_input(format!(
+                    "invalid 'memory_type' value: {name} (expected user, feedback, project, or reference)"
+                ))
+            })?,
+            Some(other) => {
+                return Err(ToolError::invalid_input(format!(
+                    "invalid 'memory_type' value: {other} (expected a string)"
+                )));
+            }
+        };
         let name = input
             .get("name")
             .and_then(|v| v.as_str())
@@ -389,6 +398,24 @@ mod tests {
         let body = std::fs::read_to_string(&path).expect("read");
         assert!(body.contains("4 spaces"));
         assert!(body.starts_with("- ("), "{body}");
+    }
+
+    #[tokio::test]
+    async fn refuses_an_unrecognized_memory_type() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("memory");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = ctx_with_kod(dir.clone());
+        let err = RememberTool
+            .execute(json!({"note": "a note", "memory_type": "opinion"}), &ctx)
+            .await
+            .expect_err("an unrecognized memory_type is refused, not written as feedback");
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "nothing was written"
+        );
     }
 
     #[tokio::test]
