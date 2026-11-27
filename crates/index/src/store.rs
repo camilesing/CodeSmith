@@ -21,7 +21,7 @@ use crate::types::{
 
 /// Current store schema version. Bump on any breaking shape change; older
 /// databases are dropped and rebuilt on open.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const CREATE_SCHEMA_SQL: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -47,6 +47,7 @@ CREATE TABLE symbols(
 );
 CREATE INDEX idx_symbols_name ON symbols(name);
 CREATE INDEX idx_symbols_kind ON symbols(kind);
+CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE TABLE occurrences(
     id INTEGER PRIMARY KEY,
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -55,6 +56,7 @@ CREATE TABLE occurrences(
     line INTEGER NOT NULL
 );
 CREATE INDEX idx_occurrences_name ON occurrences(name);
+CREATE INDEX idx_occurrences_file ON occurrences(file_id);
 ";
 
 /// Stable on-disk directory key for a workspace root.
@@ -622,7 +624,7 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("schema_version row");
-        assert_eq!(version, "1");
+        assert_eq!(version, SCHEMA_VERSION.to_string());
     }
 
     #[test]
@@ -773,6 +775,26 @@ mod tests {
         assert_eq!(defs.len(), 1, "only the surviving file's copy remains");
     }
 
+    /// Each re-extracted or deleted file cascades through both child
+    /// tables; without an index on `file_id` every one of those deletes
+    /// scanned them whole.
+    #[test]
+    fn deleting_a_file_goes_through_the_file_id_indexes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&tmp);
+        let conn = store.conn.lock().unwrap();
+        let plan: Vec<String> = conn
+            .prepare("EXPLAIN QUERY PLAN DELETE FROM files WHERE path = 'x'")
+            .expect("prepare")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("plan rows")
+            .collect::<std::result::Result<_, _>>()
+            .expect("plan");
+        let plan = plan.join("\n");
+        assert!(plan.contains("INDEX idx_symbols_file"), "{plan}");
+        assert!(plan.contains("INDEX idx_occurrences_file"), "{plan}");
+    }
+
     #[test]
     fn list_files_filters_extension_glob_and_limit() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -858,7 +880,7 @@ mod tests {
             )
             .expect("version")
         };
-        assert_eq!(version, "1");
+        assert_eq!(version, SCHEMA_VERSION.to_string());
     }
 
     #[test]
