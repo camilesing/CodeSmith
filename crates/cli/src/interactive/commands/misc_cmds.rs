@@ -1357,9 +1357,8 @@ pub async fn stop(state: &mut ReplState) {
 
 /// `/queue` — messages typed while a turn was running.
 ///
-/// The queue is the mid-turn composer's: whatever the turn did not pick up
-/// is sent as the next turn, and `Up` on an empty prompt takes it back for
-/// editing instead.
+/// The queue is the mid-turn composer's: whatever the turn does not pick
+/// up is sent as the next turn when this one ends.
 pub fn queue(state: &ReplState) {
     if state.queued_messages.is_empty() {
         println!(
@@ -1370,11 +1369,7 @@ pub fn queue(state: &ReplState) {
     }
     println!(
         "{}",
-        format!(
-            "{} queued message(s) — Up takes them back:",
-            state.queued_messages.len()
-        )
-        .bold()
+        format!("{} queued message(s):", state.queued_messages.len()).bold()
     );
     for (index, text) in state.queued_messages.iter().enumerate() {
         let first = text.lines().next().unwrap_or(text);

@@ -1149,7 +1149,7 @@ impl Command {
             args: &[],
             aliases: &["queued"],
             group: Group::Context,
-            help: "messages queued while a turn was running (Up takes them back)",
+            help: "messages queued while a turn was running",
         },
         CommandInfo {
             command: Command::Stash,
