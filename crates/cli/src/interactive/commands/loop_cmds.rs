@@ -104,20 +104,37 @@ pub fn interval_to_rrule(interval: &str) -> Result<String, String> {
 }
 
 /// The prompt for a bare `/loop <interval>`: `loop.md` if the workspace has
-/// one, else the built-in maintenance prompt.
-async fn prompt_for(workspace: &std::path::Path) -> String {
+/// one, else the built-in maintenance prompt. `None` when `loop.md` is there
+/// but cannot be read: the user's own prompt is what was asked for, so no
+/// loop is created rather than a different prompt run unattended.
+async fn prompt_for(workspace: &std::path::Path) -> Option<String> {
     let path = workspace.join("loop.md");
     match tokio::fs::read_to_string(&path).await {
         Ok(text) if !text.trim().is_empty() => {
             println!("{}", format!("— using {}", path.display()).dimmed());
-            text.trim().to_string()
+            Some(text.trim().to_string())
         }
-        _ => {
+        Ok(_) => {
+            println!(
+                "{}",
+                "— loop.md is empty: using the built-in maintenance prompt".dimmed()
+            );
+            Some(MAINTENANCE_PROMPT.to_string())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             println!(
                 "{}",
                 "— no prompt and no loop.md: using the built-in maintenance prompt".dimmed()
             );
-            MAINTENANCE_PROMPT.to_string()
+            Some(MAINTENANCE_PROMPT.to_string())
+        }
+        Err(err) => {
+            println!(
+                "{} could not read {}: {err} — no loop created",
+                "✗".red(),
+                path.display()
+            );
+            None
         }
     }
 }
@@ -207,7 +224,10 @@ pub async fn run(state: &mut ReplState, arg: &str) {
                 }
             };
             let prompt = if rest.trim().is_empty() {
-                prompt_for(&state.workspace).await
+                let Some(prompt) = prompt_for(&state.workspace).await else {
+                    return;
+                };
+                prompt
             } else {
                 rest.clone()
             };
@@ -561,15 +581,28 @@ mod tests {
     async fn prompt_for_prefers_a_workspace_loop_md() {
         let tmp = tempfile::tempdir().expect("tempdir");
         assert_eq!(
-            prompt_for(tmp.path()).await,
-            MAINTENANCE_PROMPT,
+            prompt_for(tmp.path()).await.as_deref(),
+            Some(MAINTENANCE_PROMPT),
             "no loop.md -> built-in maintenance prompt"
         );
         std::fs::write(tmp.path().join("loop.md"), "  custom cadence prompt  ").expect("write");
         assert_eq!(
-            prompt_for(tmp.path()).await,
-            "custom cadence prompt",
+            prompt_for(tmp.path()).await.as_deref(),
+            Some("custom cadence prompt"),
             "loop.md content wins, trimmed"
+        );
+    }
+
+    /// A `loop.md` that exists but cannot be read as text is the user's own
+    /// prompt going missing: nothing is created, rather than the built-in
+    /// file-editing maintenance prompt running unattended in its place.
+    #[tokio::test]
+    async fn an_unreadable_loop_md_creates_no_loop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("loop.md")).expect("loop.md as a directory");
+        assert!(
+            prompt_for(tmp.path()).await.is_none(),
+            "an unreadable loop.md must not fall back to the maintenance prompt"
         );
     }
 }
