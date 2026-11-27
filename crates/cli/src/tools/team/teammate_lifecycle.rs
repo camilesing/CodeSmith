@@ -784,6 +784,47 @@ pub async fn handle_shutdown_request(
     })
 }
 
+/// Answer the lead when a shutdown request could not be evaluated. The
+/// scanner has already marked the request read, so a teammate that just
+/// keeps working leaves the lead waiting on a request id that is never
+/// answered; the busy case writes a rejection, and so does this one.
+pub async fn reject_shutdown_request(rt: &TeammateRuntime, request_id: &str, err: &anyhow::Error) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let protocol = StructuredProtocolMessage::ShutdownRejected {
+        request_id: request_id.to_string(),
+        from: rt.agent_name.clone(),
+        reason: format!("shutdown deferred: {err:#}"),
+        timestamp: now.clone(),
+    };
+    let text = match serde_json::to_string(&protocol) {
+        Ok(text) => text,
+        Err(err) => {
+            crate::logging::warn(format!(
+                "teammate '{}' could not answer shutdown request {request_id}: {err}",
+                rt.agent_name
+            ));
+            return;
+        }
+    };
+    let msg = TeammateMessage {
+        from: rt.agent_name.clone(),
+        text,
+        timestamp: now,
+        read: false,
+        color: None,
+        summary: Some("shutdown deferred".to_string()),
+    };
+    let team = rt.team_name.clone();
+    let written =
+        tokio::task::spawn_blocking(move || write_to_mailbox(team_lead_name(), &team, msg)).await;
+    if !matches!(written, Ok(Ok(()))) {
+        crate::logging::warn(format!(
+            "teammate '{}' could not answer shutdown request {request_id}: the lead's mailbox is unwritable",
+            rt.agent_name
+        ));
+    }
+}
+
 /// Format a prompt from a PriorityInboxResult.
 fn format_prompt_from_inbox(inbox: &PriorityInboxResult) -> String {
     let mut parts = Vec::new();
@@ -1028,8 +1069,19 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
                         }
                         break TeammateState::ShutdownApproved;
                     }
-                    // Rejected or handler error: the teammate keeps working.
-                    _ => continue,
+                    // Rejected: the handler already told the lead.
+                    Ok(_) => continue,
+                    // The handler could not evaluate the request (the task
+                    // store was unreadable): the lead is answered anyway, or
+                    // it waits forever on a request the scanner consumed.
+                    Err(err) => {
+                        crate::logging::warn(format!(
+                            "teammate '{}' could not evaluate shutdown request {}: {err:#}",
+                            rt.agent_name, entry.request_id
+                        ));
+                        reject_shutdown_request(&rt, &entry.request_id, &err).await;
+                        continue;
+                    }
                 }
             }
             WaitResult::NewMessage(inbox) => {
@@ -1860,6 +1912,29 @@ mod tests {
                 .any(|msg| msg.text.contains("shutdown_rejected")
                     && msg.text.contains("pending work")),
             "rejection lands with the reason"
+        );
+    }
+
+    /// A shutdown request the handler could not evaluate must still be
+    /// answered: the scanner marked it read, so silence leaves the lead
+    /// waiting on that request id forever.
+    #[tokio::test]
+    async fn a_shutdown_request_that_cannot_be_evaluated_is_still_answered() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("sd-defer")).expect("team");
+        let rt = teammate_runtime("sd-defer", "worker1", shared_tasks("sd-defer"));
+
+        reject_shutdown_request(&rt, "req-9", &anyhow::anyhow!("task state unknown")).await;
+
+        let lead = crate::tools::team::teammate_mailbox::read_mailbox(team_lead_name(), "sd-defer")
+            .expect("lead");
+        assert!(
+            lead.iter().any(|msg| msg.text.contains("shutdown_rejected")
+                && msg.text.contains("req-9")
+                && msg.text.contains("shutdown deferred")),
+            "the lead learns the request was deferred: {:?}",
+            lead.iter().map(|m| m.text.as_str()).collect::<Vec<_>>()
         );
     }
 
