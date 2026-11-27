@@ -35,8 +35,8 @@ use colored::Colorize;
 
 use super::ReplState;
 use crate::automation_manager::{
-    AutomationRecord, AutomationRunStatus, AutomationSchedule, AutomationStatus,
-    CreateAutomationRequest,
+    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationSchedule,
+    AutomationStatus, CreateAutomationRequest,
 };
 
 /// Name prefix that marks a record as created by `/loop`.
@@ -438,16 +438,29 @@ async fn run_now(
         }
     };
     match automations.run_now(&target.id, &task_manager).await {
-        Ok(run) => println!(
-            "{}",
-            format!(
-                "queued {} now (task {}) — /tasks shows it running",
-                target.name,
-                run.task_id.as_deref().unwrap_or("pending")
-            )
-            .dimmed()
-        ),
+        Ok(run) if run.status == AutomationRunStatus::Failed => {
+            println!("{} {}", "✗".red(), run_outcome_line(&target.name, &run));
+        }
+        Ok(run) => println!("{}", run_outcome_line(&target.name, &run).dimmed()),
         Err(err) => println!("{} could not run {}: {err}", "✗".red(), target.name),
+    }
+}
+
+/// What `/loop run` says about the run the manager returned. A task the
+/// manager could not enqueue comes back as `Ok(run)` carrying a `Failed`
+/// status and the reason, so the status — not the `Result` — decides
+/// between "queued" and "could not".
+fn run_outcome_line(name: &str, run: &AutomationRunRecord) -> String {
+    if run.status == AutomationRunStatus::Failed {
+        format!(
+            "could not run {name}: {}",
+            run.error.as_deref().unwrap_or("the task was not enqueued")
+        )
+    } else {
+        format!(
+            "queued {name} now (task {}) — /tasks shows it running",
+            run.task_id.as_deref().unwrap_or("pending")
+        )
     }
 }
 
@@ -581,6 +594,38 @@ mod tests {
                 .id,
             "abcdef2222"
         );
+    }
+
+    fn run_record(status: AutomationRunStatus) -> AutomationRunRecord {
+        AutomationRunRecord {
+            schema_version: 1,
+            id: "run-1".to_string(),
+            automation_id: "auto-1".to_string(),
+            scheduled_for: Utc::now(),
+            status,
+            created_at: Utc::now(),
+            started_at: None,
+            ended_at: None,
+            task_id: None,
+            thread_id: None,
+            turn_id: None,
+            error: None,
+        }
+    }
+
+    /// The manager reports a failed enqueue as `Ok(run)` carrying a `Failed`
+    /// status: the command must say it could not run the loop, not "queued".
+    #[test]
+    fn a_failed_enqueue_is_reported_as_not_run() {
+        let mut run = run_record(AutomationRunStatus::Failed);
+        run.error = Some("Failed to enqueue task: disk full".to_string());
+        let line = run_outcome_line("loop: x", &run);
+        assert!(line.starts_with("could not run loop: x"), "{line}");
+        assert!(line.contains("disk full"), "{line}");
+
+        let run = run_record(AutomationRunStatus::Running);
+        let line = run_outcome_line("loop: x", &run);
+        assert!(line.starts_with("queued loop: x now"), "{line}");
     }
 
     #[tokio::test]
