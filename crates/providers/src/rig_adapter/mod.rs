@@ -309,6 +309,10 @@ where
             } else {
                 request.model.clone()
             };
+            // File-backed images are read off the worker thread before the
+            // synchronous request build.
+            let mut request = request;
+            convert::resolve_file_images(&mut request.messages).await;
             let builder = build_request(&client, &model_id, &request, shaper)?;
             let response = builder.send().await.map_err(anyhow::Error::new)?;
             convert::build_message_response(
@@ -337,6 +341,10 @@ where
             } else {
                 request.model.clone()
             };
+            // File-backed images are read off the worker thread before the
+            // synchronous request build.
+            let mut request = request;
+            convert::resolve_file_images(&mut request.messages).await;
             let builder = build_request(&client, &model_id, &request, shaper)?;
             let stream = builder.stream().await.map_err(anyhow::Error::new)?;
             let mapped = stream::map_rig_stream(stream, model_id, request.max_tokens);
@@ -410,8 +418,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use bytes::Bytes;
-    use codesmith_agent::models::{ContentBlock, Message};
+    use codesmith_agent::models::{ContentBlock, ImageSource, Message};
     use rig_core::http_client::{
         Error as HttpError, HttpClientExt, LazyBody, MultipartForm, Request, Response,
         Result as HttpResult, StreamingResponse,
@@ -586,6 +595,44 @@ mod tests {
                 ("X-A".to_string(), "1".to_string()),
                 ("X-B".to_string(), "2".to_string())
             ]
+        );
+    }
+
+    /// The image pre-pass runs on the request path: a file-backed image
+    /// reaches the wire as a base64 data URI. (Without the pass it would be
+    /// dropped, not read inline.)
+    #[tokio::test]
+    async fn file_image_reaches_the_wire_as_base64() {
+        let transport = RecordingTransport::default();
+        let client = recorded_client(&transport);
+        let path =
+            std::env::temp_dir().join(format!("codesmith-rig-adapter-{}.png", std::process::id()));
+        std::fs::write(&path, b"fake-png-bytes").expect("write temp png");
+        let mut request = user_request(None);
+        request.messages[0].content.insert(
+            0,
+            ContentBlock::Image {
+                source: ImageSource::File {
+                    path: path.clone(),
+                    media_type: None,
+                },
+            },
+        );
+        let result = client.create_message(request).await;
+        let _ = std::fs::remove_file(&path);
+        result.expect("canned completion");
+
+        let body = transport
+            .bodies()
+            .pop()
+            .expect("one recorded body")
+            .to_string();
+        assert!(
+            body.contains(&format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(b"fake-png-bytes")
+            )),
+            "image missing from the wire body: {body}"
         );
     }
 }

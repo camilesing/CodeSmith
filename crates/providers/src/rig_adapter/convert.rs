@@ -17,7 +17,8 @@
 //! The shaper restores the ones that matter for a given provider. User-side
 //! `Image` blocks are the one wire-visible addition: they map to rig
 //! `UserContent::Image` so the provider layer serializes the OpenAI-compatible
-//! `image_url` form.
+//! `image_url` form. File-backed images are read on the blocking pool first
+//! ([`resolve_file_images`]); the conversions themselves never touch the disk.
 
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
@@ -129,40 +130,102 @@ fn user_block_to_rig(block: &ContentBlock) -> Option<UserContent> {
                 content: OneOrMany::one(ToolResultContent::text(text)),
             }))
         }
-        ContentBlock::Image { source } => image_block_to_rig(source),
+        ContentBlock::Image { source } => match source {
+            ImageSource::Base64 { media_type, data } => image_block_to_rig(media_type, data),
+            // `resolve_file_images` has already rewritten every readable file
+            // into a base64 source; a path still here could not be resolved
+            // and is dropped.
+            ImageSource::File { .. } => None,
+        },
         _ => None,
     }
 }
 
-/// Map a user-message `Image` block to rig `UserContent::Image`. File-backed
-/// sources are read and base64-encoded here (request-build time); the rig
-/// provider layer assembles the `data:<mime>;base64,…` URI for the
-/// OpenAI-compatible `image_url` form from the media type. Returns `None`
-/// when the file cannot be read or the media type has no rig analogue, so the
-/// block is dropped — the user text still carries the
+/// Map a user-message `Image` block to rig `UserContent::Image`, from a
+/// base64 source: the rig provider layer assembles the `data:<mime>;base64,…`
+/// URI for the OpenAI-compatible `image_url` form from the media type.
+/// Returns `None` when the media type has no rig analogue, so the block is
+/// dropped — the user text still carries the
 /// `[Attached image: … at <path>]` reference as fallback.
-fn image_block_to_rig(source: &ImageSource) -> Option<UserContent> {
-    let (media_type, data) = match source {
-        ImageSource::Base64 { media_type, data } => (media_type.clone(), data.clone()),
-        ImageSource::File { path, media_type } => {
-            let media_type = match media_type {
-                Some(explicit) => explicit.clone(),
-                None => image_media_type_from_path(path)?.to_mime_type().to_string(),
-            };
-            let bytes = std::fs::read(path).ok()?;
-            (
-                media_type,
-                base64::engine::general_purpose::STANDARD.encode(bytes),
-            )
-        }
-    };
-    let media_type = ImageMediaType::from_mime_type(&media_type)?;
+fn image_block_to_rig(media_type: &str, data: &str) -> Option<UserContent> {
+    let media_type = ImageMediaType::from_mime_type(media_type)?;
     Some(UserContent::Image(RigImage {
-        data: DocumentSourceKind::Base64(data),
+        data: DocumentSourceKind::Base64(data.to_string()),
         media_type: Some(media_type),
         detail: Some(ImageDetail::Auto),
         additional_params: None,
     }))
+}
+
+/// Rewrite every file-backed image in `messages` into a base64 source, reading
+/// the files on the blocking pool. Runs before [`message_to_rig`], which is
+/// synchronous and polled on the runtime's worker thread: an inline
+/// `std::fs::read` plus base64 encode there stalled that worker on every
+/// request while the image stayed in history (up to eight 10 MiB attachments
+/// per message). Each distinct path is read once per request; a file that
+/// cannot be read stays a file source and is dropped by
+/// [`user_block_to_rig`], as it always was.
+pub(crate) async fn resolve_file_images(messages: &mut [Message]) {
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for message in messages.iter() {
+        for block in &message.content {
+            if let ContentBlock::Image {
+                source: ImageSource::File { path, media_type },
+            } = block
+                && file_image_media_type(path, media_type.as_deref()).is_some()
+                && !paths.contains(path)
+            {
+                paths.push(path.clone());
+            }
+        }
+    }
+    if paths.is_empty() {
+        return;
+    }
+    // A join error (pool panic, runtime shutdown) leaves every entry
+    // unread: the images are then dropped like any unreadable file.
+    let read: std::collections::HashMap<std::path::PathBuf, String> =
+        tokio::task::spawn_blocking(move || {
+            paths
+                .into_iter()
+                .filter_map(|path| {
+                    std::fs::read(&path).ok().map(|bytes| {
+                        (
+                            path,
+                            base64::engine::general_purpose::STANDARD.encode(bytes),
+                        )
+                    })
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
+
+    for message in messages {
+        for block in &mut message.content {
+            let ContentBlock::Image { source } = block else {
+                continue;
+            };
+            let ImageSource::File { path, media_type } = &*source else {
+                continue;
+            };
+            let resolved = read
+                .get(path)
+                .cloned()
+                .zip(file_image_media_type(path, media_type.as_deref()));
+            if let Some((data, media_type)) = resolved {
+                *source = ImageSource::Base64 { media_type, data };
+            }
+        }
+    }
+}
+
+/// The wire media type of a file-backed image: the explicit one, else the one
+/// its extension implies. `None` means no rig-serializable type.
+fn file_image_media_type(path: &std::path::Path, explicit: Option<&str>) -> Option<String> {
+    explicit.map(str::to_string).or_else(|| {
+        image_media_type_from_path(path).map(|media_type| media_type.to_mime_type().to_string())
+    })
 }
 
 /// Media types the rig providers can serialize. Anything else (tif, ppm, …)
@@ -417,17 +480,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn file_image_block_maps_to_rig_image() {
-        let path =
-            std::env::temp_dir().join(format!("codesmith-convert-img-{}.png", std::process::id()));
+    fn temp_image_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "codesmith-convert-{label}-{}.png",
+            std::process::id()
+        ))
+    }
+
+    /// The file is read and encoded by the pre-pass; the conversion itself
+    /// never touches the disk.
+    #[tokio::test]
+    async fn file_image_block_maps_to_rig_image() {
+        let path = temp_image_path("img");
         std::fs::write(&path, b"fake-png-bytes").expect("write temp png");
-        let msg = user_message(vec![ContentBlock::Image {
+        let mut msg = user_message(vec![ContentBlock::Image {
             source: ImageSource::File {
                 path: path.clone(),
                 media_type: None,
             },
         }]);
+        resolve_file_images(std::slice::from_mut(&mut msg)).await;
         let converted = message_to_rig(&msg).expect("convert");
         let _ = std::fs::remove_file(&path);
 
@@ -467,16 +539,18 @@ mod tests {
         assert!(matches!(image.data, DocumentSourceKind::Base64(_)));
     }
 
-    #[test]
-    fn unreadable_or_unsupported_image_blocks_are_dropped() {
-        // Missing file falls back to the empty-text placeholder rather than
-        // failing the whole request.
-        let missing = user_message(vec![ContentBlock::Image {
+    #[tokio::test]
+    async fn unreadable_or_unsupported_image_blocks_are_dropped() {
+        // A missing file survives the pre-pass as a file source and falls
+        // back to the empty-text placeholder rather than failing the whole
+        // request.
+        let mut missing = user_message(vec![ContentBlock::Image {
             source: ImageSource::File {
                 path: PathBuf::from("/nonexistent/codesmith-convert-test.png"),
                 media_type: None,
             },
         }]);
+        resolve_file_images(std::slice::from_mut(&mut missing)).await;
         let converted = message_to_rig(&missing).expect("convert");
         let RigMessage::User { content } = converted else {
             panic!("expected user message");
@@ -523,5 +597,60 @@ mod tests {
                 ".{ext} must stay unlisted — the wire layer has no image_url form for it"
             );
         }
+    }
+
+    /// The file read runs on the blocking pool, not on the worker thread
+    /// that polls the request: with the pool's only thread pinned, the image
+    /// cannot be read until that thread is released.
+    #[test]
+    fn file_images_are_read_on_the_blocking_pool() {
+        use std::time::Duration;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let path = temp_image_path("pool");
+            std::fs::write(&path, b"fake-png-bytes").expect("write temp png");
+            let mut msg = user_message(vec![ContentBlock::Image {
+                source: ImageSource::File {
+                    path: path.clone(),
+                    media_type: None,
+                },
+            }]);
+
+            // Pin the pool's single thread.
+            let (pinned, pinned_rx) = tokio::sync::oneshot::channel();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let pin = tokio::task::spawn_blocking(move || {
+                let _ = pinned.send(());
+                let _ = released.recv();
+            });
+            pinned_rx.await.expect("pool thread pinned");
+
+            let blocked = tokio::time::timeout(
+                Duration::from_millis(200),
+                resolve_file_images(std::slice::from_mut(&mut msg)),
+            )
+            .await
+            .is_err();
+
+            drop(release);
+            pin.await.expect("pinned task");
+            assert!(
+                blocked,
+                "the file was read inline on the async worker: the pass never waited for the pool"
+            );
+            resolve_file_images(std::slice::from_mut(&mut msg)).await;
+            assert!(matches!(
+                msg.content[0],
+                ContentBlock::Image {
+                    source: ImageSource::Base64 { .. }
+                }
+            ));
+            let _ = std::fs::remove_file(&path);
+        });
     }
 }
