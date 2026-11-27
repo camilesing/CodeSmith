@@ -441,16 +441,38 @@ fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Re
         .text()
         .with_context(|| format!("failed to read {description} response body from {url}"))?;
     if !status.is_success() {
-        bail!("failed to fetch {description} from {url}: HTTP {status}\n{body}");
+        bail!(
+            "{}",
+            release_fetch_error_message(url, description, status, &body)
+        );
     }
     Ok(body)
 }
 
+/// How much of a response body an error message echoes: a proxy's HTML
+/// error or consent page can be megabytes (the `release` crate's
+/// `release_response_body` bounds its snippet the same way).
+const ERROR_BODY_EXCERPT_CHARS: usize = 512;
+
+fn release_fetch_error_message(
+    url: &str,
+    description: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> String {
+    let excerpt: String = body.chars().take(ERROR_BODY_EXCERPT_CHARS).collect();
+    format!("failed to fetch {description} from {url}: HTTP {status}\n{excerpt}")
+}
+
+fn release_parse_error_message(what: &str, body: &str) -> String {
+    let excerpt: String = body.chars().take(ERROR_BODY_EXCERPT_CHARS).collect();
+    format!("failed to parse {what} from GitHub API. Response: {excerpt}")
+}
+
 fn fetch_latest_release_from_url(url: &str, proxy: Option<&Proxy>) -> Result<Release> {
     let body = fetch_release_json(url, "release info", proxy)?;
-    let release: Release = serde_json::from_str(&body).with_context(|| {
-        format!("failed to parse release JSON from GitHub API. Response: {body}")
-    })?;
+    let release: Release = serde_json::from_str(&body)
+        .with_context(|| release_parse_error_message("release JSON", &body))?;
 
     Ok(release)
 }
@@ -459,9 +481,8 @@ fn fetch_latest_beta_release_from_url(url: &str, proxy: Option<&Proxy>) -> Resul
     let body = fetch_release_json(url, "release list", proxy)?;
     // GitHub caps this endpoint at 100 releases per page. CodeSmith uses the
     // first page as the latest-beta search window, matching GitHub's ordering.
-    let releases: Vec<Release> = serde_json::from_str(&body).with_context(|| {
-        format!("failed to parse release list JSON from GitHub API. Response: {body}")
-    })?;
+    let releases: Vec<Release> = serde_json::from_str(&body)
+        .with_context(|| release_parse_error_message("release list JSON", &body))?;
 
     releases
         .into_iter()
@@ -891,6 +912,27 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codesmith-win
         assert!(!codesmith_release::is_beta_tag(&rc_prerelease.tag_name));
         assert!(codesmith_release::is_beta_tag(&beta_tag.tag_name));
         assert!(!codesmith_release::is_beta_tag(&stable.tag_name));
+    }
+
+    /// A proxy's error or consent page can be megabytes: the messages that
+    /// echo a body carry an excerpt, not the page. They used to print all
+    /// of it.
+    #[test]
+    fn error_messages_carry_an_excerpt_of_the_body() {
+        let page = format!("<html>{}", "x".repeat(100_000));
+
+        let fetch = release_fetch_error_message(
+            "http://mirror/release",
+            "release info",
+            reqwest::StatusCode::BAD_GATEWAY,
+            &page,
+        );
+        assert!(fetch.contains("HTTP 502"), "{fetch}");
+        assert!(fetch.len() < 1_200, "{} chars", fetch.len());
+
+        let parse = release_parse_error_message("release JSON", &page);
+        assert!(parse.contains("failed to parse release JSON"), "{parse}");
+        assert!(parse.len() < 1_200, "{} chars", parse.len());
     }
 
     fn serve_http_once(
