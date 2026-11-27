@@ -154,11 +154,21 @@ fn resolve<'a>(
     records: &'a [AutomationRecord],
     needle: &str,
 ) -> Result<&'a AutomationRecord, String> {
-    if let Some(exact) = records
-        .iter()
-        .find(|record| record.id == needle || record.name.eq_ignore_ascii_case(needle))
-    {
+    if let Some(exact) = records.iter().find(|record| record.id == needle) {
         return Ok(exact);
+    }
+    // A name is not unique (`/loop 2h run the tests` twice names both loops
+    // alike), so it addresses a record only when exactly one carries it.
+    let by_name: Vec<&AutomationRecord> = records
+        .iter()
+        .filter(|record| record.name.eq_ignore_ascii_case(needle))
+        .collect();
+    match by_name.len() {
+        1 => return Ok(by_name[0]),
+        n if n > 1 => {
+            return Err(format!("{needle:?} names {n} automations — use the id"));
+        }
+        _ => {}
     }
     let matches: Vec<&AutomationRecord> = records
         .iter()
@@ -549,6 +559,24 @@ mod tests {
         // Too short to be a prefix, and not a name.
         let err = resolve(&records, "abc").expect_err("too short");
         assert!(err.contains("no loop"), "{err}");
+    }
+
+    /// `/loop 2h run the tests` twice names both loops alike: the name must
+    /// not quietly pick the first (and `/loop stop` delete its history).
+    #[test]
+    fn a_name_shared_by_two_automations_addresses_neither() {
+        let records = vec![
+            record("abcdef1111", "loop: run the tests"),
+            record("abcdef2222", "loop: run the tests"),
+        ];
+        let err = resolve(&records, "loop: run the tests").expect_err("shared name");
+        assert!(err.contains("names 2 automations"), "{err}");
+        assert_eq!(
+            resolve(&records, "abcdef2222")
+                .expect("the id still addresses it")
+                .id,
+            "abcdef2222"
+        );
     }
 
     #[tokio::test]
