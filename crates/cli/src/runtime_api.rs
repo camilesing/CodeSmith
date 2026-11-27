@@ -851,10 +851,13 @@ async fn list_sessions(
     State(state): State<RuntimeApiState>,
     Query(query): Query<SessionsQuery>,
 ) -> Result<Json<SessionsResponse>, ApiError> {
-    let manager = &state.sessions;
     let mut sessions = if let Some(search) = query.search {
-        manager
-            .search_sessions(&search)
+        // The search opens and reads every session file: off the runtime
+        // worker, like the list branch below.
+        let manager = state.sessions.clone();
+        tokio::task::spawn_blocking(move || manager.search_sessions(&search))
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to search sessions: {e}")))?
             .map_err(|e| ApiError::internal(format!("Failed to search sessions: {e}")))?
     } else {
         use codesmith_session::store::SessionStore;
