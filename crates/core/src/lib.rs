@@ -754,12 +754,15 @@ pub struct Runtime {
     pub model_registry: ModelRegistry,
     /// Manages conversation thread lifecycle.
     ///
-    /// Interior-mutability seam: every `Runtime` method is `&self`, so the
-    /// app-server shares one `Arc<Runtime>` across handlers without a
-    /// process-global lock. The mutex guards the running-thread table and
-    /// its state store (all synchronous operations — a guard is never held
-    /// across an `.await`), which serializes thread mutations against each
-    /// other while everything else (hook emission, tool dispatch, MCP
+    /// Interior-mutability seam: every handler-reachable `Runtime` method
+    /// takes `&self`, so the app-server shares one `Arc<Runtime>` across
+    /// handlers without a process-global lock. Known limitation: the job
+    /// mutators (`enqueue_job` … `resume_job`) take `&mut self` and are not
+    /// reachable behind that `Arc`, so no handler drives the job lifecycle
+    /// today. The mutex guards the running-thread table and its state store
+    /// (all synchronous operations — a guard is never held across an
+    /// `.await`), which serializes thread mutations against each other while
+    /// everything else (hook emission, tool dispatch, MCP
     /// startup, job reads) runs concurrently.
     pub thread_manager: std::sync::Mutex<ThreadManager>,
     /// Manager for MCP server connections.

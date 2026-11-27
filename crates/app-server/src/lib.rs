@@ -66,11 +66,12 @@ impl std::fmt::Debug for AppServerOptions {
 struct AppState {
     config_path: Option<PathBuf>,
     config: Arc<RwLock<codesmith_config::ConfigToml>>,
-    /// Shared runtime. Every `Runtime` method takes `&self` (the
-    /// running-thread table and its state store are behind an internal
+    /// Shared runtime. Every handler-reachable `Runtime` method takes `&self`
+    /// (the running-thread table and its state store are behind an internal
     /// mutex), so handlers run concurrently with no process-global lock:
-    /// hook emission, tool dispatch, MCP startup, and job reads overlap,
-    /// and only thread-table mutations serialize against each other.
+    /// hook emission, tool dispatch, MCP startup, and job reads overlap, and
+    /// only thread-table mutations serialize against each other. The job
+    /// mutators take `&mut self` and are not reachable through this `Arc`.
     runtime: Arc<Runtime>,
     registry: ModelRegistry,
     auth_token: Option<String>,
