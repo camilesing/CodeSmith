@@ -188,8 +188,9 @@ pub struct ReplState {
     /// fetched pull request here. The REPL loop takes it before reading, so
     /// the user sees an editable draft rather than a message already sent.
     pub next_input: Option<String>,
-    /// Skill names as first discovered this session, so `/reload-skills` can
-    /// say what appeared or disappeared since startup.
+    /// Skill names as of the last `/reload-skills`; `None` until that
+    /// command's first run, which records the baseline (nothing discovers
+    /// skills at REPL start — that would add a skill walk to every startup).
     pub skill_baseline: Option<Vec<String>>,
     /// Output of `settings.statusline_command`, refreshed by the REPL loop
     /// (the renderer stays synchronous and just prints what is here).

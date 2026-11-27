@@ -1167,6 +1167,10 @@ pub fn reload_skills(state: &mut ReplState) {
         .iter()
         .map(|skill| skill.name.clone())
         .collect();
+    // The baseline is this command's own previous run, not the session
+    // start: the first run records it and says so, instead of reporting
+    // "0 added, 0 removed since startup" for skills installed before it.
+    let first = state.skill_baseline.is_none();
     let baseline = state.skill_baseline.get_or_insert_with(|| names.clone());
     let added: Vec<&String> = names
         .iter()
@@ -1176,17 +1180,24 @@ pub fn reload_skills(state: &mut ReplState) {
         .iter()
         .filter(|name| !names.contains(name))
         .collect();
-    println!(
-        "skills: {} available ({} added, {} removed since startup)",
-        names.len(),
-        added.len(),
-        removed.len()
-    );
-    for name in added {
-        println!("  + {name}");
-    }
-    for name in removed {
-        println!("  - {name}");
+    if first {
+        println!(
+            "skills: {} available (baseline recorded — the next /reload-skills lists what changed since now)",
+            names.len()
+        );
+    } else {
+        println!(
+            "skills: {} available ({} added, {} removed since the last /reload-skills)",
+            names.len(),
+            added.len(),
+            removed.len()
+        );
+        for name in added {
+            println!("  + {name}");
+        }
+        for name in removed {
+            println!("  - {name}");
+        }
     }
     *baseline = names;
     println!(
