@@ -925,18 +925,34 @@ fn snapshot_with(
         .clone()
         .or_else(|| startup.preset_selection().map(str::to_string))
         .unwrap_or_else(|| "middle".to_string());
-    let selection = canonicalize_preset_name(&selection_raw)
-        .map(|(name, _)| name)
-        .unwrap_or_else(|_| "middle".to_string());
-    let loaded = preset_catalog
-        .get_ci(&selection)
-        .cloned()
-        .unwrap_or_else(|| {
+    // What the name could not be resolved to is said here, never dropped:
+    // the page highlights whatever `selected` ends up being.
+    let mut warnings = Vec::new();
+    let selection = match canonicalize_preset_name(&selection_raw) {
+        Ok((name, None)) => name,
+        Ok((name, Some(warning))) => {
+            warnings.push(warning);
+            name
+        }
+        Err(err) => {
+            warnings.push(format!(
+                "preset selection {selection_raw:?} was rejected ({err}); showing the default tier 'middle'"
+            ));
+            "middle".to_string()
+        }
+    };
+    let loaded = match preset_catalog.get_ci(&selection).cloned() {
+        Some(loaded) => loaded,
+        None => {
+            warnings.push(format!(
+                "preset {selection:?} is not in the catalog; showing the default tier 'middle'"
+            ));
             preset_catalog
                 .get_ci("middle")
                 .cloned()
                 .expect("middle is compiled in")
-        });
+        }
+    };
 
     // Present the launch-equivalent view: `codesmith serve` does not fold
     // the preset layer at startup (the REPL path does), so fold the
@@ -1082,7 +1098,12 @@ fn snapshot_with(
         keys,
         file_tree: table_to_json(doc.as_table(), ""),
         restart_pending,
-        warnings: preset_catalog.warnings.clone(),
+        warnings: preset_catalog
+            .warnings
+            .iter()
+            .cloned()
+            .chain(warnings)
+            .collect(),
     })
 }
 
@@ -1535,6 +1556,30 @@ mod tests {
         assert!(
             !snap.restart_pending,
             "nothing is pending for the process to pick up"
+        );
+    }
+
+    /// A `preset` the catalog cannot resolve is said, not silently shown as
+    /// `middle`; a deprecated alias keeps its warning.
+    #[test]
+    fn unresolved_preset_selection_is_warned_about() {
+        let (_dir, path) = temp_config("preset = \"nope\"\n");
+        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        assert_eq!(snap.selection.selected, "middle");
+        assert!(
+            snap.warnings.iter().any(|warning| warning.contains("nope")),
+            "{:?}",
+            snap.warnings
+        );
+
+        std::fs::write(&path, "preset = \"balanced\"\n").expect("rewrite fixture");
+        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        assert!(
+            snap.warnings
+                .iter()
+                .any(|warning| warning.contains("deprecated")),
+            "{:?}",
+            snap.warnings
         );
     }
 
