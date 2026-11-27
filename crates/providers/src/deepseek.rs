@@ -63,6 +63,7 @@ impl ProviderFactory for DeepSeekFactory {
             crate::resolve_with_manifest_default(&cfg.default_model, self.model.as_deref());
         let mut builder = deepseek::Client::builder().api_key(cfg.api_key.clone());
         if !base_url.is_empty() {
+            crate::validate_provider_base_url(self.id.as_str(), "deepseek", &base_url)?;
             builder = builder.base_url(&base_url);
         }
         // Host-supplied extra headers must not override the Bearer that rig

@@ -80,6 +80,7 @@ impl ProviderFactory for AnthropicFactory {
         // only need to set key + base_url + extra headers.
         let mut builder = anthropic::Client::builder().api_key(api_key);
         if !base_url.is_empty() {
+            crate::validate_provider_base_url(self.id.as_str(), "anthropic", &base_url)?;
             builder = builder.base_url(&base_url);
         }
         // Host-supplied extra headers must not override the headers rig

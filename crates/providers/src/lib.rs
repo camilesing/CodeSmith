@@ -648,6 +648,38 @@ mod manifest_default_tests {
         assert!(err.to_string().contains("auth-managed"), "{err:#}");
     }
 
+    /// The "no plaintext credential to a non-loopback host" guard used to
+    /// stop at the openai and compat factories.
+    #[cfg(feature = "anthropic")]
+    #[test]
+    fn anthropic_factory_refuses_a_plaintext_credential_url() {
+        let factory = anthropic::AnthropicFactory::new(
+            ProviderId::from("anthropic"),
+            Some(String::from("http://example.com")),
+            None,
+        );
+        let err = factory
+            .build(&empty_cfg(ProviderId::from("anthropic")))
+            .err()
+            .expect("a plaintext endpoint is refused at build");
+        assert!(err.to_string().contains("must use https"), "{err:#}");
+    }
+
+    #[cfg(feature = "deepseek")]
+    #[test]
+    fn deepseek_factory_refuses_a_plaintext_credential_url() {
+        let factory = deepseek::DeepSeekFactory::new(
+            ProviderId::from("deepseek"),
+            Some(String::from("http://example.com")),
+            None,
+        );
+        let err = factory
+            .build(&empty_cfg(ProviderId::from("deepseek")))
+            .err()
+            .expect("a plaintext endpoint is refused at build");
+        assert!(err.to_string().contains("must use https"), "{err:#}");
+    }
+
     #[cfg(feature = "openai-compat")]
     fn openrouter_factory() -> openai_compat::OpenAiCompatFactory {
         openai_compat::OpenAiCompatFactory::new(
