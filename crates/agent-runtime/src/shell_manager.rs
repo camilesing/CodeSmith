@@ -2546,8 +2546,16 @@ fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (
     // Clone only the unread portion (the delta), not the entire accumulated buffer.
     // Long-running processes can produce megabytes of output; cloning the full
     // buffer on every poll held the ShellManager mutex for O(total_bytes) time.
-    let delta = guard[start..].to_vec();
-    *cursor = total;
+    let mut end = total;
+    // A multi-byte character cut in half at the buffer's end waits for its
+    // other half: decoded alone, each half turns into U+FFFD.
+    if let Err(err) = std::str::from_utf8(&guard[start..])
+        && err.error_len().is_none()
+    {
+        end = start + err.valid_up_to();
+    }
+    let delta = guard[start..end].to_vec();
+    *cursor = end;
     (delta, total)
 }
 
@@ -3333,6 +3341,19 @@ mod manager_tests {
         let (delta, total) = take_delta_from_buffer(&buffer, &mut cursor);
         assert_eq!(String::from_utf8_lossy(&delta), "gh");
         assert_eq!(total, 8);
+
+        // A multi-byte character cut in half waits for its other half: the
+        // first delta stops before it, the next starts with it.
+        let han = "汉".as_bytes();
+        let split: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(b"ab".to_vec()));
+        split.lock().unwrap().extend_from_slice(&han[..2]);
+        let mut split_cursor = 0;
+        let (delta, _) = take_delta_from_buffer(&split, &mut split_cursor);
+        assert_eq!(String::from_utf8_lossy(&delta), "ab");
+        assert_eq!(split_cursor, 2);
+        split.lock().unwrap().extend_from_slice(&han[2..]);
+        let (delta, _) = take_delta_from_buffer(&split, &mut split_cursor);
+        assert_eq!(String::from_utf8_lossy(&delta), "汉");
 
         // A cursor past the end clamps instead of panicking.
         let mut over = 100;
