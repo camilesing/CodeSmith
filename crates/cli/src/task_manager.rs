@@ -629,7 +629,7 @@ impl TaskManager {
             )
         })?;
 
-        let (tasks, queue) = load_state(&tasks_dir, &queue_path)?;
+        let (tasks, queue, recovered) = load_state(&tasks_dir, &queue_path)?;
 
         let cancel_token = CancellationToken::new();
         let default_workspace = cfg.default_workspace.clone();
@@ -652,7 +652,16 @@ impl TaskManager {
 
         {
             let state = manager.state.lock().await;
-            manager.persist_all_locked(&state)?;
+            // Recovery rebuilt the queue and re-queued the records that
+            // were running; only those are rewritten. The full rewrite of
+            // every record that used to run here cost two fsyncs per task
+            // ever created, at every startup.
+            manager.persist_queue_locked(&state.queue)?;
+            for id in &recovered {
+                if let Some(task) = state.tasks.get(id) {
+                    manager.persist_task_locked(task)?;
+                }
+            }
         }
 
         for _ in 0..workers {
@@ -744,7 +753,17 @@ impl TaskManager {
             let mut state = self.state.lock().await;
             state.queue.push_back(task.id.clone());
             state.tasks.insert(task.id.clone(), task.clone());
-            self.persist_all_locked(&state)?;
+            // The record first, then the queue: a crash between the two
+            // leaves an orphan record, never a queued id without one. A
+            // failed write undoes the insert, so `Err` means "not queued".
+            if let Err(err) = self
+                .persist_task_locked(&task)
+                .and_then(|()| self.persist_queue_locked(&state.queue))
+            {
+                state.queue.retain(|queued_id| queued_id != &task.id);
+                state.tasks.remove(&task.id);
+                return Err(err);
+            }
         }
         self.notify.notify_one();
         Ok(task)
@@ -818,7 +837,18 @@ impl TaskManager {
             token.cancel();
         }
 
-        self.persist_all_locked(&state)?;
+        // Only this task and the queue changed. The cancel has already
+        // taken effect in memory (a running task's token is cancelled),
+        // so a failed write is logged, not reported as "not canceled".
+        if let Err(err) = self.persist_queue_locked(&state.queue).and_then(|()| {
+            state
+                .tasks
+                .get(&id)
+                .ok_or_else(|| anyhow!("Task not found: {id}"))
+                .and_then(|task| self.persist_task_locked(task))
+        }) {
+            tracing::warn!("Task {id} canceled but not persisted: {err}");
+        }
         state
             .tasks
             .get(&id)
@@ -950,7 +980,16 @@ impl TaskManager {
                             let cancel = CancellationToken::new();
                             state.running_cancel.insert(task_id.clone(), cancel.clone());
 
-                            if let Err(err) = self.persist_all_locked(&state) {
+                            // The queue lost its head and this task changed.
+                            if let Err(err) =
+                                self.persist_queue_locked(&state.queue).and_then(|()| {
+                                    state
+                                        .tasks
+                                        .get(&task_id)
+                                        .ok_or_else(|| anyhow!("Task not found: {task_id}"))
+                                        .and_then(|task| self.persist_task_locked(task))
+                                })
+                            {
                                 tracing::error!("Failed to persist task start: {err}");
                             }
                             Some((task_id, request, cancel))
@@ -1228,6 +1267,7 @@ impl TaskManager {
     ) -> Result<()> {
         let mut state = self.state.lock().await;
         state.running_cancel.remove(task_id);
+        state.stream_persisted_at.remove(task_id);
         let Some(task) = state.tasks.get_mut(task_id) else {
             return Ok(());
         };
@@ -1286,7 +1326,8 @@ impl TaskManager {
             task.result_summary = Some("(no textual output)".to_string());
         }
 
-        self.persist_all_locked(&state)?;
+        // The queue did not change here: the id left it at pick-up.
+        self.persist_task_locked(task)?;
         Ok(())
     }
 
@@ -1418,14 +1459,6 @@ impl TaskManager {
         Ok(())
     }
 
-    fn persist_all_locked(&self, state: &ManagerState) -> Result<()> {
-        self.persist_queue_locked(&state.queue)?;
-        for task in state.tasks.values() {
-            self.persist_task_locked(task)?;
-        }
-        Ok(())
-    }
-
     fn persist_queue_locked(&self, queue: &VecDeque<String>) -> Result<()> {
         write_json_atomic(
             &self.queue_path,
@@ -1441,11 +1474,16 @@ impl TaskManager {
     }
 }
 
-fn load_state(
-    tasks_dir: &Path,
-    queue_path: &Path,
-) -> Result<(HashMap<String, TaskRecord>, VecDeque<String>)> {
+/// What [`load_state`] reads back: the records, the queue, and the
+/// ids of the records recovery re-queued.
+type LoadedState = (HashMap<String, TaskRecord>, VecDeque<String>, Vec<String>);
+
+/// Load the records and the queue, re-queuing the records that were
+/// running when the process went away. The third element names those,
+/// so startup rewrites only what recovery changed.
+fn load_state(tasks_dir: &Path, queue_path: &Path) -> Result<LoadedState> {
     let mut tasks = HashMap::new();
+    let mut recovered = Vec::new();
     if tasks_dir.exists() {
         for entry in fs::read_dir(tasks_dir)
             .with_context(|| format!("Failed to read tasks dir {}", tasks_dir.display()))?
@@ -1467,6 +1505,7 @@ fn load_state(
                 );
             }
             if task.status == TaskStatus::Running {
+                recovered.push(task.id.clone());
                 task.status = TaskStatus::Queued;
                 task.started_at = None;
                 task.ended_at = None;
@@ -1509,7 +1548,7 @@ fn load_state(
         queue.push_back(id);
     }
 
-    Ok((tasks, queue))
+    Ok((tasks, queue, recovered))
 }
 
 /// Append a piece of streamed text to the timeline. Consecutive pieces of
@@ -2072,6 +2111,103 @@ mod tests {
             .collect();
         assert!(streamed.contains("word0 "), "{streamed}");
         assert!(streamed.contains("word199"), "{streamed}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn adding_a_task_writes_only_its_own_record() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        let first = manager
+            .add_task(NewTaskRequest::from_prompt("first"))
+            .await?;
+        let finished =
+            wait_for_terminal_state(&manager, &first.id, Duration::from_secs(10)).await?;
+
+        // A record the manager cannot write any more: a directory where the
+        // file was. Rewriting every record used to fail the whole add.
+        let foreign = root.join("tasks").join(format!("{}.json", finished.id));
+        fs::remove_file(&foreign)?;
+        fs::create_dir(&foreign)?;
+
+        let second = manager
+            .add_task(NewTaskRequest::from_prompt("second"))
+            .await?;
+        assert!(
+            root.join("tasks")
+                .join(format!("{}.json", second.id))
+                .is_file(),
+            "the new record was written"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_record_write_rolls_the_new_task_back() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        let tasks_dir = root.join("tasks");
+        let original = fs::metadata(&tasks_dir)?.permissions();
+        let mut locked = original.clone();
+        locked.set_readonly(true);
+        fs::set_permissions(&tasks_dir, locked)?;
+
+        let outcome = manager
+            .add_task(NewTaskRequest::from_prompt("cannot land"))
+            .await;
+        fs::set_permissions(&tasks_dir, original)?;
+
+        assert!(outcome.is_err(), "the record could not be written");
+        assert!(
+            manager.list_tasks(None).await.is_empty(),
+            "nothing stays queued in memory"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_rewrites_only_the_records_it_changed() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let manager =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        let settled = manager
+            .add_task(NewTaskRequest::from_prompt("settled"))
+            .await?;
+        let settled =
+            wait_for_terminal_state(&manager, &settled.id, Duration::from_secs(10)).await?;
+        let interrupted = manager
+            .add_task(NewTaskRequest::from_prompt("interrupted"))
+            .await?;
+        let interrupted =
+            wait_for_terminal_state(&manager, &interrupted.id, Duration::from_secs(10)).await?;
+        drop(manager);
+
+        // Both records go back on disk compact (not the manager's pretty
+        // form); one of them as it would look had the process died mid-run.
+        let path_of = |record: &TaskRecord| root.join("tasks").join(format!("{}.json", record.id));
+        let mut as_running = interrupted.clone();
+        as_running.status = TaskStatus::Running;
+        fs::write(path_of(&settled), serde_json::to_string(&settled)?)?;
+        fs::write(path_of(&interrupted), serde_json::to_string(&as_running)?)?;
+        let settled_bytes = fs::read(path_of(&settled))?;
+
+        let _restarted =
+            TaskManager::start_with_executor(test_config(root.clone()), Arc::new(MockExecutor))
+                .await?;
+        assert_eq!(
+            fs::read(path_of(&settled))?,
+            settled_bytes,
+            "a record recovery did not change is not rewritten"
+        );
+        let recovered: TaskRecord =
+            serde_json::from_str(&fs::read_to_string(path_of(&interrupted))?)?;
+        assert_eq!(recovered.status, TaskStatus::Queued);
         Ok(())
     }
 }
