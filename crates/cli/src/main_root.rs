@@ -5897,11 +5897,18 @@ pub(crate) async fn run_interactive(
         .as_ref()
         .and_then(crate::config::TelemetryOtlpConfig::exporter_settings)
     {
-        let otlp = crate::telemetry_otlp::OtlpHttpSink::new(url.to_string(), events, session_log);
-        if boundary.allow_workspace_initialization {
-            otlp.attach();
+        if let Some(otlp) =
+            crate::telemetry_otlp::OtlpHttpSink::new(url.to_string(), events, session_log)
+        {
+            if boundary.allow_workspace_initialization {
+                otlp.attach();
+            }
+            engine_sinks.push(std::sync::Arc::new(otlp));
+        } else {
+            eprintln!(
+                "warning: [telemetry_otlp] exporter not started — the HTTP client could not be built"
+            );
         }
-        engine_sinks.push(std::sync::Arc::new(otlp));
     }
     let engine_telemetry: std::sync::Arc<dyn TelemetrySink> =
         std::sync::Arc::new(TelemetryFanout(engine_sinks));

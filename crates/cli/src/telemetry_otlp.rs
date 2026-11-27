@@ -77,22 +77,25 @@ impl OtlpHttpSink {
     /// `https://collector:4318`); `events` / `session_log` are the two
     /// channel switches from `[telemetry_otlp]`. Constructing the sink
     /// performs **no** network I/O; sending starts only after
-    /// [`attach`](TelemetrySink::attach) (workspace trust).
+    /// [`attach`](TelemetrySink::attach) (workspace trust). `None` when
+    /// the HTTP client cannot be built (no TLS backend, no system
+    /// resolver): there is no exporter then, and nothing panics.
     #[must_use]
-    pub fn new(url: String, events: bool, session_log: bool) -> Self {
-        Self {
+    pub fn new(url: String, events: bool, session_log: bool) -> Option<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .ok()?;
+        Some(Self {
             url,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap_or_default(),
+            client,
             events,
             session_log,
             attached: Arc::new(AtomicBool::new(false)),
             session_log_bytes: Arc::new(AtomicU64::new(0)),
             anonymous_id: Arc::from(anonymous_id()),
             queue: Arc::new(Mutex::new(VecDeque::new())),
-        }
+        })
     }
 
     /// Whether the exporter has been attached (post-trust).
@@ -300,7 +303,8 @@ mod tests {
     #[tokio::test]
     async fn disabled_channels_make_zero_network_calls() {
         let (addr, count, _bodies) = spawn_collector().await;
-        let sink = OtlpHttpSink::new(format!("http://{addr}"), false, false);
+        let sink = OtlpHttpSink::new(format!("http://{addr}"), false, false)
+            .expect("collector client builds");
         sink.attach();
         sink.emit_event(record(1));
         sink.emit_session_log(record(2));
@@ -316,7 +320,8 @@ mod tests {
     #[tokio::test]
     async fn pre_attach_records_never_hit_the_network() {
         let (addr, count, _bodies) = spawn_collector().await;
-        let sink = OtlpHttpSink::new(format!("http://{addr}"), true, true);
+        let sink = OtlpHttpSink::new(format!("http://{addr}"), true, true)
+            .expect("collector client builds");
         sink.emit_event(record(1));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(
@@ -333,7 +338,8 @@ mod tests {
     #[tokio::test]
     async fn enabled_exporter_posts_otlp_records_with_the_anonymous_id() {
         let (addr, count, bodies) = spawn_collector().await;
-        let sink = OtlpHttpSink::new(format!("http://{addr}"), true, false);
+        let sink = OtlpHttpSink::new(format!("http://{addr}"), true, false)
+            .expect("collector client builds");
         sink.attach();
         sink.emit_event(record(7));
         wait_for(&count, 1).await;
@@ -356,7 +362,8 @@ mod tests {
     #[tokio::test]
     async fn session_log_channel_is_byte_capped() {
         let (addr, count, _bodies) = spawn_collector().await;
-        let sink = OtlpHttpSink::new(format!("http://{addr}"), false, true);
+        let sink = OtlpHttpSink::new(format!("http://{addr}"), false, true)
+            .expect("collector client builds");
         sink.attach();
         let big = "x".repeat(1024);
         let mut budgeted = 0usize;
