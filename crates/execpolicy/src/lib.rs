@@ -591,12 +591,15 @@ fn normalize_deny_segment(segment: &str) -> String {
 }
 
 /// Splits a raw shell command on the operators that chain further commands
-/// (`;`, `&&`, `||`, `|`, newlines, backticks, `$(`), so prefix rules can be
+/// (`;`, `&&`, `||`, `|`, newlines, backticks, `$(`, `<(`), so prefix rules can be
 /// evaluated against every segment instead of only the first word.
 fn command_segments(command: &str) -> Vec<String> {
     command
         .split([';', '|', '&', '\n', '\r', '`'])
         .flat_map(|chunk| chunk.split("$("))
+        // Process substitution runs a command of its own (`<(sh -c …)`).
+        .flat_map(|chunk| chunk.split("<("))
+        .flat_map(|chunk| chunk.split(">("))
         .map(str::trim)
         .filter(|segment| !segment.is_empty())
         .map(str::to_string)
@@ -1077,6 +1080,23 @@ mod tests {
 
         let decision = engine
             .check(ctx("git status; rm -rf /", AskForApproval::UnlessTrusted))
+            .unwrap();
+        assert!(decision.allow);
+        assert!(decision.requires_approval);
+        assert_eq!(decision.matched_rule, None);
+    }
+
+    #[test]
+    fn trusted_prefix_does_not_cover_process_substitution() {
+        // `git status <(sh -c '…')` was one segment to a splitter that did
+        // not know `<(`: the trusted rule covered the substituted command.
+        let engine = ExecPolicyEngine::new(vec!["git status".to_string()], vec![]);
+
+        let decision = engine
+            .check(ctx(
+                "git status <(sh -c 'rm -rf ~')",
+                AskForApproval::UnlessTrusted,
+            ))
             .unwrap();
         assert!(decision.allow);
         assert!(decision.requires_approval);
