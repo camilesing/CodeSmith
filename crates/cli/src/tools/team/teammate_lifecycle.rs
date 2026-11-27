@@ -21,8 +21,7 @@ use crate::tools::task_v2::{SharedTaskV2Manager, TaskV2Record, TaskV2Status};
 use crate::tools::team::protocol_handlers::{PermissionDecision, SharedPermissionRequestRegistry};
 use crate::tools::team::{
     IdleReason, StructuredProtocolMessage, TeammateMessage, is_structured_protocol_message,
-    mark_messages_as_read, parse_structured_protocol_from, read_unread_messages, team_lead_name,
-    write_to_mailbox,
+    parse_structured_protocol_from, take_unread_messages, team_lead_name, write_to_mailbox,
 };
 
 // ---------------------------------------------------------------------------
@@ -167,8 +166,7 @@ pub fn scan_inbox_with_priority(
     agent_name: &str,
     team_name: &str,
 ) -> anyhow::Result<PriorityInboxResult> {
-    let unread = read_unread_messages(agent_name, team_name)?;
-    mark_messages_as_read(agent_name, team_name)?;
+    let unread = take_unread_messages(agent_name, team_name)?;
 
     let mut result = PriorityInboxResult::default();
 
@@ -639,8 +637,7 @@ pub fn process_inbox_messages(
     agent_name: &str,
     team_name: &str,
 ) -> anyhow::Result<(Vec<StructuredProtocolMessage>, Vec<TeammateMessage>)> {
-    let unread = read_unread_messages(agent_name, team_name)?;
-    mark_messages_as_read(agent_name, team_name)?;
+    let unread = take_unread_messages(agent_name, team_name)?;
 
     let mut protocol_msgs = Vec::new();
     let mut text_msgs = Vec::new();

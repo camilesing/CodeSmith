@@ -47,5 +47,5 @@ pub use team_memory::{
 pub use teammate_lifecycle::{TeammateRuntime, process_inbox_messages, run_teammate_loop};
 pub use teammate_mailbox::{
     IdleReason, StructuredProtocolMessage, TeammateMessage, is_structured_protocol_message,
-    mark_messages_as_read, parse_structured_protocol_from, read_unread_messages, write_to_mailbox,
+    parse_structured_protocol_from, take_unread_messages, write_to_mailbox,
 };

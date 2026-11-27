@@ -391,7 +391,9 @@ pub fn read_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<Vec<Tea
     }
 }
 
-/// Read only unread messages from a teammate's inbox.
+/// Read only unread messages from a teammate's inbox. Tests only: the
+/// scanners take and mark in one step ([`take_unread_messages`]).
+#[cfg(test)]
 pub fn read_unread_messages(
     agent_name: &str,
     team_name: &str,
@@ -428,7 +430,49 @@ pub fn write_to_mailbox(
     Ok(())
 }
 
-/// Mark all messages in a teammate's inbox as read.
+/// Take a teammate's unread messages and mark the inbox read in ONE
+/// critical section. Reading and marking used to be two acquisitions of the
+/// lock: a delivery landing in between was marked read without ever being
+/// returned — lost with no trace.
+pub fn take_unread_messages(
+    agent_name: &str,
+    team_name: &str,
+) -> anyhow::Result<Vec<TeammateMessage>> {
+    ensure_inbox_owner(agent_name, team_name, false)?;
+    let path = inbox_path(agent_name, team_name)?;
+    let mut lock = acquire_inbox_lock(agent_name, team_name)?;
+    let _guard = lock.write()?;
+    // Decide existence under the write lock — the pre-lock check raced
+    // with delivery, so a message arriving in the window was left unmarked.
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let messages: Vec<TeammateMessage> = read_inbox_or_quarantine(&path)?;
+    let unread = messages.iter().filter(|m| !m.read).cloned().collect();
+    let mut updated: Vec<TeammateMessage> = messages
+        .into_iter()
+        .map(|mut m| {
+            m.read = true;
+            m
+        })
+        .collect();
+    // Retention cap: nothing else ever removes messages, so a long-running
+    // team's inbox grew without bound while every delivery re-serialized
+    // the whole array (O(n²) cumulative). Read messages are not fully
+    // pruned because read history is still consulted (the shutdown-approval
+    // binding check scans for the outstanding request).
+    if updated.len() > INBOX_RETENTION_LIMIT {
+        let drop = updated.len() - INBOX_RETENTION_LIMIT;
+        updated.drain(..drop);
+    }
+    let json = serde_json::to_string(&updated)?;
+    write_inbox_atomic(&path, &json)?;
+    Ok(unread)
+}
+
+/// Mark all messages in a teammate's inbox as read. Tests only — the
+/// scanners take and mark in one step ([`take_unread_messages`]).
+#[cfg(test)]
 pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
     ensure_inbox_owner(agent_name, team_name, false)?;
     let path = inbox_path(agent_name, team_name)?;
@@ -889,5 +933,39 @@ mod tests {
         let unread = read_unread_messages("worker1", "mb-unread").expect("unread");
         assert_eq!(unread.len(), 1);
         assert_eq!(unread[0].text, "three");
+    }
+
+    /// The scanners take and mark in one call: the unread messages come
+    /// back and nothing is left unread. A contract test for the single-call
+    /// API; the race it closes — a delivery landing between a read and a
+    /// later mark — has no deterministic unit form.
+    #[test]
+    fn take_unread_messages_returns_the_unread_and_marks_the_inbox() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team_file("mb-take")).expect("team");
+        write_to_mailbox("worker1", "mb-take", make_message("leader", "one")).expect("write1");
+        write_to_mailbox("worker1", "mb-take", make_message("leader", "two")).expect("write2");
+
+        let taken = take_unread_messages("worker1", "mb-take").expect("take");
+        let texts: Vec<&str> = taken.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["one", "two"]);
+        assert!(
+            read_unread_messages("worker1", "mb-take")
+                .expect("unread")
+                .is_empty(),
+            "everything taken is marked read"
+        );
+        assert!(
+            take_unread_messages("worker1", "mb-take")
+                .expect("take")
+                .is_empty(),
+            "nothing is returned twice"
+        );
+
+        // An inbox that does not exist yet is an empty take, not an error.
+        write_to_mailbox("worker2", "mb-take", make_message("leader", "fresh")).expect("write");
+        let taken = take_unread_messages("worker2", "mb-take").expect("take");
+        assert_eq!(taken.len(), 1);
     }
 }
