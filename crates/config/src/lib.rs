@@ -1817,10 +1817,13 @@ impl ConfigToml {
 
     /// Resolve runtime options without touching platform credential stores.
     ///
-    /// This method keeps library callers prompt-free: CLI flag → config file
-    /// → environment. Call `resolve_runtime_options_with_secrets` when a
-    /// user-facing dispatcher should recover credentials from the configured
-    /// secret store.
+    /// This method keeps library callers prompt-free. Precedence for every
+    /// value but the API key is CLI flag → environment → config file →
+    /// built-in default; the API key is the exception (CLI → config file →
+    /// secret store → environment, see below). Call
+    /// `resolve_runtime_options_with_secrets` when a user-facing dispatcher
+    /// should recover credentials from the configured secret store. An
+    /// unreadable environment override is an error.
     pub fn resolve_runtime_options(
         &self,
         cli: &CliRuntimeOverrides,

@@ -29,8 +29,8 @@
 //!
 //! The *active* preset is chosen by `--preset <name>` on the CLI, else the
 //! `preset` key in `config.toml` (the legacy `mode` key still works as a
-//! deprecated alias), else `middle`, else the last preset selected in the
-//! interactive REPL (persisted in `settings.toml`).
+//! deprecated alias), else the last preset selected in the interactive REPL
+//! (persisted in `settings.toml`), else `middle`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
