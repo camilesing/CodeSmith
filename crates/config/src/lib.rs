@@ -2443,31 +2443,12 @@ impl ConfigStore {
             })?;
         }
         let body = toml::to_string_pretty(&self.config).context("failed to serialize config")?;
-        #[cfg(unix)]
-        {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&self.path)
-                .with_context(|| format!("failed to write config at {}", self.path.display()))?;
-            file.write_all(body.as_bytes())
-                .with_context(|| format!("failed to write config at {}", self.path.display()))?;
-            file.set_permissions(fs::Permissions::from_mode(0o600))
-                .with_context(|| {
-                    format!(
-                        "failed to set config permissions at {}",
-                        self.path.display()
-                    )
-                })?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(&self.path, body)
-                .with_context(|| format!("failed to write config at {}", self.path.display()))?;
-        }
-        Ok(())
+        // Atomic — a fsynced sibling temp file renamed over the target —
+        // like every other config write. Truncating the live file in place
+        // used to leave it empty or torn on a crash. A symlinked config
+        // keeps being followed.
+        let target = fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
+        write_config_file_private(&target, &body)
     }
 
     #[must_use]
@@ -4124,6 +4105,96 @@ unix_socket_path = "/tmp/cw-hooks.sock"
             .unset_value("providers.volcengine.http_headers")
             .expect("unset");
         assert_eq!(config.get_value("providers.volcengine.http_headers"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_the_file_instead_of_truncating_it() {
+        use std::os::unix::fs::MetadataExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "codesmith-config-atomic-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join(CONFIG_FILE_NAME);
+        fs::write(&path, "api_key = \"old\"\n").expect("seed config");
+        let before = fs::metadata(&path).expect("seed metadata");
+
+        let store = ConfigStore {
+            path: path.clone(),
+            config: ConfigToml {
+                api_key: Some("new-secret".to_string()),
+                ..ConfigToml::default()
+            },
+        };
+        store.save().expect("save");
+
+        // Rename-based: a different inode, the new contents, owner-only.
+        let after = fs::metadata(&path).expect("metadata");
+        assert_ne!(
+            (before.dev(), before.ino()),
+            (after.dev(), after.ino()),
+            "save truncated the live file in place"
+        );
+        assert!(
+            fs::read_to_string(&path)
+                .expect("read back")
+                .contains("new-secret")
+        );
+        assert_eq!(after.permissions().mode() & 0o777, 0o600);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_follows_a_symlinked_config() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "codesmith-config-symlink-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let real = dir.join("dotfiles-config.toml");
+        let link = dir.join(CONFIG_FILE_NAME);
+        fs::write(&real, "api_key = \"old\"\n").expect("seed config");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let store = ConfigStore {
+            path: link.clone(),
+            config: ConfigToml {
+                api_key: Some("new-secret".to_string()),
+                ..ConfigToml::default()
+            },
+        };
+        store.save().expect("save");
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink(),
+            "the link itself must survive"
+        );
+        assert_eq!(fs::read_link(&link).expect("target"), real);
+        assert!(
+            fs::read_to_string(&real)
+                .expect("read back")
+                .contains("new-secret")
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
