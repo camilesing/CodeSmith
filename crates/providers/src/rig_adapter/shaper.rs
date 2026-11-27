@@ -89,8 +89,10 @@ pub(crate) enum MaxTokensSpec {
 }
 
 /// Default shaper for the OpenAI / OpenAI-compatible / DeepSeek family: system
-/// is plain text, `thinking` / `reasoning_effort` / `metadata` pass straight
-/// through, tools map 1:1 onto `ToolDefinition`. Used as-is by `openai`,
+/// is plain text, `thinking` / `metadata` pass straight through,
+/// `reasoning_effort` is translated per provider by
+/// `reasoning::apply_reasoning_effort` (not forwarded verbatim), tools map
+/// 1:1 onto `ToolDefinition`. Used as-is by `openai`,
 /// `openai-compat`, and `deepseek`; `anthropic` has its own shaper. Compiled
 /// only when at least one of those features is enabled — the `anthropic`-only
 /// Lego build pulls in neither this type nor its `RequestShaper` impl.
