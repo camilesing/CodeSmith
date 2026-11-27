@@ -473,7 +473,7 @@ pub fn scan(source: Source, home: Option<&Path>, workspace: &Path) -> Found {
 }
 
 /// `/import` — report, and with `--yes` write.
-pub fn run(state: &ReplState, arg: &str, yes: bool) {
+pub async fn run(state: &ReplState, arg: &str, yes: bool) {
     let words: Vec<String> = arg
         .split_whitespace()
         .map(|word| word.to_ascii_lowercase())
@@ -509,8 +509,27 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
     let home = crate::config::effective_home_dir();
     println!("{}", "importing from other agent CLIs".bold());
     let mut candidates: Vec<ImportedServer> = Vec::new();
-    for source in sources {
-        let found = scan(source, home.as_deref(), &state.workspace);
+    // The source configs are read and parsed off the runtime —
+    // `~/.claude.json` alone is often megabytes.
+    let (workspace, home_for_scan) = (state.workspace.clone(), home.clone());
+    let scanned = tokio::task::spawn_blocking(move || {
+        sources
+            .into_iter()
+            .map(|source| {
+                let found = scan(source, home_for_scan.as_deref(), &workspace);
+                (source, found)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    let scanned = match scanned {
+        Ok(scanned) => scanned,
+        Err(err) => {
+            println!("{} import worker failed: {err}", "✗".red());
+            return;
+        }
+    };
+    for (source, found) in scanned {
         println!();
         println!("{}", source.label().bold());
         for path in &found.read_files {
@@ -546,7 +565,13 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
     // arm means an existing mcp.json that is unreadable/unparseable. With
     // `--yes` the later save would then overwrite it with only the
     // imported servers — silently destroying the user's existing config.
-    let mut config = match codesmith_agent_runtime::mcp::load_config(&config_path) {
+    let loaded = tokio::task::spawn_blocking({
+        let path = config_path.clone();
+        move || codesmith_agent_runtime::mcp::load_config(&path)
+    })
+    .await
+    .unwrap_or_else(|err| Err(err.into()));
+    let mut config = match loaded {
         Ok(config) => config,
         Err(err) => {
             println!(
@@ -617,7 +642,13 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
         println!("{}", "nothing new to add".dimmed());
         return;
     }
-    match codesmith_agent_runtime::mcp::save_config(&config_path, &config) {
+    let saved = tokio::task::spawn_blocking({
+        let path = config_path.clone();
+        move || codesmith_agent_runtime::mcp::save_config(&path, &config)
+    })
+    .await
+    .unwrap_or_else(|err| Err(err.into()));
+    match saved {
         Ok(()) => println!(
             "{}",
             format!(
@@ -633,6 +664,9 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
 
@@ -1068,8 +1102,8 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
 
     /// `/import claude` without `--yes` is a report: nothing is written and
     /// no config file appears.
-    #[test]
-    fn run_dry_run_reports_without_writing() {
+    #[tokio::test]
+    async fn run_dry_run_reports_without_writing() {
         let _env = scratch_env();
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
         write(
@@ -1081,7 +1115,7 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
         let mcp_path = out.path().join("mcp.json");
         let state = test_repl_state(mcp_path.clone());
 
-        run(&state, "claude", false);
+        run(&state, "claude", false).await;
 
         assert!(
             !mcp_path.exists(),
@@ -1091,8 +1125,8 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
 
     /// `/import claude --yes` writes the found server into the configured
     /// `mcp.json`.
-    #[test]
-    fn run_with_yes_writes_the_found_servers() {
+    #[tokio::test]
+    async fn run_with_yes_writes_the_found_servers() {
         let _env = scratch_env();
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
         write(
@@ -1104,7 +1138,7 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
         let mcp_path = out.path().join("mcp.json");
         let state = test_repl_state(mcp_path.clone());
 
-        run(&state, "claude", true);
+        run(&state, "claude", true).await;
 
         let body = std::fs::read_to_string(&mcp_path).expect("mcp.json written");
         let config: serde_json::Value = serde_json::from_str(&body).expect("mcp.json parses");
@@ -1121,8 +1155,8 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
 
     /// A name already present in the target config is left alone — the
     /// existing entry wins.
-    #[test]
-    fn run_leaves_pre_configured_names_alone() {
+    #[tokio::test]
+    async fn run_leaves_pre_configured_names_alone() {
         let _env = scratch_env();
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
         write(
@@ -1139,7 +1173,7 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
         .unwrap();
         let state = test_repl_state(mcp_path.clone());
 
-        run(&state, "claude", true);
+        run(&state, "claude", true).await;
 
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
@@ -1157,8 +1191,8 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
 
     /// Two sources defining the same name import it once (dry run and write
     /// agree on which one).
-    #[test]
-    fn run_deduplicates_a_name_shared_by_two_sources() {
+    #[tokio::test]
+    async fn run_deduplicates_a_name_shared_by_two_sources() {
         let _env = scratch_env();
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
         write(
@@ -1176,7 +1210,7 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
         let mcp_path = out.path().join("mcp.json");
         let state = test_repl_state(mcp_path.clone());
 
-        run(&state, "claude cursor", true);
+        run(&state, "claude cursor", true).await;
 
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
@@ -1191,8 +1225,8 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
 
     /// A typo'd source word with `--yes` must not fall through to "all
     /// sources" and write everything it finds.
-    #[test]
-    fn run_with_only_rejected_source_words_scans_nothing() {
+    #[tokio::test]
+    async fn run_with_only_rejected_source_words_scans_nothing() {
         let _env = scratch_env();
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
         write(
@@ -1204,7 +1238,7 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
         let mcp_path = out.path().join("mcp.json");
         let state = test_repl_state(mcp_path.clone());
 
-        run(&state, "claudee --yes", true);
+        run(&state, "claudee --yes", true).await;
 
         assert!(
             !mcp_path.exists(),
@@ -1215,14 +1249,14 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
     /// No positional word scans every source; with nothing found the
     /// command reports and writes nothing (also covers each source's
     /// extra-notes surface on a present home).
-    #[test]
-    fn run_without_a_source_word_scans_every_source_and_finds_nothing() {
+    #[tokio::test]
+    async fn run_without_a_source_word_scans_every_source_and_finds_nothing() {
         let _env = scratch_env();
         let out = tempfile::tempdir().expect("tempdir");
         let mcp_path = out.path().join("mcp.json");
         let state = test_repl_state(mcp_path.clone());
 
-        run(&state, "--dry-run", false);
+        run(&state, "--dry-run", false).await;
 
         assert!(
             !mcp_path.exists(),
@@ -1232,8 +1266,8 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
 
     /// An existing `mcp.json` that cannot be parsed is never overwritten —
     /// with `--yes` the save would otherwise destroy the user's config.
-    #[test]
-    fn run_refuses_to_clobber_an_unparseable_config() {
+    #[tokio::test]
+    async fn run_refuses_to_clobber_an_unparseable_config() {
         let _env = scratch_env();
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
         write(
@@ -1246,7 +1280,7 @@ env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
         std::fs::write(&mcp_path, "{definitely not json").unwrap();
         let state = test_repl_state(mcp_path.clone());
 
-        run(&state, "claude", true);
+        run(&state, "claude", true).await;
 
         assert_eq!(
             std::fs::read_to_string(&mcp_path).unwrap(),

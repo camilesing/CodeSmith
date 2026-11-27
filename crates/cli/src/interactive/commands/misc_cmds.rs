@@ -1,6 +1,12 @@
 //! Remaining REPL commands — ports of the smaller `commands/` modules
 //! plus honest degradation notes for composer-bound features (queue,
 //! stash) that have no line-mode equivalent yet.
+//!
+//! Known limitation (the blocking-call convention): `/anchor`, `/note`
+//! and `/attach` do their file work — one small local read or atomic
+//! write each — inline on the runtime. The handlers that walk
+//! directories, take the config lock or read whole logs run theirs on
+//! the blocking pool.
 
 use colored::Colorize;
 
@@ -10,8 +16,17 @@ use crate::config::ApiProvider;
 use crate::config::MemoryDecider;
 
 /// `/init` — write AGENTS.md when it is missing (reuses the legacy generator).
-pub fn init(state: &ReplState) {
-    let workspace = &state.workspace;
+pub async fn init(state: &ReplState) {
+    // The generator stats the project's manifests and the template is
+    // written synchronously: on the blocking pool, not the runtime.
+    let workspace = state.workspace.clone();
+    tokio::task::spawn_blocking(move || init_sync(&workspace))
+        .await
+        .ok();
+}
+
+/// [`init`]'s body — everything it touches is under `workspace`.
+fn init_sync(workspace: &std::path::Path) {
     super::project_doc::ensure_codesmith_gitignored(workspace);
     let agents_path = workspace.join("AGENTS.md");
     if agents_path.exists() {
@@ -186,9 +201,14 @@ pub async fn mcp(state: &mut ReplState, args: &str) {
     if let Err(err) = crate::main_root::run_mcp_command(&state.config, command).await {
         println!("{} {err}", "✗".red());
     }
-    state.mcp_configured_count = codesmith_agent_runtime::mcp::load_config(&state.mcp_config_path)
-        .map(|cfg| cfg.servers.len())
-        .unwrap_or(0);
+    let mcp_config_path = state.mcp_config_path.clone();
+    state.mcp_configured_count = tokio::task::spawn_blocking(move || {
+        codesmith_agent_runtime::mcp::load_config(&mcp_config_path)
+    })
+    .await
+    .ok()
+    .and_then(|cfg| cfg.ok())
+    .map_or(0, |cfg| cfg.servers.len());
 }
 
 /// The transport words `/mcp add` accepts — the same set the runtime's
@@ -203,10 +223,18 @@ fn is_known_transport(word: &str) -> bool {
 /// `/network [list|allow|host>|deny <host>|remove <host>|default <policy>]`
 /// `/network …` edits the session's own config file (the one `--config`
 /// selected), so the rule lands where this configuration reads it.
-pub fn network(state: &ReplState, arg: Option<&str>) {
-    match super::network_store::network_inner(arg, state.config_path.as_deref()) {
-        Ok(message) => println!("{message}"),
-        Err(err) => println!("{} {err}", "✗".red()),
+pub async fn network(state: &ReplState, arg: Option<&str>) {
+    // The edit is a locked read-modify-write of config.toml: on the
+    // blocking pool, not the runtime.
+    let (config_path, arg) = (state.config_path.clone(), arg.map(str::to_string));
+    match tokio::task::spawn_blocking(move || {
+        super::network_store::network_inner(arg.as_deref(), config_path.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(message)) => println!("{message}"),
+        Ok(Err(err)) => println!("{} {err}", "✗".red()),
+        Err(err) => println!("{} network worker failed: {err}", "✗".red()),
     }
 }
 
@@ -445,10 +473,18 @@ pub fn balance(state: &ReplState) {
 }
 
 /// `/verify [stats]`
-pub fn verify(arg: Option<&str>) {
+pub async fn verify(arg: Option<&str>) {
     let arg = arg.map(str::trim).filter(|s| !s.is_empty());
     match arg {
-        None | Some("stats") => println!("{}", verify_stats_text()),
+        // The verdict log is read and parsed in full: on the blocking pool.
+        None | Some("stats") => {
+            let text = tokio::task::spawn_blocking(verify_stats_text)
+                .await
+                .unwrap_or_else(|err| {
+                    format!("claim-check stats unavailable (worker failed): {err}")
+                });
+            println!("{text}");
+        }
         Some(other) => println!(
             "{} unknown subcommand '{other}' — usage: /verify [stats]",
             "✗".red()
@@ -1163,11 +1199,21 @@ fn changelog_sections(text: &str) -> Vec<(String, String)> {
 /// (`prompts::build_system_prompt`'s `skills_block`), which the session
 /// pins as its cache prefix — so this reports what is on disk now and says
 /// plainly that the model sees it on the next prompt rebuild.
-pub fn reload_skills(state: &mut ReplState) {
-    let registry = codesmith_agent_runtime::skills::discover_for_workspace_and_dir(
-        &state.workspace,
-        &state.skills_dir,
-    );
+pub async fn reload_skills(state: &mut ReplState) {
+    // Discovery walks every skill root and reads each SKILL.md: on the
+    // blocking pool, not the runtime.
+    let (workspace, skills_dir) = (state.workspace.clone(), state.skills_dir.clone());
+    let registry = match tokio::task::spawn_blocking(move || {
+        codesmith_agent_runtime::skills::discover_for_workspace_and_dir(&workspace, &skills_dir)
+    })
+    .await
+    {
+        Ok(registry) => registry,
+        Err(err) => {
+            println!("{} skills worker failed: {err}", "✗".red());
+            return;
+        }
+    };
     let names: Vec<String> = registry
         .list()
         .iter()
@@ -1222,11 +1268,16 @@ pub async fn reload_plugins(state: &ReplState, force: bool) {
     println!("{}", "reloading mods, extensions, and skills".bold());
     super::mods_cmds::mods_command(state, "reload").await;
     super::extension_cmds::extension_command(state, "reload").await;
-    let registry = codesmith_agent_runtime::skills::discover_for_workspace_and_dir(
-        &state.workspace,
-        &state.skills_dir,
-    );
-    println!("skills: {} available", registry.list().len());
+    // The skill walk is filesystem work: on the blocking pool.
+    let (workspace, skills_dir) = (state.workspace.clone(), state.skills_dir.clone());
+    let count = tokio::task::spawn_blocking(move || {
+        codesmith_agent_runtime::skills::discover_for_workspace_and_dir(&workspace, &skills_dir)
+            .list()
+            .len()
+    })
+    .await
+    .unwrap_or(0);
+    println!("skills: {count} available");
     if !force {
         println!(
             "{}",
@@ -1436,7 +1487,7 @@ pub(crate) fn memory_file(state: &ReplState) -> std::path::PathBuf {
 /// `/memory [show|path|clear|edit|help]` — inspect, clear, or open the
 /// memory file. `edit` deliberately just prints the editor command rather
 /// than spawning an editor in-process.
-pub fn memory(state: &ReplState, arg: Option<&str>) {
+pub async fn memory(state: &ReplState, arg: Option<&str>) {
     let sub = arg.map(str::trim).unwrap_or("show").to_ascii_lowercase();
     let path = memory_file(state);
     match sub.as_str() {
@@ -1479,12 +1530,19 @@ pub fn memory(state: &ReplState, arg: Option<&str>) {
         }
         "auto on" | "auto off" => {
             let value = sub == "auto on";
-            match super::config_cmds::persist_section_bool(
-                state.config_path.as_deref(),
-                "memory",
-                "enabled",
-                value,
-            ) {
+            // A locked read-modify-write of config.toml: on the blocking pool.
+            let (config_path, value) = (state.config_path.clone(), value);
+            match tokio::task::spawn_blocking(move || {
+                super::config_cmds::persist_section_bool(
+                    config_path.as_deref(),
+                    "memory",
+                    "enabled",
+                    value,
+                )
+            })
+            .await
+            .unwrap_or_else(|err| Err(err.into()))
+            {
                 Ok(written) => {
                     println!(
                         "auto memory = {} — saved to {}; it applies from the next session",
@@ -1502,7 +1560,7 @@ pub fn memory(state: &ReplState, arg: Option<&str>) {
         }
         "" | "show" => {
             println!("memory file: {}", path.display());
-            match std::fs::read_to_string(&path) {
+            match tokio::fs::read_to_string(&path).await {
                 Ok(content) if content.trim().is_empty() => {
                     println!("{}", "(empty)".dimmed());
                 }
@@ -1515,13 +1573,14 @@ pub fn memory(state: &ReplState, arg: Option<&str>) {
         }
         "path" => println!("{}", path.display()),
         "clear" => {
-            if let Some(parent) = path.parent()
-                && let Err(err) = std::fs::create_dir_all(parent)
-            {
-                println!("{} clear failed: {err}", "✗".red());
-                return;
-            }
-            match codesmith_agent_runtime::utils::write_atomic(&path, b"") {
+            // One small truncation, on the blocking pool.
+            let cleared = tokio::task::spawn_blocking({
+                let path = path.clone();
+                move || clear_memory_file(&path)
+            })
+            .await
+            .unwrap_or_else(|err| Err(err.into()));
+            match cleared {
                 Ok(()) => println!("cleared {}", path.display()),
                 Err(err) => println!("{} clear failed: {err}", "✗".red()),
             }
@@ -1544,6 +1603,15 @@ pub fn memory(state: &ReplState, arg: Option<&str>) {
             "✗".red()
         ),
     }
+}
+
+/// Truncate the memory file, creating its directory — the file half of
+/// `/memory clear`.
+fn clear_memory_file(path: &std::path::Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(codesmith_agent_runtime::utils::write_atomic(path, b"")?)
 }
 
 /// `#`-prefix quick memory: a line starting with exactly one `#` (but not
@@ -1685,7 +1753,7 @@ mod tests {
         )
         .expect("write");
         let state = state_in(tmp.path());
-        init(&state);
+        init_sync(&state.workspace);
         let after = std::fs::read_to_string(tmp.path().join("AGENTS.md")).expect("read");
         assert!(
             after.contains("hand-maintained guidance"),
@@ -1694,7 +1762,7 @@ mod tests {
 
         // Missing: the template is written.
         let fresh = tempfile::tempdir().expect("tempdir");
-        init(&state_in(fresh.path()));
+        init_sync(fresh.path());
         assert!(fresh.path().join("AGENTS.md").is_file());
     }
 
@@ -1729,18 +1797,18 @@ mod tests {
         hooks(&state, Some("explode"));
     }
 
-    #[test]
-    fn network_command_reports_and_validates() {
+    #[tokio::test]
+    async fn network_command_reports_and_validates() {
         let _env = scratch_env();
         let state = state_in(&std::env::temp_dir());
-        network(&state, None);
-        network(&state, Some("list"));
-        network(&state, Some("deny"));
-        network(&state, Some("bogus subcommand"));
+        network(&state, None).await;
+        network(&state, Some("list")).await;
+        network(&state, Some("deny")).await;
+        network(&state, Some("bogus subcommand")).await;
     }
 
-    #[test]
-    fn readouts_cover_provider_and_empty_states() {
+    #[tokio::test]
+    async fn readouts_cover_provider_and_empty_states() {
         let _env = scratch_env();
         let mut state = state_in(&std::env::temp_dir());
         jobs(&state);
@@ -1750,9 +1818,9 @@ mod tests {
         links(&state);
         home(&state);
         queue(&state);
-        verify(None);
-        verify(Some("stats"));
-        verify(Some("everything"));
+        verify(None).await;
+        verify(Some("stats")).await;
+        verify(Some("everything")).await;
         stash();
         cycles();
         relay();
@@ -1929,12 +1997,12 @@ mod tests {
         release_notes(&state, Some("no-such-version"));
     }
 
-    #[test]
-    fn reload_skills_tracks_baseline_changes() {
+    #[tokio::test]
+    async fn reload_skills_tracks_baseline_changes() {
         let _env = scratch_env();
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut state = state_in(tmp.path());
-        reload_skills(&mut state); // establishes the baseline
+        reload_skills(&mut state).await; // establishes the baseline
         let skill_dir = tmp.path().join("skills").join("fresh-skill");
         std::fs::create_dir_all(&skill_dir).expect("mkdir");
         std::fs::write(
@@ -1942,27 +2010,27 @@ mod tests {
             "---\nname: fresh-skill\ndescription: Appeared later\n---\nBody",
         )
         .expect("write");
-        reload_skills(&mut state); // + fresh-skill
+        reload_skills(&mut state).await; // + fresh-skill
         std::fs::remove_dir_all(&skill_dir).expect("remove");
-        reload_skills(&mut state); // - fresh-skill
+        reload_skills(&mut state).await; // - fresh-skill
     }
 
-    #[test]
-    fn memory_command_subcommands_on_scratch_files() {
+    #[tokio::test]
+    async fn memory_command_subcommands_on_scratch_files() {
         let _env = scratch_env();
         let tmp = tempfile::tempdir().expect("tempdir");
         let state = state_in(tmp.path());
 
-        memory(&state, None); // show (missing file)
-        memory(&state, Some("show"));
-        memory(&state, Some("path"));
-        memory(&state, Some("help"));
-        memory(&state, Some("edit"));
-        memory(&state, Some("clear"));
-        memory(&state, Some("auto"));
-        memory(&state, Some("auto on")); // persists to isolated config.toml
-        memory(&state, Some("auto off"));
-        memory(&state, Some("bogus"));
+        memory(&state, None).await; // show (missing file)
+        memory(&state, Some("show")).await;
+        memory(&state, Some("path")).await;
+        memory(&state, Some("help")).await;
+        memory(&state, Some("edit")).await;
+        memory(&state, Some("clear")).await;
+        memory(&state, Some("auto")).await;
+        memory(&state, Some("auto on")).await; // persists to isolated config.toml
+        memory(&state, Some("auto off")).await;
+        memory(&state, Some("bogus")).await;
     }
 
     #[test]

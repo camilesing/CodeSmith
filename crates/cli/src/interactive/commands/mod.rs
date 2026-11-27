@@ -452,7 +452,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             let yes = arg_str
                 .split_whitespace()
                 .any(|word| word == "--yes" || word == "-y");
-            import_cmds::run(state, &arg_str, yes);
+            import_cmds::run(state, &arg_str, yes).await;
             false
         }
         Command::Cd => {
@@ -547,7 +547,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::ReloadSkills => {
-            misc_cmds::reload_skills(state);
+            misc_cmds::reload_skills(state).await;
             false
         }
         Command::ReloadPlugins => {
@@ -562,7 +562,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Init => {
-            misc_cmds::init(state);
+            misc_cmds::init(state).await;
             false
         }
         Command::Hooks => {
@@ -588,7 +588,8 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
                 } else {
                     Some(&arg_str)
                 },
-            );
+            )
+            .await;
             false
         }
         Command::Goal => {
@@ -629,7 +630,8 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
                 None
             } else {
                 Some(&arg_str)
-            });
+            })
+            .await;
             false
         }
         Command::CodeReview => {
@@ -817,7 +819,8 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
                 } else {
                     Some(&arg_str)
                 },
-            );
+            )
+            .await;
             false
         }
         Command::Set => {
