@@ -186,7 +186,7 @@ impl ToolSpec for RlmOpenTool {
             ));
         }
 
-        let (body, source_type, source_hint) = load_source(&input, context).await?;
+        let (body, source_type, source_hint, truncated) = load_source(&input, context).await?;
         if body.trim().is_empty() {
             return Err(ToolError::invalid_input(
                 "rlm_open: input is empty after loading",
@@ -247,15 +247,18 @@ impl ToolSpec for RlmOpenTool {
             sessions.insert(name.clone(), Arc::new(tokio::sync::Mutex::new(session)));
         }
 
-        ToolResult::json(&json!({
+        let mut output = json!({
             "name": name,
             "id": id,
             "length": context_meta.length,
             "type": context_meta.type_name,
             "preview_500": context_meta.preview_500,
             "sha256": context_meta.sha256,
-        }))
-        .map_err(|e| ToolError::execution_failed(e.to_string()))
+        });
+        if truncated {
+            output["truncated"] = json!(true);
+        }
+        ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -617,10 +620,11 @@ impl ToolSpec for RlmCloseTool {
     }
 }
 
+/// Load the one source the input names: `(body, type, hint, truncated)`.
 async fn load_source(
     input: &Value,
     context: &ToolContext,
-) -> Result<(String, String, Option<String>), ToolError> {
+) -> Result<(String, String, Option<String>, bool), ToolError> {
     if let Some(path) = rlm_open_source_field(input, "file_path").map(str::trim) {
         let resolved = context.resolve_path(path)?;
         // Cap before reading: a multi-gigabyte file would otherwise be fully
@@ -641,7 +645,7 @@ async fn load_source(
         let body = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
             ToolError::execution_failed(format!("rlm_open: read {}: {e}", resolved.display()))
         })?;
-        return Ok((body, "file".to_string(), Some(path.to_string())));
+        return Ok((body, "file".to_string(), Some(path.to_string()), false));
     }
 
     if let Some(content) = rlm_open_source_field(input, "content") {
@@ -651,7 +655,7 @@ async fn load_source(
                 content.chars().count()
             )));
         }
-        return Ok((content.to_string(), "content".to_string(), None));
+        return Ok((content.to_string(), "content".to_string(), None, false));
     }
 
     if let Some(object_ref) = rlm_open_source_field(input, "session_object") {
@@ -665,6 +669,7 @@ async fn load_source(
             object.body,
             format!("session_object:{}", object.kind),
             Some(object.id),
+            false,
         ));
     }
 
@@ -674,6 +679,20 @@ async fn load_source(
     let mut result = FetchUrlTool
         .execute(json!({"url": url, "format": "raw"}), context)
         .await?;
+    // `fetch_url` answers a non-2xx with `Ok` and `success: false` (the
+    // body is the error page, for callers that want to show it). Loading
+    // that page as the context told the model a context was opened.
+    if !result.success {
+        let status = result
+            .canonical
+            .as_ref()
+            .and_then(|canonical| canonical.get("status"))
+            .and_then(Value::as_u64);
+        return Err(ToolError::execution_failed(format!(
+            "rlm_open: fetching {url} failed (HTTP {})",
+            status.map_or_else(|| "?".to_string(), |status| status.to_string())
+        )));
+    }
     // Program caller of a sibling tool: take the canonical value instead of
     // re-parsing the rendered content — the fetch body can be megabytes, so
     // move it rather than clone (Arc::unwrap_or_clone copies only if the
@@ -695,7 +714,13 @@ async fn load_source(
         .and_then(Value::as_str)
         .unwrap_or("url")
         .to_string();
-    Ok((body, source_type, Some(url.to_string())))
+    // `fetch_url` caps the body at its default `max_bytes`: a cut page is a
+    // prefix of the document, and the caller is told so.
+    let truncated = parsed
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok((body, source_type, Some(url.to_string()), truncated))
 }
 
 fn rlm_open_source_count(input: &Value) -> usize {
@@ -765,6 +790,9 @@ mod tests {
     use codesmith_agent_runtime::rlm::session::SessionObjectSnapshot;
     use codesmith_agent_runtime::test_support::mock_llm::MockLlmClient;
     use codesmith_agent_runtime::tools::spec::ToolContext;
+    use codesmith_agent_runtime::web_service::FetchOutcome;
+    use codesmith_agent_runtime::web_service::mock::MockWebService;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
@@ -833,6 +861,58 @@ mod tests {
             ),
             2
         );
+    }
+
+    fn fetched(status: u16, body: &str, truncated: bool) -> FetchOutcome {
+        FetchOutcome {
+            url: "https://example.com/final".to_string(),
+            status,
+            headers: BTreeMap::new(),
+            content_type: "text/plain".to_string(),
+            body: body.as_bytes().to_vec(),
+            truncated,
+        }
+    }
+
+    /// `fetch_url` hands a non-2xx back as `Ok` with `success: false`; the
+    /// error page used to become the context and the open succeeded.
+    #[tokio::test]
+    async fn rlm_open_refuses_a_url_that_did_not_answer_2xx() {
+        let service = MockWebService::ok().with_fetch(Ok(fetched(404, "Not found", false)));
+        let ctx = ctx().with_web_service(Arc::new(service));
+        let err = RlmOpenTool
+            .execute(
+                json!({"name": "gone", "url": "https://example.com/gone"}),
+                &ctx,
+            )
+            .await
+            .expect_err("a 404 is not a context");
+        assert!(err.to_string().contains("404"), "{err}");
+        assert!(
+            ctx.runtime.rlm_sessions.lock().await.is_empty(),
+            "no session was registered"
+        );
+    }
+
+    /// A document cut by `fetch_url`'s byte cap is a prefix; the result
+    /// says so instead of presenting it as the whole source.
+    #[tokio::test]
+    async fn rlm_open_reports_a_cut_fetch() {
+        let service = MockWebService::ok().with_fetch(Ok(fetched(200, "half a doc", true)));
+        let ctx = ctx().with_web_service(Arc::new(service));
+        let opened = RlmOpenTool
+            .execute(
+                json!({"name": "cut", "url": "https://example.com/big"}),
+                &ctx,
+            )
+            .await
+            .expect("open a prefix");
+        let value: Value = serde_json::from_str(&opened.content).expect("json");
+        assert_eq!(value["truncated"], json!(true), "{value}");
+        RlmCloseTool
+            .execute(json!({"name": "cut"}), &ctx)
+            .await
+            .expect("close");
     }
 
     /// Child queries run on the model the host handed the tool — the
