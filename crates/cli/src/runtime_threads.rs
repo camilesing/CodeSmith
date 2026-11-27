@@ -338,6 +338,14 @@ pub struct TurnRecord {
     pub tool_catalog: Option<Vec<crate::models::Tool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// The model the turn ran on: the request's resolved model (a
+    /// per-turn override or an `auto` route), replaced by the model the
+    /// engine reports at completion. Usage is priced and bucketed by it,
+    /// not by whatever the thread's model is later. `None` on records
+    /// written before the field existed — the thread's model answers for
+    /// them — and on turns that name no model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1657,8 +1665,9 @@ impl RuntimeThreadManager {
 
     /// Aggregate token + cost usage across all threads/turns inside the time
     /// range `[since, until]`. Each turn's cost is computed via
-    /// `pricing::calculate_turn_cost_from_usage` using the *thread*'s model
-    /// (turns inherit it). Whalescale#261 / #564.
+    /// `pricing::calculate_turn_cost_from_usage` using the model the turn
+    /// ran on (`TurnRecord::model`: a per-turn override or an `auto` route;
+    /// the thread's model for records without one). Whalescale#261 / #564.
     ///
     /// Buckets are sorted by ascending key for deterministic output. Empty
     /// ranges produce empty `buckets` (never an error).
@@ -1696,11 +1705,10 @@ impl RuntimeThreadManager {
                 let reasoning = usage.reasoning_tokens.unwrap_or(0) as u64;
                 let input = usage.input_tokens as u64;
                 let output = usage.output_tokens as u64;
-                let cost = codesmith_agent_runtime::pricing::calculate_turn_cost_from_usage(
-                    &thread.model,
-                    usage,
-                )
-                .unwrap_or(0.0);
+                let model = turn.model.as_deref().unwrap_or(thread.model.as_str());
+                let cost =
+                    codesmith_agent_runtime::pricing::calculate_turn_cost_from_usage(model, usage)
+                        .unwrap_or(0.0);
 
                 totals.input_tokens += input;
                 totals.output_tokens += output;
@@ -1711,8 +1719,8 @@ impl RuntimeThreadManager {
 
                 let key = match group_by {
                     UsageGroupBy::Day => turn.created_at.format("%Y-%m-%d").to_string(),
-                    UsageGroupBy::Model => thread.model.clone(),
-                    UsageGroupBy::Provider => provider_label_for_model(&thread.model).to_string(),
+                    UsageGroupBy::Model => model.to_string(),
+                    UsageGroupBy::Provider => provider_label_for_model(model).to_string(),
                     UsageGroupBy::Thread => thread.id.clone(),
                 };
                 let bucket = buckets.entry(key.clone()).or_insert_with(|| UsageBucket {
@@ -2382,6 +2390,7 @@ impl RuntimeThreadManager {
                 steer_count: 0,
                 tool_catalog: None,
                 base_url: None,
+                model: None,
             })?;
 
             thread.latest_turn_id = Some(turn_id);
@@ -2500,6 +2509,7 @@ impl RuntimeThreadManager {
             steer_count: 0,
             tool_catalog: None,
             base_url: None,
+            model: Some(model.clone()),
         };
 
         let user_item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
@@ -3116,6 +3126,7 @@ impl RuntimeThreadManager {
             steer_count: 0,
             tool_catalog: None,
             base_url: None,
+            model: None,
         };
 
         // Check-and-claim under one lock (see `start_turn`). A compaction
@@ -3593,6 +3604,7 @@ impl RuntimeThreadManager {
             steer_count: 0,
             tool_catalog: None,
             base_url: None,
+            model: None,
         };
 
         // Marker user item: the engine's real wake message (and the drained
@@ -3836,6 +3848,7 @@ impl RuntimeThreadManager {
         // Event-sourcing slice 2 — the turn's request envelope.
         let mut turn_tool_catalog: Option<Vec<crate::models::Tool>> = None;
         let mut turn_base_url: Option<String> = None;
+        let mut turn_reported_model = None;
         let mut turn_status = RuntimeTurnStatus::Completed;
         let mut turn_error: Option<String> = None;
 
@@ -4685,9 +4698,9 @@ impl RuntimeThreadManager {
                     error,
                     tool_catalog,
                     base_url,
-                    // REPL-display data (status-bar model label); the
-                    // runtime turn record does not carry it.
-                    reported_model: _,
+                    // The model the turn actually ran on, registry fallback
+                    // included — usage is priced by it.
+                    reported_model,
                     // REPL-persist bookkeeping (SavedSession); the runtime
                     // turn record does not carry it.
                     failed_attempts: _,
@@ -4697,6 +4710,7 @@ impl RuntimeThreadManager {
                     // persist what the turn's model request actually carried.
                     turn_tool_catalog = tool_catalog;
                     turn_base_url = base_url;
+                    turn_reported_model = reported_model;
                     turn_status = match status {
                         TurnOutcomeStatus::Completed => RuntimeTurnStatus::Completed,
                         TurnOutcomeStatus::Interrupted => RuntimeTurnStatus::Interrupted,
@@ -4814,6 +4828,7 @@ impl RuntimeThreadManager {
         turn.error = turn_error;
         turn.tool_catalog = turn_tool_catalog;
         turn.base_url = turn_base_url;
+        turn.model = turn_reported_model.or(turn.model);
         self.store.save_turn(&turn)?;
 
         let mut thread = self.get_thread(&thread_id).await?;
@@ -5346,6 +5361,7 @@ mod tests {
                 input_examples: None,
             }]),
             base_url: Some("https://api.example.test/v1".into()),
+            model: None,
         };
         let json = serde_json::to_string(&turn).expect("serialize");
         assert!(json.contains("read_file"), "catalog persisted: {json}");
@@ -5434,6 +5450,7 @@ mod tests {
             steer_count: 0,
             tool_catalog: None,
             base_url: None,
+            model: None,
         }
     }
 
@@ -7694,6 +7711,60 @@ mod tests {
         Ok(())
     }
 
+    /// Usage follows the model each turn ran on — the request's resolved
+    /// model — not the thread's current model.
+    #[tokio::test]
+    async fn aggregate_usage_prices_each_turn_by_its_own_model() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let mut thread = sample_thread("thr_usage_model");
+        thread.model = "auto".to_string();
+        manager.store.save_thread(&thread)?;
+
+        let mut routed = sample_turn(
+            "thr_usage_model",
+            "turn_routed",
+            RuntimeTurnStatus::Completed,
+        );
+        routed.model = Some("deepseek-chat".to_string());
+        routed.usage = Some(Usage {
+            input_tokens: 1000,
+            output_tokens: 1000,
+            ..Usage::default()
+        });
+        let mut own = sample_turn(
+            "thr_usage_model",
+            "turn_thread_model",
+            RuntimeTurnStatus::Completed,
+        );
+        own.usage = Some(Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        });
+        manager.store.save_turn(&routed)?;
+        manager.store.save_turn(&own)?;
+
+        let by_model = manager
+            .aggregate_usage(None, None, UsageGroupBy::Model)
+            .await?;
+        let keys: Vec<&str> = by_model.buckets.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["auto", "deepseek-chat"],
+            "one bucket per turn model"
+        );
+        assert!(
+            by_model.buckets[1].cost_usd > 0.0,
+            "the routed turn is priced"
+        );
+        assert_eq!(by_model.buckets[1].turns, 1);
+        assert_eq!(
+            by_model.buckets[0].cost_usd, 0.0,
+            "`auto` itself has no price"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn interrupt_turn_marks_interrupted_after_cleanup() -> Result<()> {
         let manager = test_manager(test_runtime_dir())?;
@@ -8876,6 +8947,7 @@ mod tests {
             steer_count: 0,
             tool_catalog: None,
             base_url: None,
+            model: None,
         })?;
         manager.store.save_turn(&TurnRecord {
             schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
@@ -8893,6 +8965,7 @@ mod tests {
             steer_count: 0,
             tool_catalog: None,
             base_url: None,
+            model: None,
         })?;
         drop(manager);
 
@@ -9104,6 +9177,7 @@ mod tests {
                 steer_count: 0,
                 tool_catalog: None,
                 base_url: None,
+                model: None,
             })?;
             turn_ids.push(turn_id);
         }

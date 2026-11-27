@@ -258,6 +258,7 @@ impl RuntimeChildJournal {
             steer_count: 0,
             tool_catalog: None,
             base_url: None,
+            model: None,
         };
         thread.latest_turn_id = Some(turn_id.clone());
         thread.updated_at = now;
