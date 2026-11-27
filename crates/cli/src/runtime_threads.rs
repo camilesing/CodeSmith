@@ -3659,6 +3659,12 @@ impl RuntimeThreadManager {
         engine: EngineHandle,
         started: EngineEvent,
     ) -> Result<String> {
+        // The reader was spawned with a copy of the record; a `PATCH` since
+        // then — `auto_approve` turned off, most importantly — must govern
+        // this turn too. The engine's own config is not refreshed (known
+        // limitation: a separate decision).
+        let fresh = self.get_thread(&thread.id).await?;
+        let thread = &fresh;
         let now = Utc::now();
         let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
         let mut turn = TurnRecord {
@@ -8078,6 +8084,74 @@ mod tests {
         let stored = manager.get_thread(&thread_id).await?;
         assert_eq!(stored.title.as_deref(), Some("renamed meanwhile"));
         assert!(stored.latest_turn_id.is_some());
+        Ok(())
+    }
+
+    /// An idle-wake turn takes the thread's flags from the record as it is
+    /// now, not from the copy its reader was spawned with: a `PATCH` that
+    /// turned `auto_approve` off governs it.
+    #[tokio::test]
+    async fn idle_wake_turn_honours_a_later_patch_of_auto_approve() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager.create_thread(create_request(Some(true))).await?;
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        manager
+            .update_thread(
+                &thread.id,
+                UpdateThreadRequest {
+                    auto_approve: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "turn_synth_flags".to_string(),
+                synthesized: true,
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::ApprovalRequired {
+                approval_key: "key_synth".to_string(),
+                approval_grouping_key: "key_synth".to_string(),
+                id: "tool_synth".to_string(),
+                tool_name: "exec_shell".to_string(),
+                description: "needs a decision".to_string(),
+                input: serde_json::json!({}),
+                intent_summary: None,
+            })
+            .await?;
+
+        // The load-time flag would have approved the call outright; the
+        // patched one leaves the decision to the client.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            manager.pending_approvals_count(),
+            1,
+            "the synthesized turn must wait for the client"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), harness.recv_approval_event())
+                .await
+                .is_err(),
+            "the call was already decided"
+        );
+
+        assert!(manager.deliver_external_approval(
+            "tool_synth",
+            ExternalApprovalDecision::Deny { remember: false }
+        ));
+        harness
+            .tx_event
+            .send(turn_complete(TurnOutcomeStatus::Completed))
+            .await?;
+        wait_for_idle_wake_records(&manager, &thread.id, 1, Duration::from_secs(5)).await?;
         Ok(())
     }
 
