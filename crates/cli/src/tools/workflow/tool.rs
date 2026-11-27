@@ -194,10 +194,9 @@ impl ToolSpec for WorkflowTool {
                     .as_u64()
                     .and_then(|raw| u32::try_from(raw).ok())
                     .ok_or_else(|| {
-                        ToolError::invalid_input(
-                            "max_agents must be an integer between 1 and \
-                             {MAX_WORKFLOW_AGENTS}",
-                        )
+                        ToolError::invalid_input(format!(
+                            "max_agents must be an integer between 1 and {MAX_WORKFLOW_AGENTS}"
+                        ))
                     })?;
                 if requested == 0 || requested > MAX_WORKFLOW_AGENTS {
                     return Err(ToolError::invalid_input(format!(
@@ -542,6 +541,26 @@ mod tests {
                 err.to_string().contains("max_agents"),
                 "error must name max_agents, got {err}"
             );
+        }
+
+        // A wrong type or size takes the other arm, whose message used to
+        // ship the literal `{MAX_WORKFLOW_AGENTS}`.
+        for bad in [
+            json!("5"),
+            json!(-1),
+            json!(2.5),
+            json!(u64::from(u32::MAX) + 1),
+        ] {
+            let err = tool
+                .execute(json!({"script": "pass", "max_agents": bad}), &context)
+                .await
+                .expect_err("a non-integer max_agents must be rejected");
+            let message = err.to_string();
+            assert!(
+                message.contains(&format!("between 1 and {MAX_WORKFLOW_AGENTS}")),
+                "the bound must be rendered, got {message}"
+            );
+            assert!(!message.contains("{MAX"), "{message}");
         }
     }
 
