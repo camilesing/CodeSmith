@@ -959,7 +959,12 @@ async fn delete_session(
         .map_err(|e| map_session_store_err(&id, &e, "delete"))?;
     // Round-7 TODO-48 — the session's inbox journal dies with the session
     // (best-effort here; the REPL startup sweep is the backstop).
-    crate::interactive::inbox_journal::remove_at_default_location(&id);
+    // A directory removal: off the runtime worker, best-effort as before.
+    let journal_id = id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::interactive::inbox_journal::remove_at_default_location(&journal_id)
+    })
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1286,6 +1291,20 @@ async fn list_skills(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<SkillsResponse>, ApiError> {
     let (registry, directories, skills_dir) = discover_skills_blocking(&state).await?;
+    // `skill_entry_is_bundled` canonicalizes two paths per bundled skill:
+    // with the discovery on the blocking pool, not per row on the worker.
+    let bundle_dir = skills_dir.clone();
+    let (registry, bundled) = tokio::task::spawn_blocking(move || {
+        let bundled: HashSet<String> = registry
+            .list()
+            .iter()
+            .filter(|skill| skill_entry_is_bundled(skill, &bundle_dir))
+            .map(|skill| skill.name.clone())
+            .collect();
+        (registry, bundled)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("skills discovery task failed: {e}")))?;
     let skill_state = state.skill_state.lock().await;
     let skills = registry
         .list()
@@ -1295,7 +1314,7 @@ async fn list_skills(
             description: skill.description.clone(),
             path: skill.path.clone(),
             enabled: skill_state.is_enabled(&skill.name),
-            is_bundled: skill_entry_is_bundled(skill, &skills_dir),
+            is_bundled: bundled.contains(&skill.name),
             when_to_use: skill.when_to_use.clone(),
             allowed_tools: skill.allowed_tools.clone(),
             user_invocable: skill.user_invocable,
@@ -1554,7 +1573,11 @@ async fn runtime_info(State(state): State<RuntimeApiState>) -> Json<RuntimeInfoR
 async fn list_mcp_servers(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<McpServersResponse>, ApiError> {
-    let config = load_mcp_config_or_default(&state.mcp_config_path)?;
+    // The MCP config is a file read: off the runtime worker.
+    let config_path = state.mcp_config_path.clone();
+    let config = tokio::task::spawn_blocking(move || load_mcp_config_or_default(&config_path))
+        .await
+        .map_err(|e| ApiError::internal(format!("MCP config task failed: {e}")))??;
     let pool = McpPool::new(config.clone());
     let _errors = connect_all_bounded(&pool).await;
     let connected: HashSet<String> = pool.connected_servers().into_iter().collect();
@@ -1587,7 +1610,11 @@ async fn list_mcp_tools(
     State(state): State<RuntimeApiState>,
     Query(query): Query<McpToolsQuery>,
 ) -> Result<Json<McpToolsResponse>, ApiError> {
-    let pool = McpPool::from_config_path(&state.mcp_config_path)
+    // The MCP config is a file read: off the runtime worker.
+    let config_path = state.mcp_config_path.clone();
+    let pool = tokio::task::spawn_blocking(move || McpPool::from_config_path(&config_path))
+        .await
+        .map_err(|e| ApiError::internal(format!("MCP config task failed: {e}")))?
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
     let _errors = connect_all_bounded(&pool).await;
 
@@ -1622,9 +1649,8 @@ async fn list_mcp_tools(
 async fn list_automations(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<Vec<AutomationRecord>>, ApiError> {
-    let manager = state.automations.lock().await;
-    let automations = manager
-        .list_automations()
+    let automations = automation_call(&state.automations, |manager| manager.list_automations())
+        .await
         .map_err(|e| ApiError::internal(format!("Failed to list automations: {e}")))?;
     Ok(Json(automations))
 }
@@ -1633,9 +1659,8 @@ async fn create_automation(
     State(state): State<RuntimeApiState>,
     Json(req): Json<CreateAutomationRequest>,
 ) -> Result<(StatusCode, Json<AutomationRecord>), ApiError> {
-    let manager = state.automations.lock().await;
-    let automation = manager
-        .create_automation(req)
+    let automation = automation_call(&state.automations, |manager| manager.create_automation(req))
+        .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(automation)))
 }
@@ -1644,8 +1669,11 @@ async fn get_automation(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<AutomationRecord>, ApiError> {
-    let manager = state.automations.lock().await;
-    let automation = manager.get_automation(&id).map_err(map_automation_err)?;
+    let automation = automation_call(&state.automations, move |manager| {
+        manager.get_automation(&id)
+    })
+    .await
+    .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -1654,10 +1682,11 @@ async fn update_automation(
     Path(id): Path<String>,
     Json(req): Json<UpdateAutomationRequest>,
 ) -> Result<Json<AutomationRecord>, ApiError> {
-    let manager = state.automations.lock().await;
-    let automation = manager
-        .update_automation(&id, req)
-        .map_err(map_automation_err)?;
+    let automation = automation_call(&state.automations, move |manager| {
+        manager.update_automation(&id, req)
+    })
+    .await
+    .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -1665,8 +1694,11 @@ async fn delete_automation(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<AutomationRecord>, ApiError> {
-    let manager = state.automations.lock().await;
-    let automation = manager.delete_automation(&id).map_err(map_automation_err)?;
+    let automation = automation_call(&state.automations, move |manager| {
+        manager.delete_automation(&id)
+    })
+    .await
+    .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -1687,8 +1719,11 @@ async fn pause_automation(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<AutomationRecord>, ApiError> {
-    let manager = state.automations.lock().await;
-    let automation = manager.pause_automation(&id).map_err(map_automation_err)?;
+    let automation = automation_call(&state.automations, move |manager| {
+        manager.pause_automation(&id)
+    })
+    .await
+    .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -1696,8 +1731,11 @@ async fn resume_automation(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<AutomationRecord>, ApiError> {
-    let manager = state.automations.lock().await;
-    let automation = manager.resume_automation(&id).map_err(map_automation_err)?;
+    let automation = automation_call(&state.automations, move |manager| {
+        manager.resume_automation(&id)
+    })
+    .await
+    .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -1706,10 +1744,11 @@ async fn list_automation_runs(
     Path(id): Path<String>,
     Query(query): Query<AutomationRunsQuery>,
 ) -> Result<Json<Vec<AutomationRunRecord>>, ApiError> {
-    let manager = state.automations.lock().await;
-    let runs = manager
-        .list_runs(&id, query.limit)
-        .map_err(map_automation_err)?;
+    let runs = automation_call(&state.automations, move |manager| {
+        manager.list_runs(&id, query.limit)
+    })
+    .await
+    .map_err(map_automation_err)?;
     Ok(Json(runs))
 }
 
@@ -2632,6 +2671,23 @@ fn map_task_err(err: anyhow::Error) -> ApiError {
     } else {
         ApiError::bad_request(message)
     }
+}
+
+/// Run one `AutomationManager` call on the blocking pool: the manager is
+/// `std::fs` and fsync all the way down, and the lock is taken there, so
+/// neither a runtime worker nor the scheduler tick waits on a disk write.
+async fn automation_call<T, F>(
+    automations: &SharedAutomationManager,
+    call: F,
+) -> Result<T, anyhow::Error>
+where
+    F: FnOnce(&AutomationManager) -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let automations = Arc::clone(automations);
+    tokio::task::spawn_blocking(move || call(&automations.blocking_lock()))
+        .await
+        .map_err(|e| anyhow::anyhow!("automation task failed: {e}"))?
 }
 
 fn map_automation_err(err: anyhow::Error) -> ApiError {
