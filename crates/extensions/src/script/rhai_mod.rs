@@ -201,7 +201,7 @@ pub enum ScriptRegistration {
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
 
-// === Event-name mapping (31 kinds, kebab-case) =============================
+// === Event-name mapping (32 kinds, kebab-case) =============================
 
 /// Parse a script-side event name (kebab-case) into its
 /// [`ExtensionEventKind`]. `None` for unknown names (surfaced as a script
@@ -281,7 +281,7 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::WorkflowAgentEnd => "workflow-agent-end",
         ExtensionEventKind::WorkflowEnd => "workflow-end",
         // `ExtensionEventKind` is `#[non_exhaustive]`; the wildcard is
-        // unreachable while this crate tracks every variant (the 31-entry
+        // unreachable while this crate tracks every variant (the 32-entry
         // round-trip test guards that).
         _ => "unknown-event",
     }
@@ -985,7 +985,7 @@ fn register_natives(
                     Ok(())
                 }
                 None => Err(script_error(format!(
-                    "on(): unknown event name '{event}' (see docs/MODS.md for the 31 event names)"
+                    "on(): unknown event name '{event}' (see docs/MODS.md for the event names)"
                 ))),
             }
         },
@@ -1005,7 +1005,7 @@ fn register_natives(
         move |event: &str, callback: rhai::FnPtr| -> Result<(), Box<rhai::EvalAltResult>> {
             let kind = event_kind_from_name(event).ok_or_else(|| {
                 script_error(format!(
-                    "on_event(): unknown event name '{event}' (see docs/MODS.md for the 31 event names)"
+                    "on_event(): unknown event name '{event}' (see docs/MODS.md for the event names)"
                 ))
             })?;
             if matches!(kind.dispatch_mode(), DispatchMode::Waterfall { .. }) {
