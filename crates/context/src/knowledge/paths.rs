@@ -30,7 +30,8 @@ pub fn resolve_memory_entrypoint(memory_dir: &Path) -> PathBuf {
 }
 
 /// Ensure the memory directory exists on disk. Creates it (and parents)
-/// if needed. Called during engine initialization when KoD is enabled.
+/// if needed. Only the (unwired) prefetch calls it today; the `remember`
+/// tool creates the directory lazily on its first write.
 pub fn ensure_memory_dir_exists(memory_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(memory_dir)?;
     Ok(())

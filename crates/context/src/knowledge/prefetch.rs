@@ -287,8 +287,8 @@ fn previous_char_boundary(s: &str, mut idx: usize) -> usize {
     idx
 }
 
-/// Format surfaced memories into a `<system-reminder>` block
-/// ready for injection into the context.
+/// Format surfaced memories under one heading, ready to be wrapped in a
+/// `<system-reminder>` block by the caller.
 pub fn format_surfaced_memories(memories: &[SurfacedMemory]) -> String {
     let mut output = String::from("Relevant memories surfaced for this turn:");
     for mem in memories {

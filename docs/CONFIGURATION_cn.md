@@ -1063,8 +1063,9 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   显示 `/memory` 斜杠命令，并注册 `remember` 工具。
   - `[memory].kod_enabled`（布尔，默认 `false`）：把记忆从单文件演化
     为基于目录的 Knowledge On Demand 系统（frontmatter 解析的 `.md`
-    文件、`MEMORY.md` 入口、按回合异步预取）。需要 `enabled = true`
-    和 `knowledge_on_demand` 特性开关。
+    文件，以及系统提示里的 `MEMORY.md` 入口块；`remember` 写入、
+    `knowledge_recall` 手动检索——没有按回合自动浮现）。需要
+    `enabled = true` 和 `knowledge_on_demand` 特性开关。
   - `[memory].directory`（字符串，可选）：记忆目录覆盖；默认为
     `memory_path` 的父目录加 `/memory/`。开头的 `~` 会被展开。
   - `[memory].excludes`（数组，可选）：从四层 CLAUDE.md 记忆合并中剔除

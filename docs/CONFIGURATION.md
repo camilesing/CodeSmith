@@ -1194,8 +1194,10 @@ and the capacity controller remains disabled unless configured.
   command, and registers the `remember` tool.
   - `[memory].kod_enabled` (bool, default `false`): evolve memory from a
     single file to a directory-based Knowledge On Demand system
-    (frontmatter-parsed `.md` files, a `MEMORY.md` entrypoint, async
-    per-turn prefetch). Requires `enabled = true` and the
+    (frontmatter-parsed `.md` files and a `MEMORY.md` entrypoint block in
+    the system prompt; `remember` writes and `knowledge_recall` searches —
+    there is no automatic per-turn surfacing). Requires `enabled = true`
+    and the
     `knowledge_on_demand` feature flag.
   - `[memory].directory` (string, optional): memory directory override;
     defaults to the parent of `memory_path` with `/memory/` appended. A
