@@ -162,7 +162,7 @@ file, `/preset off` drops the preset layer and keeps the current dials).
 - **YOLO**: enables shell + trust mode and auto-approves all tools. Use only in trusted repos.
 - **Coordinator** (experimental): the Router/Worker stance — the session routes and synthesizes while background workers execute; every worker gets a ticket with a status board (see `docs/SUBAGENTS.md`). Auto-entering this mode requires the `coordinator_mode` feature (the `experiment` preset enables the flag and adds the mode to the Shift+Tab ring, but sessions still start in Agent — enter with `/mode coordinator`).
 
-All action-capable modes have access to persistent RLM sessions through `rlm_open`, `rlm_eval`, `rlm_configure`, and `rlm_close`. Inside an RLM Python REPL, `sub_query_batch` fans out 1-16 cheap parallel child calls pinned to `deepseek-v4-flash`. The model reaches for it when work is too large or repetitive for the parent transcript.
+All action-capable modes have access to persistent RLM sessions through `rlm_open`, `rlm_eval`, `rlm_configure`, and `rlm_close`. Inside an RLM Python REPL, `sub_query_batch` fans out 1-16 cheap parallel child calls on the provider's light-tier model (`deepseek-v4-flash` on DeepSeek). The model reaches for it when work is too large or repetitive for the parent transcript.
 
 The fast light-tier path (`deepseek-v4-flash` on DeepSeek endpoints) with
 thinking off is called Fin in the product language. Fin is a seam for quick

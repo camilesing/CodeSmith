@@ -335,7 +335,17 @@ pub(super) fn build_turn_tool_registry_builder_for(
 
     if mode != AppMode::Plan && mode != AppMode::Coordinator {
         builder = builder
-            .with_rlm_tool(llm_client.clone(), session.model.clone())
+            .with_rlm_tool(
+                llm_client.clone(),
+                crate::tools::registry::rlm_child_model(
+                    &session.model,
+                    config
+                        .auto_route
+                        .tier_models
+                        .as_ref()
+                        .map(|tiers| tiers.light.clone()),
+                ),
+            )
             .with_fim_tool(llm_client.clone(), session.model.clone());
     }
 

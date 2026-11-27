@@ -503,15 +503,16 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RevertTurnTool))
     }
 
-    /// Include persistent RLM session tools.
+    /// Include persistent RLM session tools. `child_model` is the model the
+    /// eval's child helpers call — see [`rlm_child_model`].
     #[must_use]
-    pub fn with_rlm_tool(self, client: Option<LlmClientHandle>, _root_model: String) -> Self {
+    pub fn with_rlm_tool(self, client: Option<LlmClientHandle>, child_model: String) -> Self {
         use super::rlm::{
             RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RlmSessionObjectsTool,
         };
         self.with_tool(Arc::new(RlmSessionObjectsTool))
             .with_tool(Arc::new(RlmOpenTool))
-            .with_tool(Arc::new(RlmEvalTool::new(client)))
+            .with_tool(Arc::new(RlmEvalTool::new(client, child_model)))
             .with_tool(Arc::new(RlmConfigureTool))
             .with_tool(Arc::new(RlmCloseTool))
     }
@@ -732,7 +733,17 @@ impl ToolRegistryBuilder {
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_review_tool(client.clone(), model.clone())
-            .with_rlm_tool(client, model)
+            .with_rlm_tool(
+                client,
+                rlm_child_model(
+                    &model,
+                    runtime
+                        .auto_route
+                        .tier_models
+                        .as_ref()
+                        .map(|tiers| tiers.light.clone()),
+                ),
+            )
             .with_recall_archive_tool()
             .with_session_search_tool()
             .with_lsp_navigation_tool()
@@ -1048,6 +1059,17 @@ impl ToolSpec for McpToolAdapter {
         let content = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
         Ok(ToolResult::success(content))
     }
+}
+
+/// The model RLM child queries (`sub_query`, …) run on: the provider's
+/// light tier when one was resolved — cheap fanout, the tier every other
+/// helper call uses — else the session's own model. Never a hardcoded id:
+/// the request model is sent verbatim, and providers other than DeepSeek do
+/// not serve its alias.
+pub(crate) fn rlm_child_model(session_model: &str, light_tier: Option<String>) -> String {
+    light_tier
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| session_model.to_string())
 }
 
 // === Unit Tests ===

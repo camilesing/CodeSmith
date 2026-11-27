@@ -151,7 +151,7 @@ REPL 中最近一次选择的预设（持久化在 settings.toml）> 出厂默�
 - **YOLO**：启用 shell + 信任模式并自动批准所有工具。仅在受信任的仓库中使用。
 - **Coordinator**（实验性）：Router/Worker 姿态——会话负责路由与综合，后台 worker 负责执行；每个 worker 自动获得带状态看板的 ticket（见 `docs/SUBAGENTS_cn.md`）。进入该模式需 `coordinator_mode` feature（`experiment` 预设开启该 flag 并把模式加进 Shift+Tab 环，但会话仍从 Agent 启动——用 `/mode coordinator` 进入）。
 
-所有具备执行能力的模式都可以通过 `rlm_open`、`rlm_eval`、`rlm_configure` 和 `rlm_close` 访问持久的 RLM 会话。在 RLM Python REPL 中，`sub_query_batch` 可以并发发出 1-16 个固定使用 `deepseek-v4-flash` 的廉价并行子调用。当工作对于父对话来说过于庞大或重复时，模型会主动使用它。
+所有具备执行能力的模式都可以通过 `rlm_open`、`rlm_eval`、`rlm_configure` 和 `rlm_close` 访问持久的 RLM 会话。在 RLM Python REPL 中，`sub_query_batch` 可以并发发出 1-16 个走 provider 轻量档模型（DeepSeek 上是 `deepseek-v4-flash`）的廉价并行子调用。当工作对于父对话来说过于庞大或重复时，模型会主动使用它。
 
 快速的轻量档路径（DeepSeek 端点上的 `deepseek-v4-flash`）+ 关闭思考，在产品
 语言中称为 Fin。Fin 是快速工具调用、摘要和廉价子调用的接缝；它不会改变审批

@@ -23,7 +23,6 @@ use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-const DEFAULT_CHILD_MODEL: &str = "deepseek-v4-flash";
 const MAX_INLINE_CONTENT_CHARS: usize = 200_000;
 const FULL_STDOUT_HEAD_CHARS: usize = 4_096;
 const FULL_STDOUT_TAIL_CHARS: usize = 1_024;
@@ -262,15 +261,19 @@ impl ToolSpec for RlmOpenTool {
 
 pub struct RlmEvalTool {
     client: Option<LlmClientHandle>,
+    /// Model the child helpers (`sub_query`, `llm_query`, …) call: the
+    /// provider's light tier where the host resolved one.
+    child_model: String,
     /// Wall-clock bound for one eval: [`RLM_EVAL_HARD_TIMEOUT`] outside tests.
     hard_timeout: std::time::Duration,
 }
 
 impl RlmEvalTool {
     #[must_use]
-    pub fn new(client: Option<LlmClientHandle>) -> Self {
+    pub fn new(client: Option<LlmClientHandle>, child_model: String) -> Self {
         Self {
             client,
+            child_model,
             hard_timeout: RLM_EVAL_HARD_TIMEOUT,
         }
     }
@@ -340,7 +343,7 @@ impl ToolSpec for RlmEvalTool {
         let (outcome, child_usage) = if let Some(client) = self.client.clone() {
             let bridge = RlmBridge::new(
                 client,
-                DEFAULT_CHILD_MODEL.to_string(),
+                self.child_model.clone(),
                 config.sub_rlm_max_depth.min(HARD_SUB_RLM_DEPTH_CAP),
             )
             .with_child_timeout_secs(config.sub_query_timeout_secs);
@@ -477,7 +480,7 @@ impl ToolSpec for RlmEvalTool {
             "child_output_tokens": child_usage.output_tokens,
             "child_prompt_cache_hit_tokens": child_usage.prompt_cache_hit_tokens,
             "child_prompt_cache_miss_tokens": child_usage.prompt_cache_miss_tokens,
-            "child_model": DEFAULT_CHILD_MODEL,
+            "child_model": self.child_model,
         });
 
         Ok(ToolResult::json(&output)
@@ -756,13 +759,20 @@ fn _assert_var_handle_shape(_: Option<VarHandle>) {}
 mod tests {
     use super::*;
     use crate::tools::handle::HandleReadTool;
-    use codesmith_agent_runtime::models::{ContentBlock, Message, SystemPrompt};
+    use codesmith_agent_runtime::models::{
+        ContentBlock, Message, MessageResponse, SystemPrompt, Usage,
+    };
     use codesmith_agent_runtime::rlm::session::SessionObjectSnapshot;
+    use codesmith_agent_runtime::test_support::mock_llm::MockLlmClient;
     use codesmith_agent_runtime::tools::spec::ToolContext;
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
         ToolContext::new(".")
+    }
+
+    fn eval_tool(client: Option<LlmClientHandle>, child_model: &str) -> RlmEvalTool {
+        RlmEvalTool::new(client, child_model.to_string())
     }
 
     fn ctx_with_session_objects() -> ToolContext {
@@ -794,7 +804,7 @@ mod tests {
     fn schema_uses_new_tool_names() {
         assert_eq!(RlmSessionObjectsTool.name(), "rlm_session_objects");
         assert_eq!(RlmOpenTool.name(), "rlm_open");
-        assert_eq!(RlmEvalTool::new(None).name(), "rlm_eval");
+        assert_eq!(eval_tool(None, "deepseek-v4-flash").name(), "rlm_eval");
         assert_eq!(RlmConfigureTool.name(), "rlm_configure");
         assert_eq!(RlmCloseTool.name(), "rlm_close");
     }
@@ -825,8 +835,46 @@ mod tests {
         );
     }
 
+    /// Child queries run on the model the host handed the tool — the
+    /// provider's light tier — not on a hardcoded DeepSeek id that another
+    /// provider does not serve.
     #[tokio::test]
-    async fn rlm_session_objects_lists_active_prompt_object() {
+    async fn rlm_eval_child_queries_run_on_the_configured_child_model() {
+        let mock = Arc::new(MockLlmClient::new(Vec::new()));
+        mock.push_message_response(MessageResponse {
+            id: "mock_msg".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "child answer".to_string(),
+                cache_control: None,
+            }],
+            model: "mock-model".to_string(),
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+        });
+        let ctx = ctx();
+        RlmOpenTool
+            .execute(json!({"name": "c", "content": "body"}), &ctx)
+            .await
+            .expect("open");
+        let client: LlmClientHandle = mock.clone();
+        eval_tool(Some(client), "provider-light-model")
+            .execute(
+                json!({"name": "c", "code": "print(sub_query('why?'))"}),
+                &ctx,
+            )
+            .await
+            .expect("eval");
+        let captured = mock.captured_requests();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].model, "provider-light-model");
+    }
+
+    #[tokio::test]
+    async fn rlm_session_objects_lists_active_session_prompt_object() {
         let ctx = ctx_with_session_objects();
         let result = RlmSessionObjectsTool
             .execute(json!({}), &ctx)
@@ -921,7 +969,7 @@ mod tests {
             .await
             .expect("open");
 
-        let eval = RlmEvalTool::new(None)
+        let eval = eval_tool(None, "deepseek-v4-flash")
             .execute(json!({"name": "sample", "code": "print('ok')"}), &ctx)
             .await
             .expect("eval");
@@ -949,7 +997,7 @@ mod tests {
             .execute(json!({"name": "dying", "content": "alpha\nbeta"}), &ctx)
             .await
             .expect("open");
-        let eval = RlmEvalTool::new(None);
+        let eval = eval_tool(None, "deepseek-v4-flash");
 
         let first = eval
             .execute(
@@ -985,7 +1033,8 @@ mod tests {
             .execute(json!({"name": "wedged", "content": "alpha\nbeta"}), &ctx)
             .await
             .expect("open");
-        let eval = RlmEvalTool::new(None).with_hard_timeout(std::time::Duration::from_millis(300));
+        let eval = eval_tool(None, "deepseek-v4-flash")
+            .with_hard_timeout(std::time::Duration::from_millis(300));
 
         let first = eval
             .execute(json!({"name": "wedged", "code": "while True: pass"}), &ctx)
@@ -1016,7 +1065,7 @@ mod tests {
             .await
             .expect("open");
 
-        let eval = RlmEvalTool::new(None)
+        let eval = eval_tool(None, "deepseek-v4-flash")
             .execute(
                 json!({"name": "finals", "code": "finalize('done', confidence=0.8)"}),
                 &ctx,
@@ -1042,7 +1091,7 @@ mod tests {
             .await
             .expect("open");
 
-        let eval = RlmEvalTool::new(None)
+        let eval = eval_tool(None, "deepseek-v4-flash")
             .execute(
                 json!({"name": "json-final", "code": "finalize({'answer': 42, 'items': ['a', 'b']})"}),
                 &ctx,
@@ -1085,7 +1134,7 @@ mod tests {
             .await
             .expect("configure");
 
-        let eval = RlmEvalTool::new(None)
+        let eval = eval_tool(None, "deepseek-v4-flash")
             .execute(json!({"name": "quiet", "code": "print('hidden')"}), &ctx)
             .await
             .expect("eval");

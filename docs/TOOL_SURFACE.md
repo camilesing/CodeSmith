@@ -344,7 +344,7 @@ reflect very different cost classes:
 | Tool | What each child does | Wall-clock | Token cost | Cap |
 |---|---|---|---|---|
 | `agent_open` | Full sub-agent loop (planning, tool calls, multi-turn streaming, can open children) | minutes | thousands of tokens | 10 in flight by default (`[subagents].max_concurrent`, hard ceiling 20) |
-| `rlm_eval` helper `sub_query_batch` | One-shot non-streaming Chat Completions calls pinned to `deepseek-v4-flash` inside a live RLM session | seconds | ~hundreds of tokens | 16 per call |
+| `rlm_eval` helper `sub_query_batch` | One-shot non-streaming Chat Completions calls on the provider's light-tier model (`deepseek-v4-flash` on DeepSeek) inside a live RLM session | seconds | ~hundreds of tokens | 16 per call |
 
 The caps appear in each tool's description and error messages so the model
 (and the user) can choose the right tool for the job. If one sub-agent is

@@ -320,7 +320,7 @@ RLM 现在同样是持久化的：
 | 工具 | 每个子任务做什么 | 墙钟时间 | Token 成本 | 上限 |
 |---|---|---|---|---|
 | `agent_open` | 完整子代理循环（规划、工具调用、多轮流式传输，可开启子级） | 分钟级 | 数千 token | 默认并发 10（`[subagents].max_concurrent`，硬上限 20） |
-| `rlm_eval` 辅助函数 `sub_query_batch` | 在活跃 RLM 会话内固定使用 `deepseek-v4-flash` 的一次性非流式 Chat Completions 调用 | 秒级 | 约数百 token | 每次调用 16 |
+| `rlm_eval` 辅助函数 `sub_query_batch` | 在活跃 RLM 会话内走 provider 轻量档模型（DeepSeek 上是 `deepseek-v4-flash`）的一次性非流式 Chat Completions 调用 | 秒级 | 约数百 token | 每次调用 16 |
 
 这些上限出现在各工具的描述和错误消息中，以便模型（和用户）为工作选择
 合适的工具。如果一个子代理足够、但你需要对同一已加载上下文做并行语义
