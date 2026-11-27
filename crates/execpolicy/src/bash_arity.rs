@@ -611,6 +611,13 @@ fn is_exec_by_positioning(tokens: &[&str]) -> bool {
     if matches!(base.as_str(), "go" | "cargo" | "bun" | "deno") && has("run") {
         return true;
     }
+    // Table keys whose positional tail runs a command (`git submodule
+    // foreach <cmd>`, `git bisect run <cmd>`; `npm init <pkg>` is `npx
+    // create-<pkg>`): the whole subcommand is approval-only, the treatment
+    // `docker run` gets.
+    if (base == "git" && (has("submodule") || has("bisect"))) || (base == "npm" && has("init")) {
+        return true;
+    }
     // `-m` runs a module, `-c` runs inline code.
     if matches!(base.as_str(), "python" | "python3")
         && lead.iter().any(|t| *t == "-m" || *t == "-c")
@@ -854,6 +861,13 @@ mod tests {
                 "docker -H unix:///var/run/docker.sock run alpine sh",
             ),
             ("podman", "podman --log-level=debug run alpine sh"),
+            ("git submodule", "git submodule foreach sh -c 'id'"),
+            (
+                "git submodule",
+                "git -C /tmp/repo submodule foreach sh -c 'id'",
+            ),
+            ("git bisect", "git bisect run sh -c 'id'"),
+            ("npm init", "npm init evil-pkg"),
             ("kubectl exec", "kubectl exec pod -- rm -rf /"),
             ("go run", "go run ./exploit"),
             ("cargo run", "cargo run --bin evil"),
