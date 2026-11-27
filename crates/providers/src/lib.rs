@@ -616,6 +616,37 @@ mod manifest_default_tests {
 
     // === factory build() integration (openai-compat family) ===
 
+    /// An `http_headers.authorization` entry used to replace the Bearer rig
+    /// derives from `api_key` on these two factories (the compat and
+    /// anthropic factories already refused it).
+    #[cfg(feature = "openai")]
+    #[test]
+    fn openai_factory_refuses_an_authorization_header() {
+        let factory = openai::OpenAiFactory::new(ProviderId::from("openai"), None, None);
+        let mut cfg = empty_cfg(ProviderId::from("openai"));
+        cfg.http_headers
+            .insert("authorization".to_string(), "Bearer x".to_string());
+        let err = factory
+            .build(&cfg)
+            .err()
+            .expect("an authorization header is refused at build");
+        assert!(err.to_string().contains("auth-managed"), "{err:#}");
+    }
+
+    #[cfg(feature = "deepseek")]
+    #[test]
+    fn deepseek_factory_refuses_an_authorization_header() {
+        let factory = deepseek::DeepSeekFactory::new(ProviderId::from("deepseek"), None, None);
+        let mut cfg = empty_cfg(ProviderId::from("deepseek"));
+        cfg.http_headers
+            .insert("authorization".to_string(), "Bearer x".to_string());
+        let err = factory
+            .build(&cfg)
+            .err()
+            .expect("an authorization header is refused at build");
+        assert!(err.to_string().contains("auth-managed"), "{err:#}");
+    }
+
     #[cfg(feature = "openai-compat")]
     fn openrouter_factory() -> openai_compat::OpenAiCompatFactory {
         openai_compat::OpenAiCompatFactory::new(

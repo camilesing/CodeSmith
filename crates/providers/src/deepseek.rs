@@ -65,7 +65,22 @@ impl ProviderFactory for DeepSeekFactory {
         if !base_url.is_empty() {
             builder = builder.base_url(&base_url);
         }
-        builder = builder.http_headers(build_header_map(&cfg.http_headers));
+        // Host-supplied extra headers must not override the Bearer that rig
+        // derives from `cfg.api_key` (the openai-compat and anthropic
+        // factories already refuse it): an `authorization` entry used to
+        // silently replace the configured credential — and the FIM/translate
+        // shim below still used `api_key`, so two surfaces of one client
+        // disagreed.
+        let headers = build_header_map(&cfg.http_headers);
+        if headers.contains_key(reqwest::header::AUTHORIZATION) {
+            anyhow::bail!(
+                "provider '{}' (deepseek): http_headers must not override the \
+                 auth-managed `authorization` header; configure credentials \
+                 via ProviderConfig::api_key",
+                self.id.as_str()
+            );
+        }
+        builder = builder.http_headers(headers);
         // P0-3: backend with a one-shot HTTP/2 → HTTP/1.1 fallback
         // (`rig_adapter::http_fallback`). `http_client` advances the
         // builder's backend type parameter, so it chains into `build`
