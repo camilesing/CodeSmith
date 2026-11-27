@@ -154,7 +154,9 @@ fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
         // `unreachable_patterns` warning when every feature is on.
         #[cfg(feature = "mock")]
         if desc.backend == FactoryBackend::Mock {
-            registry.register(Arc::new(mock::MockProviderFactory::default()));
+            // The manifest id is the registry key, as for every other
+            // backend (the default factory pins `mock`).
+            registry.register(Arc::new(mock::MockProviderFactory::with_id(id.clone())));
             continue;
         }
         #[cfg(feature = "openai")]
@@ -529,6 +531,37 @@ mod manifest_tests {
         assert!(
             msg.contains("--features deepseek"),
             "stub error should name the missing feature: {msg}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "mock"))]
+mod mock_manifest_tests {
+    //! A `backend = "mock"` entry registers under its manifest id.
+
+    use super::*;
+    use codesmith_agent::provider::ProviderId;
+    use codesmith_config::{FactoryBackend, ProviderDescriptor, ProvidersManifest};
+
+    #[test]
+    fn a_mock_entry_registers_under_its_manifest_id() {
+        let manifest = ProvidersManifest {
+            providers: vec![ProviderDescriptor {
+                id: "acme-mock".to_string(),
+                backend: FactoryBackend::Mock,
+                base_url: None,
+                model: None,
+            }],
+        };
+        let registry = build_registry_from(&manifest);
+
+        assert!(
+            registry.resolve(&ProviderId::from("acme-mock")).is_some(),
+            "the declared id resolves"
+        );
+        assert!(
+            registry.resolve(&ProviderId::from("mock")).is_none(),
+            "the hardcoded id is not resolvable unless declared"
         );
     }
 }
