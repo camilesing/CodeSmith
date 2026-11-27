@@ -7,6 +7,7 @@ use colored::Colorize;
 use super::ReplState;
 use crate::app_state::HuntVerdict;
 use crate::config::ApiProvider;
+use crate::config::MemoryDecider;
 
 /// `/init` — write AGENTS.md when it is missing (reuses the legacy generator).
 pub fn init(state: &ReplState) {
@@ -1439,22 +1440,30 @@ pub fn memory(state: &ReplState, arg: Option<&str>) {
                 if enabled { "on".green() } else { "off".red() }
             );
             println!("  store:   {}", path.display());
-            let decider = [
-                "CODESMITH_DISABLE_AUTO_MEMORY",
-                "CODESMITH_SIMPLE",
-                "CODESMITH_REMOTE",
-                "CODESMITH_MEMORY",
-            ]
-            .into_iter()
-            .find(|name| std::env::var_os(name).is_some());
-            match decider {
-                Some(name) => {
-                    println!("  decided by: {name} (the environment wins over [memory] enabled)")
+            // The same cascade that decides, so the readout names the step
+            // that really won (a blank or falsy export decides nothing).
+            let because = match state.config.memory_decision() {
+                MemoryDecider::DisableEnv { .. } => {
+                    "CODESMITH_DISABLE_AUTO_MEMORY (the environment wins over [memory] enabled)"
+                        .to_string()
                 }
-                None => {
-                    println!("  decided by: [memory] enabled in config.toml, else the default (on)")
+                MemoryDecider::Simple => {
+                    "CODESMITH_SIMPLE (simple mode turns auto memory off)".to_string()
                 }
-            }
+                MemoryDecider::RemoteWithoutDir => {
+                    "CODESMITH_REMOTE without CODESMITH_REMOTE_MEMORY_DIR (the environment wins \
+                     over [memory] enabled)"
+                        .to_string()
+                }
+                MemoryDecider::Setting(enabled) => {
+                    format!("[memory] enabled = {enabled} in config.toml, or CODESMITH_MEMORY")
+                }
+                MemoryDecider::Default => {
+                    "the default (on) — set [memory] enabled in config.toml to change it"
+                        .to_string()
+                }
+            };
+            println!("  decided by: {because}");
         }
         "auto on" | "auto off" => {
             let value = sub == "auto on";

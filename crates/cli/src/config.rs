@@ -2968,13 +2968,22 @@ impl Config {
     /// take effect without reloading config.
     #[must_use]
     pub fn memory_enabled(&self) -> bool {
+        self.memory_decision().enabled()
+    }
+
+    /// The step of that cascade that decides — one derivation for the switch
+    /// and for the readout that names it.
+    #[must_use]
+    pub fn memory_decision(&self) -> MemoryDecider {
         // 1. Explicit disable env (truthy -> off; defined-falsy -> on).
         if let Ok(value) = app_env("DISABLE_AUTO_MEMORY") {
-            return !parse_env_bool(&value);
+            return MemoryDecider::DisableEnv {
+                disabled: parse_env_bool(&value),
+            };
         }
         // 2. bare/simple mode -> off.
         if env_flag_truthy_any(&["CODESMITH_SIMPLE"]) {
-            return false;
+            return MemoryDecider::Simple;
         }
         // 3. remote mode without a persistent memory dir -> off.
         if env_flag_truthy_any(&["CODESMITH_REMOTE"])
@@ -2982,15 +2991,15 @@ impl Config {
                 .map(|v| v.trim().is_empty())
                 .unwrap_or(true)
         {
-            return false;
+            return MemoryDecider::RemoteWithoutDir;
         }
         // 4. Explicit user setting (config.toml or CODESMITH_MEMORY, the latter
         //    folded into `memory.enabled` by `apply_env_overrides`).
         if let Some(enabled) = self.memory.as_ref().and_then(|m| m.enabled) {
-            return enabled;
+            return MemoryDecider::Setting(enabled);
         }
         // 5. default on.
-        true
+        MemoryDecider::Default
     }
 
     /// Whether Knowledge On Demand is enabled. Requires both `memory.enabled = true`
@@ -3762,6 +3771,35 @@ fn env_flag_truthy_any(names: &[&str]) -> bool {
             .map(|v| parse_env_bool(&v))
             .unwrap_or(false)
     })
+}
+
+/// The step of the [`Config::memory_enabled`] cascade that decides. One
+/// derivation for the switch and for the readout that names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryDecider {
+    /// `CODESMITH_DISABLE_AUTO_MEMORY` is set; `disabled` is what it means.
+    DisableEnv { disabled: bool },
+    /// Simple mode.
+    Simple,
+    /// Remote mode without a persistent memory dir.
+    RemoteWithoutDir,
+    /// `[memory] enabled` in config.toml, or `CODESMITH_MEMORY`.
+    Setting(bool),
+    /// Nothing overrides the default (on).
+    Default,
+}
+
+impl MemoryDecider {
+    /// What this step makes [`Config::memory_enabled`] answer.
+    #[must_use]
+    pub fn enabled(self) -> bool {
+        match self {
+            Self::DisableEnv { disabled } => !disabled,
+            Self::Simple | Self::RemoteWithoutDir => false,
+            Self::Setting(enabled) => enabled,
+            Self::Default => true,
+        }
+    }
 }
 
 /// The platforms `[sandbox] enabled_platforms` accepts — the vocabulary of
@@ -10695,6 +10733,38 @@ context_window = 200000
         let _r = EnvVarGuard::set("CODESMITH_REMOTE", "true");
         let _dir = EnvVarGuard::set("CODESMITH_REMOTE_MEMORY_DIR", "/tmp/mem");
         assert!(Config::default().memory_enabled());
+    }
+
+    /// The readout's source of truth: a variable that is set but decides
+    /// nothing (remote WITH a memory dir, a falsy simple flag) is not the
+    /// decider — `[memory] enabled` is.
+    #[test]
+    fn memory_decision_names_the_step_that_decides() {
+        let _guard = lock_test_env();
+        let _env = clear_memory_env();
+        let off = Config {
+            memory: Some(MemoryConfig {
+                enabled: Some(false),
+                ..MemoryConfig::default()
+            }),
+            ..Config::default()
+        };
+        let _r = EnvVarGuard::set("CODESMITH_REMOTE", "true");
+        let _dir = EnvVarGuard::set("CODESMITH_REMOTE_MEMORY_DIR", "/tmp/mem");
+        assert_eq!(off.memory_decision(), MemoryDecider::Setting(false));
+        let _s = EnvVarGuard::set("CODESMITH_SIMPLE", "0");
+        assert_eq!(off.memory_decision(), MemoryDecider::Setting(false));
+        assert!(!off.memory_enabled());
+
+        let _d = EnvVarGuard::set("CODESMITH_DISABLE_AUTO_MEMORY", "0");
+        assert_eq!(
+            off.memory_decision(),
+            MemoryDecider::DisableEnv { disabled: false }
+        );
+        assert!(
+            off.memory_enabled(),
+            "a falsy disable variable explicitly opens memory"
+        );
     }
 
     #[test]
