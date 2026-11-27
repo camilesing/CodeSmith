@@ -305,6 +305,25 @@ impl ToolSpec for SendMessageTool {
             }
         };
 
+        // Everything below is flock-guarded mailbox and roster file work:
+        // on the blocking pool, not the runtime.
+        tokio::task::spawn_blocking(move || {
+            Self::execute_blocking(&recipient, &input, summary, &team_name, &sender_name)
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("send_message worker failed: {err}")))?
+    }
+}
+
+impl SendMessageTool {
+    /// [`ToolSpec::execute`]'s body once the team and the sender are known.
+    fn execute_blocking(
+        recipient: &str,
+        input: &serde_json::Value,
+        summary: Option<String>,
+        team_name: &str,
+        sender_name: &str,
+    ) -> Result<ToolResult, ToolError> {
         let message_val = input
             .get("message")
             .ok_or_else(|| ToolError::missing_field("message"))?;
@@ -319,7 +338,7 @@ impl ToolSpec for SendMessageTool {
             let text = message_val.as_str().unwrap();
             if !is_structured_protocol_message(text) {
                 let text = text.to_string();
-                return self.send_plain_text(&recipient, &team_name, &sender_name, &text, summary);
+                return Self::send_plain_text(recipient, team_name, sender_name, &text, summary);
             }
             parsed_document = serde_json::from_str::<serde_json::Value>(text).map_err(|e| {
                 ToolError::invalid_input(format!(
@@ -345,8 +364,8 @@ impl ToolSpec for SendMessageTool {
         // permission grants) — authorize the sender against the roster
         // before dispatching, then confirm the recipient exists so a
         // typo'd name cannot "deliver" into an inbox nobody polls.
-        authorize_protocol_action(type_str, &sender_name, &team_name)?;
-        ensure_known_recipient(&recipient, &team_name)?;
+        authorize_protocol_action(type_str, sender_name, team_name)?;
+        ensure_known_recipient(recipient, team_name)?;
 
         match type_str {
             "shutdown_request" => {
@@ -354,10 +373,10 @@ impl ToolSpec for SendMessageTool {
                     .get("reason")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let request_id =
-                    handle_shutdown_request(&sender_name, &recipient, &team_name, reason).map_err(
-                        |e| ToolError::execution_failed(format!("Shutdown request failed: {}", e)),
-                    )?;
+                let request_id = handle_shutdown_request(sender_name, recipient, team_name, reason)
+                    .map_err(|e| {
+                        ToolError::execution_failed(format!("Shutdown request failed: {}", e))
+                    })?;
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Shutdown request sent to {}. Request ID: {}", recipient, request_id),
@@ -381,7 +400,7 @@ impl ToolSpec for SendMessageTool {
                         "shutdown_approved must be addressed to the team lead",
                     ));
                 }
-                let mailbox = read_mailbox(&sender_name, &team_name).map_err(|e| {
+                let mailbox = read_mailbox(sender_name, team_name).map_err(|e| {
                     ToolError::execution_failed(format!("Failed to read mailbox: {e}"))
                 })?;
                 let pending = mailbox.iter().any(|msg| {
@@ -407,9 +426,9 @@ impl ToolSpec for SendMessageTool {
                 // Write approval protocol to teammate mailbox (informational).
                 // Actual cancellation happens via inbox poller on leader side.
                 deliver_protocol(
-                    &recipient,
-                    &team_name,
-                    &sender_name,
+                    recipient,
+                    team_name,
+                    sender_name,
                     json!({
                         "type": "shutdown_approved",
                         "request_id": request_id.clone(),
@@ -441,14 +460,8 @@ impl ToolSpec for SendMessageTool {
                         "Shutdown request '{request_id}' was already answered"
                     )));
                 }
-                handle_shutdown_rejection(
-                    &request_id,
-                    &sender_name,
-                    &recipient,
-                    &team_name,
-                    reason,
-                )
-                .map_err(|e| {
+                handle_shutdown_rejection(&request_id, sender_name, recipient, team_name, reason)
+                    .map_err(|e| {
                     ToolError::execution_failed(format!("Shutdown rejection failed: {}", e))
                 })?;
                 mark_request_handled(&request_id);
@@ -476,7 +489,7 @@ impl ToolSpec for SendMessageTool {
                 // caller-chosen permission_mode) into the teammate's
                 // mailbox, where the inbox poller applies it to whatever
                 // plan happens to be pending.
-                let mailbox = read_mailbox(&sender_name, &team_name).map_err(|e| {
+                let mailbox = read_mailbox(sender_name, team_name).map_err(|e| {
                     ToolError::execution_failed(format!("Failed to read mailbox: {e}"))
                 })?;
                 let pending = mailbox.iter().any(|msg| {
@@ -508,8 +521,8 @@ impl ToolSpec for SendMessageTool {
                         .to_string();
                     handle_plan_approval_auto_approve(
                         &request_id,
-                        &recipient,
-                        &team_name,
+                        recipient,
+                        team_name,
                         &permission_mode,
                     )
                     .map_err(|e| {
@@ -528,10 +541,10 @@ impl ToolSpec for SendMessageTool {
                         .and_then(|v| v.as_str())
                         .unwrap_or("No feedback provided")
                         .to_string();
-                    handle_plan_approval_rejection(&request_id, &recipient, &team_name, feedback)
+                    handle_plan_approval_rejection(&request_id, recipient, team_name, feedback)
                         .map_err(|e| {
-                        ToolError::execution_failed(format!("Plan rejection failed: {}", e))
-                    })?;
+                            ToolError::execution_failed(format!("Plan rejection failed: {}", e))
+                        })?;
                     mark_request_handled(&request_id);
                     ToolResult::json(&json!({
                         "success": true,
@@ -548,9 +561,9 @@ impl ToolSpec for SendMessageTool {
                     .ok_or_else(|| ToolError::missing_field("permission_mode"))?
                     .to_string();
                 deliver_protocol(
-                    &recipient,
-                    &team_name,
-                    &sender_name,
+                    recipient,
+                    team_name,
+                    sender_name,
                     json!({
                         "type": "mode_set_request",
                         "from": sender_name,
@@ -583,9 +596,9 @@ impl ToolSpec for SendMessageTool {
                     })
                     .unwrap_or_default();
                 deliver_protocol(
-                    &recipient,
-                    &team_name,
-                    &sender_name,
+                    recipient,
+                    team_name,
+                    sender_name,
                     json!({
                         "type": "team_permission_update",
                         "from": sender_name,
@@ -605,9 +618,9 @@ impl ToolSpec for SendMessageTool {
                 let mut forwarded = obj.clone();
                 forwarded.insert("from".to_string(), json!(sender_name));
                 deliver_protocol(
-                    &recipient,
-                    &team_name,
-                    &sender_name,
+                    recipient,
+                    team_name,
+                    sender_name,
                     serde_json::Value::Object(forwarded),
                     &format!("sandbox permission: {}", type_str),
                 )?;
@@ -628,7 +641,6 @@ impl ToolSpec for SendMessageTool {
 impl SendMessageTool {
     /// Send a plain text message to a single recipient or broadcast.
     fn send_plain_text(
-        &self,
         recipient: &str,
         team_name: &str,
         sender_name: &str,

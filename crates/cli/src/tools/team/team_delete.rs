@@ -129,10 +129,13 @@ impl ToolSpec for TeamDeleteTool {
                 ));
                 continue;
             }
-            match std::process::Command::new("git")
+            // `git worktree remove` deletes a whole checkout: awaited, not
+            // run inline on the runtime.
+            match tokio::process::Command::new("git")
                 .args(["worktree", "remove", "--"])
                 .arg(wt_path)
                 .output()
+                .await
             {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => worktree_errors.push(format!(
@@ -144,17 +147,38 @@ impl ToolSpec for TeamDeleteTool {
             }
         }
 
-        // Unassign stale tasks for all former teammates.
+        // Unassign stale tasks for all former teammates, then remove the two
+        // directories: flock-guarded and recursive file work, on the
+        // blocking pool. A failed release is reported, not dropped — the
+        // tasks would stay owned by teammates that no longer exist.
         let task_list_id = sanitize_name(&team_name);
-        if let Ok(mut manager) = TaskV2Manager::new(&task_list_id) {
-            for member in &team_file.members {
-                if member.name != team_lead_name() {
-                    let _ = manager.unassign_teammate_tasks(&member.name);
+        let members: Vec<String> = team_file
+            .members
+            .iter()
+            .filter(|member| member.name != team_lead_name())
+            .map(|member| member.name.clone())
+            .collect();
+        let dir_team = team_name.clone();
+        let (release_errors, deleted) = tokio::task::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            if let Ok(mut manager) = TaskV2Manager::new(&task_list_id) {
+                for member in &members {
+                    if let Err(err) = manager.unassign_teammate_tasks(member) {
+                        errors.push(format!("{member}: {err}"));
+                    }
                 }
             }
+            let deleted = delete_team_directories(&dir_team);
+            (errors, deleted)
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("team_delete worker failed: {err}")))?;
+        for err in &release_errors {
+            crate::logging::warn(format!(
+                "team_delete: a teammate's tasks stayed assigned: {err}"
+            ));
         }
-
-        delete_team_directories(&team_name).map_err(|e| {
+        deleted.map_err(|e| {
             ToolError::execution_failed(format!("Failed to delete team directories: {}", e))
         })?;
 
