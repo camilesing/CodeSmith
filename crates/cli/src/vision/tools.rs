@@ -1,6 +1,6 @@
 //! `image_analyze` tool — analyze images using a dedicated vision model.
 
-use std::path::{Component, Path};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -163,33 +163,7 @@ impl ToolSpec for ImageAnalyzeTool {
             .and_then(|v| v.as_str())
             .unwrap_or("Describe this image in detail.");
 
-        let image_path_buf = Path::new(image_path);
-        if image_path_buf.components().any(|c| {
-            matches!(
-                c,
-                Component::Prefix(_) | Component::RootDir | Component::ParentDir
-            )
-        }) {
-            return Err(ToolError::execution_failed(
-                "image_path must be a relative path within the workspace and cannot escape it.",
-            ));
-        }
-        let resolved_path = context.workspace.join(image_path_buf);
-        // Symlink-escape hardening: the component scan above is lexical only,
-        // so a path whose components (or the file itself) are symlinks
-        // pointing outside the workspace would sail through it. Canonicalize
-        // both sides and re-verify containment — mirrors the guard pattern in
-        // `tool_result_retrieval`. If either side can't be canonicalized
-        // (workspace missing is a caller bug; file missing fails the read
-        // below), fall back to the lexical check that already ran.
-        if let Ok(canonical_workspace) = tokio::fs::canonicalize(&context.workspace).await
-            && let Ok(canonical_resolved) = tokio::fs::canonicalize(&resolved_path).await
-            && !canonical_resolved.starts_with(&canonical_workspace)
-        {
-            return Err(ToolError::execution_failed(
-                "image_path must be a relative path within the workspace and cannot escape it.",
-            ));
-        }
+        let resolved_path = resolve_image_path(image_path, context)?;
         let (image_data, mime_type) = Self::read_image_file(&resolved_path).await?;
 
         let payload = self.request_payload(prompt, &image_data, &mime_type);
@@ -266,6 +240,20 @@ impl ToolSpec for ImageAnalyzeTool {
         ToolResult::json(&result)
             .map_err(|e| ToolError::execution_failed(format!("Failed to serialize result: {e}")))
     }
+}
+
+/// Resolve `image_path` through the shared path boundary — the effective
+/// cwd (a worktree shifts it), `/trust add` roots, and a canonical
+/// containment check. It used to join on the session workspace alone, so an
+/// image produced in a worktree was read from the main checkout, and a
+/// trusted directory was refused.
+fn resolve_image_path(image_path: &str, context: &ToolContext) -> Result<PathBuf, ToolError> {
+    context.resolve_path(image_path).map_err(|err| match err {
+        ToolError::PathEscape { .. } => ToolError::execution_failed(
+            "image_path must be a relative path within the workspace and cannot escape it.",
+        ),
+        other => other,
+    })
 }
 
 #[cfg(test)]
@@ -357,6 +345,27 @@ mod tests {
             Some(u64::from(DEFAULT_VISION_MAX_OUTPUT_TOKENS))
         );
         assert!(payload.get("max_tokens").is_none());
+    }
+
+    /// `image_path` resolves against the effective cwd, like every other
+    /// file tool: an image produced in a worktree used to be looked up in
+    /// the main checkout.
+    #[test]
+    fn image_path_resolves_against_the_effective_cwd() {
+        let tmp = tempdir().expect("tempdir");
+        let worktree = tmp.path().join(".codesmith/worktrees/wt");
+        std::fs::create_dir_all(worktree.join("shots")).expect("mkdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_cwd(worktree.clone());
+
+        let resolved = resolve_image_path("shots/out.png", &ctx).expect("resolve");
+
+        // `resolve_path` reports a file that does not exist yet by its
+        // canonical parent directory (on macOS `/var` is a symlink).
+        let shots = worktree
+            .join("shots")
+            .canonicalize()
+            .expect("canonical dir");
+        assert_eq!(resolved, shots.join("out.png"));
     }
 
     #[tokio::test]
