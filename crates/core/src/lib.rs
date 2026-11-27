@@ -1225,6 +1225,22 @@ impl Runtime {
     ) -> Result<Value> {
         let fallback_cwd = cwd.display().to_string();
         let (command, policy_cwd, execution_kind) = call.execution_subject(&fallback_cwd);
+        // The product's own shell tool is the function tool `exec_shell`
+        // with a JSON `command` argument: the policy must see that command,
+        // not the tool name.
+        let (command, execution_kind) = match (&call.payload, call.name.as_str()) {
+            (ToolPayload::Function { arguments }, "exec_shell") => {
+                let args: Value = serde_json::from_str(arguments.as_str()).unwrap_or(Value::Null);
+                (
+                    args.get("command")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    "shell",
+                )
+            }
+            _ => (command, execution_kind),
+        };
         let policy_tool = match &call.payload {
             ToolPayload::LocalShell { .. } => "exec_shell",
             _ => call.name.as_str(),
@@ -3117,6 +3133,41 @@ mod tests {
                 .expect("error string")
                 .contains("denied prefix"),
             "denial reason surfaces: {result}"
+        );
+    }
+
+    /// `exec_shell` is a function tool whose input carries the command: the
+    /// policy gate used to evaluate the tool name, so no denied prefix
+    /// could ever match and the precheck reported `"exec_shell"`.
+    #[tokio::test]
+    async fn invoke_tool_evaluates_the_command_of_a_function_shaped_exec_shell() {
+        let (_tmp, store) = scratch_state_store();
+        let runtime = Runtime::new(
+            ConfigToml::default(),
+            ModelRegistry::default(),
+            store,
+            Arc::new(McpManager::default()),
+            ExecPolicyEngine::new(Vec::new(), vec!["denied-cmd".to_string()]),
+            HookDispatcher::default(),
+        );
+        let call = ToolCall {
+            name: "exec_shell".to_string(),
+            payload: ToolPayload::Function {
+                arguments: r#"{"command":"denied-cmd --flag"}"#.to_string(),
+            },
+            source: ToolCallSource::Direct,
+            raw_tool_call_id: None,
+        };
+
+        let result = runtime
+            .invoke_tool(call, AskForApproval::OnRequest, Path::new("/tmp"))
+            .await
+            .expect("invoke dispatches");
+
+        assert_eq!(result["status"], "denied", "{result}");
+        assert_eq!(
+            result["precheck"]["command"], "denied-cmd --flag",
+            "{result}"
         );
     }
 
