@@ -480,7 +480,9 @@ pub(crate) fn round_score(score: f64) -> f64 {
 /// when truncated. Falls back to a head-of-text excerpt when no tokens hit.
 /// Shared with the cross-session search tool (round-3 TODO-43).
 pub(crate) fn best_window(text: &str, query_tokens: &[String], window_chars: usize) -> String {
-    let lower = text.to_ascii_lowercase();
+    // Lowercase the way the tokenizer does: an ASCII-only fold never
+    // finds `Привет` given `привет`.
+    let lower = text.to_lowercase();
     let mut hit_positions: Vec<usize> = Vec::new();
     for token in query_tokens {
         let mut start = 0usize;
@@ -810,6 +812,17 @@ mod tests {
         let text = "lorem ipsum dolor sit amet, the quick brown fox jumps over the lazy dog";
         let win = best_window(text, &["fox".to_string()], 30);
         assert!(win.contains("fox"), "got: {win}");
+    }
+
+    /// The tokenizer lowercases Unicode-aware; the locator used to fold
+    /// A-Z only and fell back to the head excerpt for every other capital.
+    #[test]
+    fn best_window_finds_a_non_ascii_capital() {
+        let filler = "vanilla filler ".repeat(30);
+        let text = format!("{filler}Привет, мир{filler}");
+        let win = best_window(&text, &["привет".to_string()], 30);
+        assert!(win.contains("Привет"), "the hit is located: {win}");
+        assert!(win.starts_with('…'), "not the head excerpt: {win}");
     }
 
     #[test]
