@@ -1320,7 +1320,7 @@ pub struct RuntimeThreadManager {
     cancel_token: CancellationToken,
     task_manager: Arc<StdMutex<Option<crate::task_manager::SharedTaskManager>>>,
     automations: Arc<StdMutex<Option<crate::automation_manager::SharedAutomationManager>>>,
-    pending_approvals: Arc<StdMutex<HashMap<String, oneshot::Sender<ExternalApprovalDecision>>>>,
+    pending_approvals: Arc<StdMutex<HashMap<String, PendingApproval>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1334,6 +1334,14 @@ enum RuntimeApprovalDecision {
 pub enum ExternalApprovalDecision {
     Allow { remember: bool },
     Deny { remember: bool },
+}
+
+/// One approval the runtime is waiting on for a client decision.
+struct PendingApproval {
+    /// The runtime turn it belongs to. `interrupt_turn` cancels by turn:
+    /// the engine's approval ids give it nothing to match on.
+    turn_id: String,
+    tx: oneshot::Sender<ExternalApprovalDecision>,
 }
 
 impl RuntimeThreadManager {
@@ -1467,10 +1475,17 @@ impl RuntimeThreadManager {
     fn register_pending_approval(
         &self,
         approval_id: &str,
+        turn_id: &str,
     ) -> oneshot::Receiver<ExternalApprovalDecision> {
         let (tx, rx) = oneshot::channel();
         if let Ok(mut map) = self.pending_approvals.lock() {
-            map.insert(approval_id.to_string(), tx);
+            map.insert(
+                approval_id.to_string(),
+                PendingApproval {
+                    turn_id: turn_id.to_string(),
+                    tx,
+                },
+            );
         }
         rx
     }
@@ -1481,13 +1496,22 @@ impl RuntimeThreadManager {
         }
     }
 
+    /// Drop every approval waiting on `turn_id`. Dropping the sender ends
+    /// the reader's wait at once: it takes its no-decision branch and reads
+    /// on to the `TurnComplete` the interrupted turn already pushed.
+    fn cancel_pending_approvals_for_turn(&self, turn_id: &str) {
+        if let Ok(mut map) = self.pending_approvals.lock() {
+            map.retain(|_, pending| pending.turn_id != turn_id);
+        }
+    }
+
     pub fn deliver_external_approval(
         &self,
         approval_id: &str,
         decision: ExternalApprovalDecision,
     ) -> bool {
         let sender = match self.pending_approvals.lock() {
-            Ok(mut map) => map.remove(approval_id),
+            Ok(mut map) => map.remove(approval_id).map(|pending| pending.tx),
             Err(_) => return false,
         };
         match sender {
@@ -1533,7 +1557,7 @@ impl RuntimeThreadManager {
         &self,
         approval_id: &str,
     ) -> oneshot::Receiver<ExternalApprovalDecision> {
-        self.register_pending_approval(approval_id)
+        self.register_pending_approval(approval_id, "")
     }
 
     async fn remember_thread_auto_approve(&self, thread_id: &str) {
@@ -2660,6 +2684,12 @@ impl RuntimeThreadManager {
                 .cancel_with_reason(CancelReason::External);
             touch_lru(&mut active.lru, thread_id);
         }
+
+        // The engine's approval wait is cancellation-aware, so the turn
+        // ends at once; the reader that owns it is parked on the decision
+        // channel until a client answers, shutdown, or the timeout. Drop
+        // this turn's pending approvals so it reads on now.
+        self.cancel_pending_approvals_for_turn(turn_id);
 
         self.emit_event(
             thread_id,
@@ -4490,7 +4520,7 @@ impl RuntimeThreadManager {
                         continue;
                     }
 
-                    let rx = self.register_pending_approval(&id);
+                    let rx = self.register_pending_approval(&id, &turn_id);
                     match tokio::time::timeout(APPROVAL_DECISION_TIMEOUT, rx).await {
                         Ok(Ok(ExternalApprovalDecision::Allow { remember })) => {
                             if remember {
@@ -7761,6 +7791,93 @@ mod tests {
         assert_eq!(
             by_model.buckets[0].cost_usd, 0.0,
             "`auto` itself has no price"
+        );
+        Ok(())
+    }
+
+    /// Interrupting a turn that waits on an approval ends the turn at once.
+    /// The reader is parked on the decision channel, so the cancel reached
+    /// only the engine — the thread then looked busy until a client answered,
+    /// shutdown, or the 300 s timeout.
+    #[tokio::test]
+    async fn interrupt_releases_a_turn_parked_on_an_approval() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager.create_thread(create_request(None)).await?;
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        let turn = manager
+            .start_turn(&thread.id, start_request("needs a decision"))
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage { .. })
+        ));
+
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "engine_turn_parked".to_string(),
+                synthesized: false,
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::ApprovalRequired {
+                approval_key: "key_parked".to_string(),
+                approval_grouping_key: "key_parked".to_string(),
+                id: "tool_parked".to_string(),
+                tool_name: "exec_shell".to_string(),
+                description: "parked on the client".to_string(),
+                input: serde_json::json!({}),
+                intent_summary: None,
+            })
+            .await?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(manager.pending_approvals_count(), 1);
+
+        // The engine's approval wait is cancellation-aware: the turn ends as
+        // soon as the cancel lands.
+        let cancel_token = harness.cancel_token.clone();
+        let tx_event = harness.tx_event.clone();
+        tokio::spawn(async move {
+            cancel_token.cancelled().await;
+            let _ = tx_event
+                .send(turn_complete(TurnOutcomeStatus::Interrupted))
+                .await;
+        });
+
+        manager.interrupt_turn(&thread.id, &turn.id).await?;
+
+        let final_turn = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(3)).await?;
+        assert_eq!(final_turn.status, RuntimeTurnStatus::Interrupted);
+        assert_eq!(
+            harness.recv_approval_event().await,
+            Some(MockApprovalEvent::Denied {
+                id: "tool_parked".to_string()
+            })
+        );
+        assert_eq!(manager.pending_approvals_count(), 0);
+        // The record settles just before the claim is released; wait for it.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline
+            && manager
+                .active_turn_flags(&thread.id, &turn.id)
+                .await
+                .is_some()
+        {
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        // And the thread takes a new turn right away.
+        let second = manager
+            .start_turn(&thread.id, start_request("after the interrupt"))
+            .await;
+        assert!(
+            second.is_ok(),
+            "{}",
+            second.err().map(|err| err.to_string()).unwrap_or_default()
         );
         Ok(())
     }
