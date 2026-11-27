@@ -1561,15 +1561,15 @@ impl RuntimeThreadManager {
     }
 
     async fn remember_thread_auto_approve(&self, thread_id: &str) {
-        let Ok(mut thread) = self.store.load_thread(thread_id) else {
-            return;
-        };
-        if thread.auto_approve {
-            return;
-        }
-        thread.auto_approve = true;
-        thread.updated_at = Utc::now();
-        if let Err(err) = self.store.save_thread(&thread) {
+        let flipped = self
+            .update_thread_record(thread_id, |thread| {
+                if !thread.auto_approve {
+                    thread.auto_approve = true;
+                    thread.updated_at = Utc::now();
+                }
+            })
+            .await;
+        if let Err(err) = flipped {
             tracing::warn!(
                 "Failed to persist auto_approve flip for thread {}: {}",
                 thread_id,
@@ -1807,72 +1807,80 @@ impl RuntimeThreadManager {
             bail!("mode must not be empty");
         }
 
-        let mut thread = self.get_thread(id).await?;
-        let mut changes = serde_json::Map::new();
+        // Applied to the record as it is on disk now, never to a copy read
+        // earlier: only the patched fields may change.
+        let (thread, changes) = self
+            .update_thread_record(id, |thread| {
+                let mut changes = serde_json::Map::new();
 
-        if let Some(archived) = req.archived
-            && thread.archived != archived
-        {
-            thread.archived = archived;
-            changes.insert("archived".to_string(), json!(archived));
-        }
-        if let Some(allow_shell) = req.allow_shell
-            && thread.allow_shell != allow_shell
-        {
-            thread.allow_shell = allow_shell;
-            changes.insert("allow_shell".to_string(), json!(allow_shell));
-        }
-        if let Some(trust_mode) = req.trust_mode
-            && thread.trust_mode != trust_mode
-        {
-            thread.trust_mode = trust_mode;
-            changes.insert("trust_mode".to_string(), json!(trust_mode));
-        }
-        if let Some(auto_approve) = req.auto_approve
-            && thread.auto_approve != auto_approve
-        {
-            thread.auto_approve = auto_approve;
-            changes.insert("auto_approve".to_string(), json!(auto_approve));
-        }
-        if let Some(model) = req.model
-            && thread.model != model
-        {
-            thread.model = model.clone();
-            changes.insert("model".to_string(), json!(model));
-        }
-        if let Some(mode) = req.mode
-            && thread.mode != mode
-        {
-            thread.mode = mode.clone();
-            changes.insert("mode".to_string(), json!(mode));
-        }
-        if let Some(title) = req.title {
-            // Empty string clears a previously-set title and reverts to derived.
-            let new_title = if title.trim().is_empty() {
-                None
-            } else {
-                Some(title)
-            };
-            if thread.title != new_title {
-                thread.title = new_title.clone();
-                changes.insert("title".to_string(), json!(new_title));
-            }
-        }
-        if let Some(system_prompt) = req.system_prompt {
-            let new_sys = if system_prompt.trim().is_empty() {
-                None
-            } else {
-                Some(system_prompt)
-            };
-            if thread.system_prompt != new_sys {
-                thread.system_prompt = new_sys.clone();
-                changes.insert("system_prompt".to_string(), json!(new_sys));
-            }
-        }
+                if let Some(archived) = req.archived
+                    && thread.archived != archived
+                {
+                    thread.archived = archived;
+                    changes.insert("archived".to_string(), json!(archived));
+                }
+                if let Some(allow_shell) = req.allow_shell
+                    && thread.allow_shell != allow_shell
+                {
+                    thread.allow_shell = allow_shell;
+                    changes.insert("allow_shell".to_string(), json!(allow_shell));
+                }
+                if let Some(trust_mode) = req.trust_mode
+                    && thread.trust_mode != trust_mode
+                {
+                    thread.trust_mode = trust_mode;
+                    changes.insert("trust_mode".to_string(), json!(trust_mode));
+                }
+                if let Some(auto_approve) = req.auto_approve
+                    && thread.auto_approve != auto_approve
+                {
+                    thread.auto_approve = auto_approve;
+                    changes.insert("auto_approve".to_string(), json!(auto_approve));
+                }
+                if let Some(model) = req.model
+                    && thread.model != model
+                {
+                    thread.model = model.clone();
+                    changes.insert("model".to_string(), json!(model));
+                }
+                if let Some(mode) = req.mode
+                    && thread.mode != mode
+                {
+                    thread.mode = mode.clone();
+                    changes.insert("mode".to_string(), json!(mode));
+                }
+                if let Some(title) = req.title {
+                    // Empty string clears a previously-set title and reverts to derived.
+                    let new_title = if title.trim().is_empty() {
+                        None
+                    } else {
+                        Some(title)
+                    };
+                    if thread.title != new_title {
+                        thread.title = new_title.clone();
+                        changes.insert("title".to_string(), json!(new_title));
+                    }
+                }
+                if let Some(system_prompt) = req.system_prompt {
+                    let new_sys = if system_prompt.trim().is_empty() {
+                        None
+                    } else {
+                        Some(system_prompt)
+                    };
+                    if thread.system_prompt != new_sys {
+                        thread.system_prompt = new_sys.clone();
+                        changes.insert("system_prompt".to_string(), json!(new_sys));
+                    }
+                }
+
+                if !changes.is_empty() {
+                    thread.updated_at = Utc::now();
+                }
+                changes
+            })
+            .await?;
 
         if !changes.is_empty() {
-            thread.updated_at = Utc::now();
-            self.save_thread_queue_synced(&mut thread).await?;
             self.emit_event(
                 &thread.id,
                 None,
@@ -2309,8 +2317,11 @@ impl RuntimeThreadManager {
         thread_id: &str,
         messages: &[Message],
     ) -> Result<()> {
-        let mut thread = self.get_thread(thread_id).await?;
+        // Checked to exist; updated at the end by field (see
+        // `update_thread_record`), never written back from this copy.
+        self.get_thread(thread_id).await?;
         let now = Utc::now();
+        let mut last_turn_id = None;
 
         let mut user_buf: Vec<String> = Vec::new();
         let mut pending_pairs: Vec<(String, Option<String>)> = Vec::new();
@@ -2417,11 +2428,17 @@ impl RuntimeThreadManager {
                 model: None,
             })?;
 
-            thread.latest_turn_id = Some(turn_id);
-            thread.updated_at = now;
+            last_turn_id = Some(turn_id);
         }
 
-        self.store.save_thread(&thread)?;
+        self.update_thread_record(thread_id, |thread| {
+            if let Some(turn_id) = last_turn_id {
+                thread.latest_turn_id = Some(turn_id);
+                thread.updated_at = now;
+            }
+        })
+        .await?;
+        let thread = self.get_thread(thread_id).await?;
         self.emit_event(
             thread_id,
             None,
@@ -2506,6 +2523,10 @@ impl RuntimeThreadManager {
         } else {
             (requested_model, None)
         };
+        // The record as it is now: a `PATCH` that landed while this launch
+        // waited on the engine load or the route must govern the turn it
+        // launches — turning `auto_approve` off is the case that matters.
+        thread = self.get_thread(thread_id).await?;
         let allow_shell = req_allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req_trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = req_auto_approve.unwrap_or(thread.auto_approve);
@@ -2582,10 +2603,11 @@ impl RuntimeThreadManager {
         let launched: Result<()> = async {
             self.store.save_item(&user_item)?;
             self.store.save_turn(&turn)?;
-
-            thread.latest_turn_id = Some(turn_id.clone());
-            thread.updated_at = now;
-            self.save_thread_queue_synced(&mut thread).await?;
+            self.update_thread_record(thread_id, |thread| {
+                thread.latest_turn_id = Some(turn_id.clone());
+                thread.updated_at = now;
+            })
+            .await?;
 
             self.emit_event(
                 thread_id,
@@ -2832,21 +2854,27 @@ impl RuntimeThreadManager {
         state.active_turn.is_some() || state.engine.turn_in_flight()
     }
 
-    /// Whole-record save that keeps the queue's two homes consistent: the
-    /// in-memory mirror owns the queue while the engine is loaded
-    /// (`mutate_queue` syncs record←mirror under the `active` lock), so a
-    /// caller's snapshot saved outside that lock would revert a prompt parked
-    /// in the gap — most visibly `launch_turn`, whose pre-claim auto-routing
-    /// can hold the window open for a model call's duration, erasing the
-    /// parked item from the durable record (a restart or LRU eviction would
-    /// then lose the user's prompt). Sync the queue from the mirror and save
-    /// under the same lock `mutate_queue` serializes on.
-    async fn save_thread_queue_synced(&self, thread: &mut ThreadRecord) -> Result<()> {
-        let mut active = self.active.lock().await;
-        if let Some(state) = active.engines.get_mut(&thread.id) {
-            thread.queue = state.queue.clone();
+    /// Apply `apply` to the thread's record as it is on disk NOW, save it,
+    /// and return it together with `apply`'s own result. Runs under the
+    /// `active` lock `mutate_queue` serializes on, with the queue mirrored
+    /// from the in-memory state (the mirror owns the queue while the engine
+    /// is loaded). Every caller changes one or two known fields; a caller
+    /// that wrote its own earlier copy back instead would revert whatever
+    /// landed while it waited on an engine load or a model call — most
+    /// visibly a `PATCH` answered 200 a moment before.
+    async fn update_thread_record<T>(
+        &self,
+        thread_id: &str,
+        apply: impl FnOnce(&mut ThreadRecord) -> T,
+    ) -> Result<(ThreadRecord, T)> {
+        let active = self.active.lock().await;
+        let mut thread = self.store.load_thread(thread_id)?;
+        if let Some(queue) = active.engines.get(thread_id).map(|state| &state.queue) {
+            thread.queue = queue.clone();
         }
-        self.store.save_thread(thread)
+        let value = apply(&mut thread);
+        self.store.save_thread(&thread)?;
+        Ok((thread, value))
     }
 
     /// Apply one mutation to a loaded thread's queue. The closure sees the
@@ -3131,7 +3159,7 @@ impl RuntimeThreadManager {
         thread_id: &str,
         req: CompactThreadRequest,
     ) -> Result<TurnRecord> {
-        let mut thread = self.get_thread(thread_id).await?;
+        let thread = self.get_thread(thread_id).await?;
         let engine = self.ensure_engine_loaded(&thread).await?;
 
         let now = Utc::now();
@@ -3181,10 +3209,11 @@ impl RuntimeThreadManager {
 
         let launched: Result<()> = async {
             self.store.save_turn(&turn)?;
-
-            thread.latest_turn_id = Some(turn_id.clone());
-            thread.updated_at = now;
-            self.save_thread_queue_synced(&mut thread).await?;
+            self.update_thread_record(thread_id, |thread| {
+                thread.latest_turn_id = Some(turn_id.clone());
+                thread.updated_at = now;
+            })
+            .await?;
 
             self.emit_event(
                 thread_id,
@@ -4259,10 +4288,12 @@ impl RuntimeThreadManager {
                     description,
                     reason,
                 } => {
-                    let mut thread = self.store.load_thread(&thread_id)?;
-                    thread.coherence_state = state;
-                    thread.updated_at = Utc::now();
-                    self.save_thread_queue_synced(&mut thread).await?;
+                    let (thread, ()) = self
+                        .update_thread_record(&thread_id, |thread| {
+                            thread.coherence_state = state;
+                            thread.updated_at = Utc::now();
+                        })
+                        .await?;
                     self.emit_event(
                         &thread_id,
                         Some(&turn_id),
@@ -4881,10 +4912,11 @@ impl RuntimeThreadManager {
             turn.model = turn_reported_model.or(turn.model);
             self.store.save_turn(&turn)?;
 
-            let mut thread = self.get_thread(&thread_id).await?;
-            thread.latest_turn_id = Some(turn_id.clone());
-            thread.updated_at = Utc::now();
-            self.save_thread_queue_synced(&mut thread).await?;
+            self.update_thread_record(&thread_id, |thread| {
+                thread.latest_turn_id = Some(turn_id.clone());
+                thread.updated_at = Utc::now();
+            })
+            .await?;
 
             self.emit_event(
                 &thread_id,
@@ -8006,6 +8038,46 @@ mod tests {
         );
         let active = manager.active.lock().await;
         assert_eq!(active.engines.len(), 1);
+        Ok(())
+    }
+
+    /// `launch_turn` changes `latest_turn_id` on the record as it is on
+    /// disk, never on the caller's earlier copy: a `PATCH` that lands while
+    /// the launch waits must survive it.
+    #[tokio::test]
+    async fn launch_turn_updates_the_stored_thread_not_the_callers_copy() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager.create_thread(create_request(None)).await?;
+        let thread_id = thread.id.clone();
+        let engine = install_mock_engine(&manager, &thread_id).await;
+
+        // The rename lands after the caller took its copy of the record.
+        let mut renamed = manager.get_thread(&thread_id).await?;
+        renamed.title = Some("renamed meanwhile".to_string());
+        manager.store.save_thread(&renamed)?;
+
+        manager
+            .launch_turn(
+                thread,
+                engine.handle.clone(),
+                TurnLaunch {
+                    content: "hello".to_string(),
+                    image_paths: Vec::new(),
+                    attachments_metadata: None,
+                    rpc_id: None,
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                },
+            )
+            .await?;
+
+        let stored = manager.get_thread(&thread_id).await?;
+        assert_eq!(stored.title.as_deref(), Some("renamed meanwhile"));
+        assert!(stored.latest_turn_id.is_some());
         Ok(())
     }
 
