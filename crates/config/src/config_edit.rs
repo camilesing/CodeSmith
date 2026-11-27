@@ -116,23 +116,36 @@ pub fn doc_unset(doc: &mut DocumentMut, path: &str) -> Result<bool, String> {
 
 /// After removing a leaf, walk back up the path marking tables that became
 /// key-less as implicit — toml_edit then omits their headers on render.
+/// The walk continues past the parent: tables a dotted `doc_set` created
+/// above the leaf are explicit, so an emptied `[sandbox.network]` would
+/// otherwise leave `[sandbox]` rendered with nothing in it.
 fn collapse_emptied_tables(doc: &mut DocumentMut, parents: &[&str]) {
-    let mut table = doc.as_table_mut();
-    for (index, segment) in parents.iter().enumerate() {
-        let Some(entry) = table.get_mut(segment) else {
+    for depth in (1..=parents.len()).rev() {
+        let Some(table) = table_at(doc, &parents[..depth]) else {
             return;
         };
-        let Item::Table(nested) = entry else {
-            return;
-        };
-        if index + 1 == parents.len() {
-            if nested.is_empty() {
-                nested.set_implicit(true);
-            }
+        // No key-values of its own, and nothing but tables already folded.
+        let folded = table.get_values().is_empty()
+            && table
+                .iter()
+                .all(|(_, item)| matches!(item, Item::Table(nested) if nested.is_implicit()));
+        if !folded {
             return;
         }
-        table = nested;
+        table.set_implicit(true);
     }
+}
+
+/// The table at `path`, when every segment names a table.
+fn table_at<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
+    let mut table = doc.as_table_mut();
+    for segment in path {
+        match table.get_mut(segment) {
+            Some(Item::Table(nested)) => table = nested,
+            _ => return None,
+        }
+    }
+    Some(table)
 }
 
 #[cfg(test)]
@@ -183,6 +196,17 @@ mod tests {
         doc_set(&mut doc, "sandbox.network.enabled", true.into()).expect("set succeeds");
         assert!(doc_unset(&mut doc, "sandbox.network.enabled").expect("unset succeeds"));
         assert!(!doc.to_string().contains("[sandbox.network]"));
+    }
+
+    /// A depth-3 key: `doc_set` creates both tables explicitly, so
+    /// folding only the immediate parent left an empty `[sandbox]` behind.
+    #[test]
+    fn unset_collapses_the_ancestors_a_dotted_set_created() {
+        let mut doc = doc("");
+        doc_set(&mut doc, "sandbox.network.enabled", true.into()).expect("set succeeds");
+        assert!(doc_unset(&mut doc, "sandbox.network.enabled").expect("unset succeeds"));
+        let rendered = doc.to_string();
+        assert!(!rendered.contains("[sandbox"), "{rendered:?}");
     }
 
     #[test]
