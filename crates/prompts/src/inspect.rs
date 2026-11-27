@@ -771,6 +771,7 @@ fn compact_tool_result_for_wire(
         };
     }
 
+    let mut persisted = true;
     if persist_eligible {
         // Persist any large result so a later truncation below stays
         // retrievable by SHA — this includes mutation tools, whose big
@@ -780,7 +781,7 @@ fn compact_tool_result_for_wire(
         // if the write fails, skip registration so later occurrences
         // stay inline instead of pointing at a file that was never
         // created.
-        let persisted = persist_tool_result_for_sha(&sha, content);
+        persisted = persist_tool_result_for_sha(&sha, content);
         if persisted && dedup_eligible {
             seen_tool_results.insert(
                 sha.clone(),
@@ -792,7 +793,10 @@ fn compact_tool_result_for_wire(
         }
     }
 
-    if original_chars <= TOOL_RESULT_SENT_CHAR_BUDGET {
+    // A truncation needs a retrievable copy: when the persist failed,
+    // the result goes out in full rather than elided with nothing to
+    // retrieve.
+    if original_chars <= TOOL_RESULT_SENT_CHAR_BUDGET || !persisted {
         return WireToolResult {
             content: content.to_string(),
             original_chars,
@@ -894,9 +898,12 @@ fn build_chat_messages_with_reasoning(
     let mut seen_tool_results: HashMap<String, SeenToolResult> = HashMap::new();
     let mut last_full_turn_meta: Option<LastFullTurnMeta> = None;
 
-    if let Some(instructions) = system_to_instructions(system.cloned())
-        && !instructions.trim().is_empty()
-    {
+    let instructions =
+        system_to_instructions(system.cloned()).filter(|text| !text.trim().is_empty());
+    // The wire array starts with the system message when there is one:
+    // input message `i` is wire message `i + 1` then.
+    let message_offset = usize::from(instructions.is_some());
+    if let Some(instructions) = instructions {
         out.push(json!({
             "role": "system",
             "content": instructions,
@@ -966,7 +973,7 @@ fn build_chat_messages_with_reasoning(
                     content,
                     ..
                 } => {
-                    let message_label = format!("Message #{message_index}");
+                    let message_label = format!("Message #{}", message_index + message_offset);
                     tool_results.push((tool_use_id.clone(), content.clone(), message_label));
                 }
                 ContentBlock::ServerToolUse { .. }
