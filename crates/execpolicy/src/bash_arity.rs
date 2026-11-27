@@ -492,7 +492,7 @@ fn contains_exec_capable_flag(tokens: &[&str]) -> bool {
     // lookup — an exact-name list let both through.
     const EXEC_FLAG_NAMES: &[&str] = &["--receive-pack", "--upload-pack"];
     tokens.iter().enumerate().any(|(idx, token)| {
-        let lower = token.to_ascii_lowercase();
+        let lower = arg(token);
         let flag_name = lower.split('=').next().unwrap_or("");
         if EXEC_FLAG_NAMES.contains(&flag_name)
             || flag_name == "--exec"
@@ -508,7 +508,7 @@ fn contains_exec_capable_flag(tokens: &[&str]) -> bool {
         if lower == "-o"
             && tokens
                 .get(idx + 1)
-                .is_some_and(|next| next.to_ascii_lowercase().starts_with("proxy"))
+                .is_some_and(|next| arg(next).starts_with("proxy"))
         {
             return true;
         }
@@ -562,7 +562,7 @@ fn git_config_carries_exec_key(tokens: &[&str]) -> bool {
         "core.fsmonitor",
     ];
     tokens[cfg + 2..].iter().any(|token| {
-        let lower = token.to_ascii_lowercase();
+        let lower = arg(token);
         // `--global core.sshCommand` and the attached `key=value` form both
         // land here; section prefixes like `--global` never match.
         let key = lower.split('=').next().unwrap_or("").trim_matches('-');
@@ -573,9 +573,23 @@ fn git_config_carries_exec_key(tokens: &[&str]) -> bool {
 /// `git clone ext::sh -c '…'` executes the transport helper's command — a
 /// positional token, so no flag check ever sees it.
 fn has_executing_transport(tokens: &[&str]) -> bool {
-    tokens
-        .iter()
-        .any(|token| token.starts_with("ext::") || token.starts_with("transport::"))
+    tokens.iter().any(|token| {
+        let unquoted = arg(token);
+        unquoted.starts_with("ext::") || unquoted.starts_with("transport::")
+    })
+}
+
+/// The argument the shell would pass, for the guards only: quotes and
+/// backslash escapes stripped, lowercased. A value with spaces has to be
+/// quoted to stay one argument, and the quoted spelling (`git push
+/// "--receive-pack=/bin/sh -c …"`) used to slip past every guard.
+/// Over-matching is the fail-closed direction here; the arity match keeps
+/// the raw tokens.
+fn arg(token: &str) -> String {
+    token
+        .trim_matches(|c| c == '"' || c == '\'')
+        .replace('\\', "")
+        .to_ascii_lowercase()
 }
 
 /// Commands whose *positional* tail (often after a `--` separator) executes
@@ -898,6 +912,9 @@ mod tests {
             "git config --global core.sshCommand /tmp/evil",
             "git config credential.helper '!/tmp/evil'",
             "git clone ext::sh -c 'touch /tmp/pwned'",
+            "git push \"--receive-pack=/bin/sh -c pwned\" origin",
+            "git clone \"ext::sh -c 'touch /tmp/pwned'\"",
+            "git config --global \"core.sshCommand\" /bin/sh",
             "ssh -oProxyCommand=/tmp/evil host",
         ] {
             assert!(
