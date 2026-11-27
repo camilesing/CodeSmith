@@ -11,19 +11,17 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 /// Prefix for plan slugs derived from UUIDs.
 const PLAN_SLUG_PREFIX: &str = "plan_";
 
 /// Resolve the plans directory: `~/.codesmith/plans/`.
 ///
-/// Creates the directory if it doesn't exist.
+/// Path only — no filesystem access, since it runs on the runtime worker;
+/// [`write_plan_file`] creates the directory.
 pub fn plans_dir() -> Result<PathBuf> {
-    let dir = codesmith_config::codesmith_home()?.join("plans");
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create plans directory at {}", dir.display()))?;
-    Ok(dir)
+    Ok(codesmith_config::codesmith_home()?.join("plans"))
 }
 
 /// Generate a unique plan slug.
@@ -31,6 +29,8 @@ pub fn plans_dir() -> Result<PathBuf> {
 /// `plan_` plus a UUID v4's 32 hex digits without dashes, e.g.
 /// `plan_a3f2b1c40d4e4f5a6b7c8d9e0f1a2b3`. Checks for collision with
 /// existing plan files and retries up to 10 times if a collision is found.
+/// Stats candidate paths (blocking): runtime callers go through
+/// [`generate_plan_slug_off_runtime`].
 pub fn generate_plan_slug() -> Result<String> {
     let dir = plans_dir()?;
     for _ in 0..10 {
@@ -48,6 +48,13 @@ pub fn generate_plan_slug() -> Result<String> {
     Ok(format!("{PLAN_SLUG_PREFIX}{uuid}"))
 }
 
+/// [`generate_plan_slug`] on the blocking pool.
+pub async fn generate_plan_slug_off_runtime() -> Result<String> {
+    tokio::task::spawn_blocking(generate_plan_slug)
+        .await
+        .map_err(|e| anyhow!("plan slug task failed: {e}"))?
+}
+
 /// Resolve the plan file path for a given slug.
 pub fn plan_file_path(slug: &str) -> Result<PathBuf> {
     // Slugs are generated `plan_<uuid-hex>`; reject anything that would not
@@ -63,6 +70,11 @@ pub fn plan_file_path(slug: &str) -> Result<PathBuf> {
 /// Creates the plans directory if it doesn't exist.
 pub async fn write_plan_file(slug: &str, content: &str) -> Result<PathBuf> {
     let path = plan_file_path(slug)?;
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .with_context(|| format!("failed to create plans directory at {}", dir.display()))?;
+    }
     tokio::fs::write(&path, content)
         .await
         .with_context(|| format!("failed to write plan file at {}", path.display()))?;
@@ -207,11 +219,16 @@ mod tests {
         assert_eq!(read_plan_file(&slug).await.expect("read"), None);
     }
 
-    #[test]
-    fn plans_dir_creates_directory() {
+    // lock_test_env serializes the whole async test (env mutation): the
+    // guard intentionally outlives every await in the body.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn write_plan_file_creates_the_plans_directory() {
         let _guard = lock_test_env();
         let _home = ScopedCodeSmithHome::new();
         let dir = plans_dir().expect("dir");
-        assert!(dir.exists());
+        assert!(!dir.exists(), "resolving the path touches nothing");
+        write_plan_file("plan_abc", "content").await.expect("write");
+        assert!(dir.is_dir(), "the write creates it");
     }
 }

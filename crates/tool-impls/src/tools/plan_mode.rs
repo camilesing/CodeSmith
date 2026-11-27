@@ -159,9 +159,11 @@ impl ToolSpec for EnterPlanModeTool {
         }
 
         // Generate slug for the plan file
-        let slug = plan_file::generate_plan_slug().map_err(|e| ToolError::ExecutionFailed {
-            message: format!("Failed to generate plan slug: {e}"),
-        })?;
+        let slug = plan_file::generate_plan_slug_off_runtime()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                message: format!("Failed to generate plan slug: {e}"),
+            })?;
 
         // Create empty plan file
         plan_file::write_plan_file(&slug, "")
@@ -387,8 +389,9 @@ impl ToolSpec for WritePlanFileTool {
         let slug = match state.current_slug.clone() {
             Some(slug) => slug,
             None => {
-                let slug =
-                    plan_file::generate_plan_slug().map_err(|e| ToolError::ExecutionFailed {
+                let slug = plan_file::generate_plan_slug_off_runtime()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed {
                         message: format!("Failed to generate plan slug: {e}"),
                     })?;
                 state.current_slug = Some(slug.clone());
