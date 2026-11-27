@@ -299,7 +299,7 @@ impl Settings {
             self.prefer_external_pdftotext
         ));
         lines.push(format!("  default_mode:       {}", self.default_mode));
-        lines.push(format!("  max_history:        {}", self.max_input_history));
+        lines.push(format!("  max_input_history:  {}", self.max_input_history));
         lines.push(format!(
             "  default_model:      {}",
             self.default_model.as_deref().unwrap_or("(default)")
@@ -430,6 +430,9 @@ mod tests {
         let settings = Settings::default();
         let en = settings.display(crate::localization::Locale::En);
         assert!(en.contains("Settings:"), "english header missing:\n{en}");
+        // The listing names the key a user can actually set.
+        assert!(en.contains("max_input_history:"), "{en}");
+        assert!(!en.contains("max_history:"), "{en}");
         assert!(
             en.contains("Config file:"),
             "english config label missing:\n{en}"
