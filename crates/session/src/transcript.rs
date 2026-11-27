@@ -174,9 +174,11 @@ pub const ERROR_MARKERS: &[&str] = &[
 
 /// Tool-call ids in `messages` that have no matching `tool_result` anywhere
 /// in the slice, in first-appearance order (duplicates collapse to the
-/// first). Order-agnostic on purpose: a terminator appended at the tail
-/// (crash-repair) answers a call recorded mid-transcript just as well.
-/// Shared by the session-load repair vocabulary and the balance predicate.
+/// first). Order-agnostic on purpose: the load-time repair
+/// (`store::repair_interrupted_tool_calls`) inserts a `TOOL_OUTCOME_UNKNOWN`
+/// terminator directly after the unanswered call's assistant message,
+/// wherever in the transcript it sits. Shared by the session-load repair
+/// vocabulary and the balance predicate.
 #[must_use]
 pub fn unanswered_tool_use_ids(messages: &[Message]) -> Vec<String> {
     let mut calls: Vec<String> = Vec::new();
@@ -209,8 +211,9 @@ pub fn unanswered_tool_use_ids(messages: &[Message]) -> Vec<String> {
 /// provider-acceptable transcript (and every compaction cut) must hold
 /// (the general agent's `toolPairingBalanced` counterpart). Compaction paths enforce this
 /// via `enforce_tool_call_pairs`; the session-load repair enforces it by
-/// appending `TOOL_OUTCOME_UNKNOWN` terminators. This predicate is the
-/// shared post-condition both are checked against.
+/// inserting `TOOL_OUTCOME_UNKNOWN` terminators right after each unanswered
+/// call. This predicate is the shared post-condition both are checked
+/// against.
 #[must_use]
 pub fn tool_call_pairs_balanced(messages: &[Message]) -> bool {
     if !unanswered_tool_use_ids(messages).is_empty() {
