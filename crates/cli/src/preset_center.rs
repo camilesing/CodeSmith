@@ -884,10 +884,10 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
     }
 }
 
-fn selection_source(config: &Config) -> &'static str {
+fn selection_source(config: &Config, persisted: bool) -> &'static str {
     if config.preset.is_some() || config.mode.is_some() {
         "config"
-    } else if crate::presets::persisted_selection().is_some() {
+    } else if persisted {
         "settings"
     } else {
         "default"
@@ -900,14 +900,22 @@ pub fn snapshot(
     workspace: &Path,
     config_path: &Path,
 ) -> anyhow::Result<PresetSnapshot> {
-    snapshot_with(startup, config_path, &PresetCatalog::load(Some(workspace)))
+    snapshot_with(
+        startup,
+        config_path,
+        &PresetCatalog::load(Some(workspace)),
+        crate::presets::persisted_selection(),
+    )
 }
 
-/// Testable core: [`snapshot`] against a caller-built catalog.
+/// Testable core: [`snapshot`] against a caller-built catalog. `persisted`
+/// is the preset the last `/preset` saved — passed in so tests never read
+/// the developer's settings file.
 fn snapshot_with(
     startup: &Config,
     config_path: &Path,
     preset_catalog: &PresetCatalog,
+    persisted: Option<String>,
 ) -> anyhow::Result<PresetSnapshot> {
     let raw = read_config_or_empty(config_path)
         .map_err(|err| anyhow::anyhow!("read config.toml: {err}"))?;
@@ -924,6 +932,9 @@ fn snapshot_with(
     let selection_raw = file_selection
         .clone()
         .or_else(|| startup.preset_selection().map(str::to_string))
+        // The preset the last `/preset` persisted: the REPL folds it at
+        // startup, and the page presents the same tier.
+        .or_else(|| persisted.clone())
         .unwrap_or_else(|| "middle".to_string());
     // What the name could not be resolved to is said here, never dropped:
     // the page highlights whatever `selected` ends up being.
@@ -982,7 +993,14 @@ fn snapshot_with(
     // restart-pending exactly like a dial whose file value differs from the
     // running fold — the fold above makes `view.preset` equal the file
     // selection, so the per-key comparison below cannot see it on its own.
-    let startup_tier = canonicalize_preset_name(startup.preset_selection().unwrap_or("middle"))
+    // A tier that comes only from the persisted selection is not
+    // restart-pending: `serve` folds nothing on launch for it to pick up.
+    let startup_selection = startup
+        .preset_selection()
+        .map(str::to_string)
+        .or_else(|| persisted.clone())
+        .unwrap_or_else(|| "middle".to_string());
+    let startup_tier = canonicalize_preset_name(&startup_selection)
         .map(|(name, _)| name)
         .unwrap_or_else(|_| "middle".to_string());
     let mut restart_pending = selection != startup_tier;
@@ -1090,7 +1108,7 @@ fn snapshot_with(
             selected_source: if file_selection.is_some() {
                 "config".to_string()
             } else {
-                selection_source(startup).to_string()
+                selection_source(startup, persisted.is_some()).to_string()
             },
             effective,
             deviated,
@@ -1392,7 +1410,7 @@ mod tests {
         // layer; the snapshot must still present what a launch folds.
         let (_dir, path) = temp_config("");
         let startup = Config::default();
-        let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
+        let snap = snapshot_with(&startup, &path, &builtin_catalog(), None).expect("snapshot");
         let index = key_state(&snap, "index.enabled");
         assert_eq!(index.value, Json::Bool(true));
         assert_eq!(index.source, KeySource::Baseline);
@@ -1407,10 +1425,12 @@ mod tests {
         // a differing tier is restart-pending like any deviating dial,
         // re-selecting the startup tier is not.
         let (_dir, path) = temp_config("preset = \"all\"\n");
-        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        let snap =
+            snapshot_with(&Config::default(), &path, &builtin_catalog(), None).expect("snapshot");
         assert!(snap.restart_pending, "all selected while running middle");
         std::fs::write(&path, "preset = \"middle\"\n").expect("rewrite fixture");
-        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        let snap =
+            snapshot_with(&Config::default(), &path, &builtin_catalog(), None).expect("snapshot");
         assert!(!snap.restart_pending, "the startup tier re-selected");
     }
 
@@ -1419,7 +1439,7 @@ mod tests {
         let (_dir, path) =
             temp_config("# my comment\nstrict_tool_mode = true\n\n[mystery]\nkeep = \"me\"\n");
         let startup = folded_startup();
-        let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
+        let snap = snapshot_with(&startup, &path, &builtin_catalog(), None).expect("snapshot");
 
         // File-present governed key that disagrees with middle's baseline:
         // explicit-file, resettable, and reports diy.
@@ -1465,7 +1485,7 @@ mod tests {
         // it here since the test folds the definition directly.
         startup.preset_deviated |= apply_to_config(&mut startup, &middle.definition);
         startup.preset = Some(middle.name.clone());
-        let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
+        let snap = snapshot_with(&startup, &path, &builtin_catalog(), None).expect("snapshot");
         let dial = key_state(&snap, "max_subagents");
         assert_eq!(dial.source, KeySource::ExplicitOther);
         assert!(!dial.resettable);
@@ -1477,7 +1497,7 @@ mod tests {
         let (_dir, path) = temp_config("api_key = \"sk-secret\"\n");
         let mut startup = folded_startup();
         startup.api_key = Some("sk-secret".to_string());
-        let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
+        let snap = snapshot_with(&startup, &path, &builtin_catalog(), None).expect("snapshot");
         let key = key_state(&snap, "api_key");
         assert!(key.secret);
         assert_eq!(key.value, Json::Null);
@@ -1498,7 +1518,7 @@ mod tests {
              [[providers.custom]]\nid = \"mine\"\napi_key = \"sk-custom\"\n",
         );
         let startup = folded_startup();
-        let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
+        let snap = snapshot_with(&startup, &path, &builtin_catalog(), None).expect("snapshot");
         assert_eq!(
             snap.file_tree.pointer("/providers/openai/api_key"),
             Some(&Json::String("•••".to_string()))
@@ -1523,7 +1543,8 @@ mod tests {
             "providers.openai = { base_url = \"https://x\", api_key = \"sk-live\" }\n\
              tokens = [\"a\", { api_key = \"sk-nested\", label = \"n\" }]\n",
         );
-        let snap = snapshot_with(&folded_startup(), &path, &builtin_catalog()).expect("snapshot");
+        let snap =
+            snapshot_with(&folded_startup(), &path, &builtin_catalog(), None).expect("snapshot");
         assert_eq!(
             snap.file_tree.pointer("/providers/openai/api_key"),
             Some(&Json::String("•••".to_string()))
@@ -1548,7 +1569,8 @@ mod tests {
     #[test]
     fn file_layer_hook_socket_path_reads_from_the_file() {
         let (_dir, path) = temp_config("[hook_sinks]\nunix_socket_path = \"/tmp/hooks.sock\"\n");
-        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        let snap =
+            snapshot_with(&Config::default(), &path, &builtin_catalog(), None).expect("snapshot");
         assert_eq!(
             key_state(&snap, "hook_sinks.unix_socket_path").value,
             Json::String("/tmp/hooks.sock".to_string())
@@ -1564,7 +1586,8 @@ mod tests {
     #[test]
     fn unresolved_preset_selection_is_warned_about() {
         let (_dir, path) = temp_config("preset = \"nope\"\n");
-        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        let snap =
+            snapshot_with(&Config::default(), &path, &builtin_catalog(), None).expect("snapshot");
         assert_eq!(snap.selection.selected, "middle");
         assert!(
             snap.warnings.iter().any(|warning| warning.contains("nope")),
@@ -1573,7 +1596,8 @@ mod tests {
         );
 
         std::fs::write(&path, "preset = \"balanced\"\n").expect("rewrite fixture");
-        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        let snap =
+            snapshot_with(&Config::default(), &path, &builtin_catalog(), None).expect("snapshot");
         assert!(
             snap.warnings
                 .iter()
@@ -1581,6 +1605,35 @@ mod tests {
             "{:?}",
             snap.warnings
         );
+    }
+
+    /// The tier the REPL's `/preset` persisted is the selection when neither
+    /// the file nor the CLI chose one — the documented precedence — and it is
+    /// not restart-pending; the file still wins over it.
+    #[test]
+    fn persisted_selection_is_the_selection_when_the_file_has_none() {
+        let (_dir, path) = temp_config("");
+        let snap = snapshot_with(
+            &Config::default(),
+            &path,
+            &builtin_catalog(),
+            Some("simple".to_string()),
+        )
+        .expect("snapshot");
+        assert_eq!(snap.selection.selected, "simple");
+        assert_eq!(snap.selection.selected_source, "settings");
+        assert!(!snap.restart_pending);
+
+        std::fs::write(&path, "preset = \"all\"\n").expect("rewrite fixture");
+        let snap = snapshot_with(
+            &Config::default(),
+            &path,
+            &builtin_catalog(),
+            Some("simple".to_string()),
+        )
+        .expect("snapshot");
+        assert_eq!(snap.selection.selected, "all");
+        assert_eq!(snap.selection.selected_source, "config");
     }
 
     #[test]
@@ -1593,7 +1646,7 @@ mod tests {
         let bogus = dir.path().join("config.toml");
         std::fs::create_dir_all(&bogus).expect("make dir at config path");
         let startup = folded_startup();
-        assert!(snapshot_with(&startup, &bogus, &builtin_catalog()).is_err());
+        assert!(snapshot_with(&startup, &bogus, &builtin_catalog(), None).is_err());
         let err = apply(
             &[PresetOp::Set {
                 path: "model".to_string(),
