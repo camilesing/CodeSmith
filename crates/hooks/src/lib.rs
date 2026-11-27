@@ -117,8 +117,9 @@ pub trait HookSink: Send + Sync {
 
 /// A [`HookSink`] that prints each event as a single JSON line to stdout.
 ///
-/// Useful for local development and debugging. Events are printed via
-/// [`println!`] so they appear interleaved with other program output.
+/// Useful for local development and debugging. Each event is written as one
+/// `write_all` through [`tokio::io::stdout`], so a closed pipe surfaces as an
+/// error instead of a panic.
 #[derive(Default)]
 pub struct StdoutHookSink;
 
