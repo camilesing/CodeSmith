@@ -139,8 +139,15 @@ pub fn discover_mods(global_roots: &[PathBuf], project_roots: &[PathBuf]) -> Vec
 
 /// Scan one mods root (container of mod subdirectories).
 fn discover_mods_in_root(root: &Path, global: bool, out: &mut Vec<DiscoveredMod>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        // A missing root is the normal case (a workspace without project
+        // mods); anything else hides every mod under it, so say so.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!("mods root {} unreadable: {e}", root.display());
+            return;
+        }
     };
     let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
     entries.sort_by_key(|e| e.path());
