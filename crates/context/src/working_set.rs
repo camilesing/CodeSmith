@@ -850,7 +850,10 @@ impl WorkingSet {
         entries.sort_by(|a, b| {
             let sb = score_entry(b, self.turn);
             let sa = score_entry(a, self.turn);
-            sb.cmp(&sa).then_with(|| a.path.cmp(&b.path))
+            b.exists
+                .cmp(&a.exists)
+                .then_with(|| sb.cmp(&sa))
+                .then_with(|| a.path.cmp(&b.path))
         });
         entries
     }
@@ -863,7 +866,16 @@ impl WorkingSet {
     /// `sorted_entries`; only the prompt-facing surface is stabilised here.
     fn sorted_for_prompt(&self) -> Vec<&WorkingSetEntry> {
         let mut entries: Vec<&WorkingSetEntry> = self.entries.values().collect();
-        entries.sort_by(|a, b| b.touches.cmp(&a.touches).then_with(|| a.path.cmp(&b.path)));
+        // Paths that exist rank first: prose `word/word` tokens (`and/or`,
+        // `login/logout`, a diff header's `a/src/lib.rs`) become candidates
+        // that do not exist on disk and used to tie with real paths, sorting
+        // ahead of them by name and taking their prompt slots.
+        entries.sort_by(|a, b| {
+            b.exists
+                .cmp(&a.exists)
+                .then_with(|| b.touches.cmp(&a.touches))
+                .then_with(|| a.path.cmp(&b.path))
+        });
         entries
     }
 }
@@ -1365,6 +1377,28 @@ mod tests {
         assert!(block.contains("Cargo.toml"));
         assert!(block.contains("src"));
         assert!(block.contains("src/lib.rs"));
+    }
+
+    /// Prose `word/word` tokens (`and/or`, `login/logout`) become candidates
+    /// that do not exist on disk. They used to tie with real paths and sort
+    /// ahead of them by name, taking their prompt slots.
+    #[test]
+    fn summary_block_ranks_paths_that_exist_ahead_of_nonexistent_candidates() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("lib.rs"), "pub fn x() {}").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.config.max_prompt_entries = 1;
+        ws.observe_user_message("fix login/logout and/or src/lib.rs", tmp.path());
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(block.contains("- src/lib.rs (file)"), "{block}");
+        assert!(!block.contains("and/or"), "{block}");
+        assert!(!block.contains("login/logout"), "{block}");
+        assert_eq!(ws.top_paths(3)[0], "src/lib.rs");
+        assert_eq!(ws.prompt_paths()[0], "src/lib.rs");
     }
 
     /// #280 regression: `summary_block` must produce byte-identical output
