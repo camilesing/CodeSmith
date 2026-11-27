@@ -241,7 +241,8 @@ assets, handled by gondolin). Commands run as `gondolin exec --sock`
 subprocesses, so output streams and exit codes are the subprocess's own.
 Its known limitations: interactive/tty/stdin unsupported; a killed
 command's guest-side survival is gondolin's socket-mode behavior (the VM
-stops at engine shutdown); network "on" maps to `--allow-host '*'` (the
+stops when the backend is dropped at a normal exit; a SIGKILLed CLI
+leaves it running); network "on" maps to `--allow-host '*'` (the
 CodeSmith vocabulary is on/off — mapping `[sandbox.network] allow` onto
 gondolin's per-host allowlist is a follow-up). Install via
 `npm install -g @earendil-works/gondolin` (QEMU required).
@@ -275,9 +276,9 @@ Semantics shared by every backend:
   `danger-full-access` policy never rides the sandbox auto-allow even
   with a backend set.
 - **Orphan hygiene.** Task containers carry a per-engine `codesmith.engine`
-  label plus a stable `codesmith.sandbox` product label. Engine shutdown
-  sweeps this instance's own containers (running tasks included);
-  `prepare()` reaps *exited* product-labelled containers left behind by
+  label plus a stable `codesmith.sandbox` product label. The manager's drop
+  path kills its live tasks; `prepare()` reaps *exited* product-labelled
+  containers left behind by
   crashed CLIs — the exited-only filter never touches another running
   instance's live tasks, and a dead CLI's still-running leftovers are
   reaped once they finish.

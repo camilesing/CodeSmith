@@ -210,7 +210,8 @@ microVM 会话——某形状的第一条命令支付 VM 启动开销（数秒�
 第一次运行还会下载约 200MB 的 guest 资产，由 gondolin 自理）。命令以
 `gondolin exec --sock` 子进程运行，输出流与退出码即该子进程自身的。
 其已知限制：不支持交互/TTY/stdin；被杀命令在 guest 侧是否随之终止
-取决于 gondolin 的 socket 模式行为（VM 在引擎关停时停止）；网络"开"
+取决于 gondolin 的 socket 模式行为（CLI 正常退出、后端被释放时 VM 停止；被 SIGKILL 的
+CLI 会让它继续运行）；网络"开"
 映射为 `--allow-host '*'`（CodeSmith 的词汇只有开/关——把
 `[sandbox.network] allow` 映射到 gondolin 的逐主机白名单是后续工作）。
 安装：`npm install -g @earendil-works/gondolin`（需要 QEMU）。
@@ -237,9 +238,9 @@ microVM 会话——某形状的第一条命令支付 VM 启动开销（数秒�
   会约束时授予 Auto；即使配置了后端，`danger-full-access` 策略也
   绝不搭沙箱免审批的车。
 - **孤儿清理。** 任务容器携带逐引擎的 `codesmith.engine` 标签和一个
-  稳定的 `codesmith.sandbox` 产品标签。引擎关闭时清扫本实例自己的
-  容器（含运行中的任务）；`prepare()` 清除崩溃 CLI 留下的、带产品
-  标签且已退出的容器——只按已退出过滤，绝不触碰其他运行中实例的
+  稳定的 `codesmith.sandbox` 产品标签。管理器释放时会结束仍在运行的任务；
+  `prepare()` 清除崩溃 CLI 留下的、带产品标签且已退出的容器——
+  只按已退出过滤，绝不触碰其他运行中实例的
   活任务；已死 CLI 仍在运行的任务在其结束后由下次启动清除。
 
 容器家族的已知限制：网络只有全开/全关（`--network none`；无逐主机

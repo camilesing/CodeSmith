@@ -27,11 +27,11 @@
 //! - interactive use (tty allocation, stdin writes) is not supported —
 //!   `docker run -d` cannot accept stdin after detach;
 //! - containers have no parent-death signal: a SIGKILLed CLI leaves them
-//!   behind. `stop()` sweeps this engine's own label at engine shutdown and
-//!   the manager's drop path kills each live task individually; `prepare()`
-//!   reaps *exited* product-labelled corpses left by crashed instances
+//!   behind. The manager's drop path kills each live task; `prepare()`
+//!   reaps *exited* product-labelled corpses left by earlier instances
 //!   (still-running leftovers of a dead CLI finish their command first and
-//!   are reaped by the next startup).
+//!   are reaped by the next startup). `stop()`, which would also remove this
+//!   engine's running containers, has no production caller;
 //! - denial classification recognizes only `Read-only file system`; a bare
 //!   `Permission denied` inside a container may be a real permission error
 //!   (image user/ownership) and is deliberately not classified.

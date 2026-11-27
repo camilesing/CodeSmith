@@ -31,9 +31,9 @@
 //!   allowlist, and CodeSmith's policy vocabulary is only on/off today
 //!   (mapping `[sandbox.network] allow` hosts onto the allowlist is a
 //!   follow-up);
-//! - killing the CLI does not stop session VMs: `stop()` kills the keeper
-//!   processes at engine shutdown, and gondolin's own `list` GC reaps
-//!   registry entries whose owner is gone;
+//! - a SIGKILLed CLI leaves session VMs running. A session's keeper is
+//!   killed when the backend is dropped (`stop()` does the same), and
+//!   gondolin's own `list` GC reaps registry entries whose owner is gone;
 //! - the workspace mount happens at session boot, so the first request for
 //!   a policy shape defines its mounts for the engine's lifetime (shapes
 //!   are keyed by the compiled spec, so differing shapes get their own
@@ -78,6 +78,16 @@ impl std::fmt::Debug for SessionVm {
             .field("session_id", &self.session_id)
             .field("keeper_pid", &self.keeper.id())
             .finish()
+    }
+}
+
+/// The keeper's lifetime is the VM's: dropping the session stops the VM.
+/// Structural on purpose — `stop()` relies on a host remembering to call
+/// it, and none does.
+impl Drop for SessionVm {
+    fn drop(&mut self) {
+        let _ = self.keeper.kill();
+        let _ = self.keeper.wait();
     }
 }
 
@@ -320,13 +330,12 @@ impl SandboxBackend for GondolinBackend {
 
 impl GondolinInner {
     fn stop(&self) -> Result<()> {
-        // Killing the keeper processes stops their VMs; gondolin's `list`
-        // GC reaps the registry entries afterwards.
-        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        for (_, mut session) in sessions.drain() {
-            let _ = session.keeper.kill();
-            let _ = session.keeper.wait();
-        }
+        // Dropping each session kills its keeper, which stops the VM;
+        // gondolin's `list` GC reaps the registry entries afterwards.
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         Ok(())
     }
 }
@@ -559,6 +568,32 @@ fn spawn_reader(mut stream: Box<dyn Read + Send>) -> ReaderJoin {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// The keeper used to outlive the backend, and nothing else stopped
+    /// it. Any long-lived child stands in for it (gondolin need not be
+    /// installed).
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_session_stops_its_keeper() {
+        let keeper = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = keeper.id();
+        drop(SessionVm {
+            session_id: "session".to_string(),
+            keeper,
+        });
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true);
+        assert!(
+            !alive,
+            "keeper {pid} still runs after the session was dropped"
+        );
+    }
 
     fn request(policy: SandboxPolicy, cmd: &str, cwd: &str) -> SandboxExecRequest {
         SandboxExecRequest {
