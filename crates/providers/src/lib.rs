@@ -82,8 +82,9 @@ use codesmith_config::{FactoryBackend, ProvidersManifest};
 /// The catalog is the [`providers.toml`](crate) bundled with this crate,
 /// unless `CODESMITH_PROVIDERS_MANIFEST` points at an override file — a
 /// non-empty override **replaces** the bundled catalog (ship a custom provider
-/// set without recompiling); a failed override load is logged and falls back to
-/// the bundled catalog.
+/// set without recompiling). An override that is set but loads no providers
+/// (bad path, parse error, or a file declaring none) panics at the first
+/// registry access: it never silently falls back to the bundled catalog.
 ///
 /// An entry whose `backend` Cargo feature is not compiled in is registered as
 /// an `UncompiledBackendFactory` stub whose `build` errors clearly (naming
