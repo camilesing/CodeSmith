@@ -36,7 +36,7 @@ impl ToolSpec for RetrieveToolResultTool {
     }
 
     fn description(&self) -> &'static str {
-        "Retrieve a previously spilled large tool result. Accepts a tool_call_id (`call_abc123`), artifact id (`art_call_abc123`), SHA reference (`sha:<64-hex>` or bare 64-hex from `<TOOL_RESULT_REF>`), relative filename (`call_abc123.txt`, `artifacts/art_call_abc123.txt`), or absolute path under ~/.codesmith. Modes: summary, head, tail, lines, query."
+        "Retrieve a previously spilled large tool result. Accepts a tool_call_id (`call_abc123`), artifact id (`art_call_abc123`), SHA reference (`sha:<64-hex>`), relative filename (`call_abc123.txt`, `artifacts/art_call_abc123.txt`), or absolute path under ~/.codesmith. Modes: summary, head, tail, lines, query."
     }
 
     fn input_schema(&self) -> Value {
@@ -356,10 +356,8 @@ fn not_found(
          Accepted ref forms: \
          (a) `<tool_call_id>` for legacy spillover, \
          (b) `art_<tool_call_id>` for session artifacts, \
-         (c) `sha:<64-hex>` or bare 64-hex from a <TOOL_RESULT_REF> block, \
+         (c) `sha:<64-hex>` or bare 64-hex, \
          (d) `artifacts/art_<id>.txt` or `<id>.txt` relative paths. \
-         If the source was a `<TOOL_RESULT_REF sha=\"...\" />` block, copy the \
-         sha value and pass it as `ref=sha:<value>`. \
          If the source was an [artifact ...] block, pass the `id:` field \
          (the `art_<id>` form) directly.",
         legacy = legacy_root.display(),

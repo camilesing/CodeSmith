@@ -6,6 +6,14 @@
 //! reusable by any host, not just the `codesmith-tui` binary (ROADMAP §A —
 //! slice 41). The two pure helpers below (`to_api_tool_name`,
 //! `system_to_instructions`) moved in from the former parent `client` module.
+//!
+//! Known limitation — no in-tree caller: both entry points lost their
+//! last caller when the ratatui tree was removed (d15341fe5), and the only
+//! re-export is `codesmith_agent_runtime::prompt_inspect`. Nothing here runs
+//! in a shipped binary: the wire path has no tool-result dedup and no
+//! `<TOOL_RESULT_REF>` producer — large results are cut where the engine
+//! records them (`compact_tool_result_for_context`). Kept as an embedder
+//! API; whether to retire it is an open product decision.
 
 use std::collections::{HashMap, HashSet};
 
