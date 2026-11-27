@@ -419,16 +419,7 @@ fn load_project_tier(
     excludes: &[PathBuf],
     processed: &mut HashSet<PathBuf>,
 ) -> Option<(MemoryTier, String)> {
-    if let Some(found) = find_project_file(workspace)
-        && let Some(c) = process_memory_file(
-            &found,
-            MemoryTier::Project,
-            workspace,
-            processed,
-            excludes,
-            0,
-        )
-    {
+    if let Some(c) = load_project_file(workspace, processed, excludes) {
         return Some(c);
     }
     let Some(raw_home) = home else {
@@ -457,10 +448,7 @@ fn load_project_tier(
             );
             break;
         }
-        if let Some(found) = find_project_file(parent)
-            && let Some(c) =
-                process_memory_file(&found, MemoryTier::Project, parent, processed, excludes, 0)
-        {
+        if let Some(c) = load_project_file(parent, processed, excludes) {
             return Some(c);
         }
         current = parent.parent();
@@ -468,13 +456,25 @@ fn load_project_tier(
     None
 }
 
-/// First existing project-context filename in `dir`, by `PROJECT_CONTEXT_FILES`
-/// priority.
-fn find_project_file(dir: &Path) -> Option<PathBuf> {
+/// The first project-context file in `dir` that loads, by
+/// `PROJECT_CONTEXT_FILES` priority. A name that exists but cannot be used
+/// (empty, oversized, excluded, a symlink out of the tier) is skipped: the
+/// tier used to give up on the whole directory there, and the valid file
+/// beside it never reached the model.
+fn load_project_file(
+    dir: &Path,
+    processed: &mut HashSet<PathBuf>,
+    excludes: &[PathBuf],
+) -> Option<(MemoryTier, String)> {
     for filename in PROJECT_CONTEXT_FILES {
         let path = dir.join(filename);
-        if path.exists() && path.is_file() {
-            return Some(path);
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(c) =
+            process_memory_file(&path, MemoryTier::Project, dir, processed, excludes, 0)
+        {
+            return Some(c);
         }
     }
     None
@@ -831,6 +831,22 @@ mod tests {
             );
             assert!(merged.contains("root"));
         }
+    }
+
+    /// An `AGENTS.md` that exists but cannot be used (here a whitespace
+    /// placeholder) used to make the tier give up on the whole directory, so
+    /// the valid `CLAUDE.md` beside it never reached the model.
+    #[test]
+    fn an_unusable_top_priority_file_falls_through_to_the_next_name() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        write(&ws.join("AGENTS.md"), "   \n");
+        write(&ws.join("CLAUDE.md"), "# Claude rules");
+
+        let merged = load_all_memory_tiers(ws, None, &[]);
+
+        assert!(merged.contains("<!-- tier: project -->"), "{merged}");
+        assert!(merged.contains("Claude rules"), "{merged}");
     }
 
     #[test]
