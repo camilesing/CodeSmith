@@ -3766,59 +3766,74 @@ impl Engine {
     /// use [`Self::refresh_system_prompt_offloaded`].
     pub fn refresh_system_prompt(&mut self, mode: AppMode) {
         let inputs = self.gather_prompt_fs_inputs_blocking();
-        self.apply_system_prompt_refresh(mode, inputs);
+        let build = self.prompt_build_inputs(inputs);
+        let (base, gate_block) = build_base_prompt(mode, self.session.approval_mode, build);
+        self.apply_system_prompt_refresh(gate_block, base);
     }
 
-    /// Async variant of [`Self::refresh_system_prompt`] whose I/O gather
-    /// runs on the blocking pool.
+    /// Async variant of [`Self::refresh_system_prompt`] whose I/O — the
+    /// input gather and the bundle build alike — runs on the blocking pool.
     pub async fn refresh_system_prompt_offloaded(&mut self, mode: AppMode) {
         let inputs = self.gather_prompt_fs_inputs().await;
-        self.apply_system_prompt_refresh(mode, inputs);
+        // The bundle build does its own filesystem work (the project
+        // context pack walk, the tier lookup, `instructions`, handoff and
+        // appended prompt files): it used to run inline on the engine's
+        // task after only the three inputs above were offloaded.
+        let build = self.prompt_build_inputs(inputs);
+        let approval_mode = self.session.approval_mode;
+        let (base, gate_block) = match tokio::task::spawn_blocking(move || {
+            build_base_prompt(mode, approval_mode, build)
+        })
+        .await
+        {
+            Ok(built) => built,
+            // Inline, a panic in the build unwound the caller: same here.
+            Err(err) => match err.try_into_panic() {
+                Ok(panic) => std::panic::resume_unwind(panic),
+                Err(err) => unreachable!("a blocking task fails only by panicking: {err}"),
+            },
+        };
+        self.apply_system_prompt_refresh(gate_block, base);
     }
 
-    fn apply_system_prompt_refresh(&mut self, mode: AppMode, inputs: PromptFsInputs) {
+    /// Everything the bundle build reads, owned: the build can run on the
+    /// blocking pool.
+    fn prompt_build_inputs(&self, inputs: PromptFsInputs) -> PromptBuildInputs {
         let PromptFsInputs {
             user_memory_block,
             knowledge_prompt_block,
             skills_block,
             slop_gate_block: gate_block,
         } = inputs;
-        let prompt_goal_objective = goal_objective_for_prompt(
-            self.config.goal_objective.as_deref(),
-            &self.config.goal_state,
-        );
-        let runtime_context = prompts::PromptSessionContext {
-            user_memory_block: user_memory_block.as_deref(),
-            knowledge_prompt_block: knowledge_prompt_block.as_deref(),
-            goal_objective: prompt_goal_objective.as_deref(),
+        PromptBuildInputs {
+            user_memory_block,
+            knowledge_prompt_block,
+            skills_block,
+            gate_block,
+            goal_objective: goal_objective_for_prompt(
+                self.config.goal_objective.as_deref(),
+                &self.config.goal_state,
+            ),
+            workspace: self.config.workspace.clone(),
+            skills_dir: self.config.skills_dir.clone(),
+            instructions: self.config.instructions.clone(),
+            override_system_prompt: self.config.override_system_prompt.clone(),
+            custom_system_prompt: self.config.custom_system_prompt.clone(),
+            coordinator_system_prompt: self.config.coordinator_system_prompt.clone(),
+            agent_system_prompt: self.config.agent_system_prompt.clone(),
+            append_system_prompts: self.config.append_system_prompts.clone(),
+            cache_breaker: self.config.cache_breaker.clone(),
             project_context_pack_enabled: self.config.project_context_pack_enabled,
-            locale_tag: &self.config.locale_tag,
+            locale_tag: self.config.locale_tag.clone(),
             translation_enabled: self.config.translation_enabled,
-            model_id: &self.config.model,
+            model: self.config.model.clone(),
             show_thinking: self.config.show_thinking,
             is_simple: self.config.is_simple,
             personality: self.config.personality,
-            skills_block,
         }
-        .runtime();
-        let base = prompts::effective_prompt_bundle_for_mode_with_runtime_context_and_approval(
-            mode,
-            &self.config.workspace,
-            None,
-            Some(&self.config.skills_dir),
-            Some(&self.config.instructions),
-            prompts::PromptRuntimeContext {
-                override_system_prompt: self.config.override_system_prompt.as_deref(),
-                custom_system_prompt: self.config.custom_system_prompt.as_deref(),
-                coordinator_system_prompt: self.config.coordinator_system_prompt.as_deref(),
-                agent_system_prompt: self.config.agent_system_prompt.as_deref(),
-                append_system_prompts: &self.config.append_system_prompts,
-                cache_breaker: self.config.cache_breaker.as_deref(),
-                ..runtime_context
-            },
-            self.session.approval_mode,
-        )
-        .render_system_prompt();
+    }
+
+    fn apply_system_prompt_refresh(&mut self, gate_block: Option<String>, base: SystemPrompt) {
         // SlopLedger completion-gate: inject unresolved slop entries into the
         // system prompt so the agent can autonomously review them before
         // claiming the task is done (#2127). The block itself was gathered
@@ -4204,6 +4219,99 @@ struct PromptFsInputs {
     knowledge_prompt_block: Option<String>,
     skills_block: Option<String>,
     slop_gate_block: Option<String>,
+}
+
+/// Everything the base-prompt build reads, owned, so the build can run on
+/// the blocking pool.
+struct PromptBuildInputs {
+    user_memory_block: Option<String>,
+    knowledge_prompt_block: Option<String>,
+    skills_block: Option<String>,
+    gate_block: Option<String>,
+    goal_objective: Option<String>,
+    workspace: PathBuf,
+    skills_dir: PathBuf,
+    instructions: Vec<prompts::InstructionSource>,
+    override_system_prompt: Option<String>,
+    custom_system_prompt: Option<String>,
+    coordinator_system_prompt: Option<String>,
+    agent_system_prompt: Option<String>,
+    append_system_prompts: Vec<prompts::PromptAppendSource>,
+    cache_breaker: Option<String>,
+    project_context_pack_enabled: bool,
+    locale_tag: String,
+    translation_enabled: bool,
+    model: String,
+    show_thinking: bool,
+    is_simple: bool,
+    personality: prompts::Personality,
+}
+
+/// Build the base system prompt, before the slop gate and the compaction
+/// summary are merged, and hand back the gate block it carried. Reads
+/// workspace files: inline for embeds, on the blocking pool for the engine
+/// loop.
+fn build_base_prompt(
+    mode: AppMode,
+    approval_mode: crate::mode::ApprovalMode,
+    build: PromptBuildInputs,
+) -> (SystemPrompt, Option<String>) {
+    let PromptBuildInputs {
+        user_memory_block,
+        knowledge_prompt_block,
+        skills_block,
+        gate_block,
+        goal_objective,
+        workspace,
+        skills_dir,
+        instructions,
+        override_system_prompt,
+        custom_system_prompt,
+        coordinator_system_prompt,
+        agent_system_prompt,
+        append_system_prompts,
+        cache_breaker,
+        project_context_pack_enabled,
+        locale_tag,
+        translation_enabled,
+        model,
+        show_thinking,
+        is_simple,
+        personality,
+    } = build;
+    let runtime_context = prompts::PromptSessionContext {
+        user_memory_block: user_memory_block.as_deref(),
+        knowledge_prompt_block: knowledge_prompt_block.as_deref(),
+        goal_objective: goal_objective.as_deref(),
+        project_context_pack_enabled,
+        locale_tag: &locale_tag,
+        translation_enabled,
+        model_id: &model,
+        show_thinking,
+        is_simple,
+        personality,
+        skills_block,
+    }
+    .runtime();
+    let base = prompts::effective_prompt_bundle_for_mode_with_runtime_context_and_approval(
+        mode,
+        &workspace,
+        None,
+        Some(&skills_dir),
+        Some(&instructions),
+        prompts::PromptRuntimeContext {
+            override_system_prompt: override_system_prompt.as_deref(),
+            custom_system_prompt: custom_system_prompt.as_deref(),
+            coordinator_system_prompt: coordinator_system_prompt.as_deref(),
+            agent_system_prompt: agent_system_prompt.as_deref(),
+            append_system_prompts: &append_system_prompts,
+            cache_breaker: cache_breaker.as_deref(),
+            ..runtime_context
+        },
+        approval_mode,
+    )
+    .render_system_prompt();
+    (base, gate_block)
 }
 
 /// Cancels the engine-lifetime token when dropped — however `run_inner`
