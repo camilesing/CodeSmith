@@ -529,9 +529,18 @@ impl SendMessageTool {
                         ToolError::execution_failed(format!("Plan approval failed: {}", e))
                     })?;
                     mark_request_handled(&request_id);
+                    // A requested mode is recorded by the teammate, not
+                    // enforced on its runs: say so rather than imply a switch.
+                    let mode_note = if obj.get("permission_mode").is_some() {
+                        format!(
+                            " (permission_mode {permission_mode} recorded; not yet enforced on its runs)"
+                        )
+                    } else {
+                        String::new()
+                    };
                     ToolResult::json(&json!({
                         "success": true,
-                        "message": format!("Plan approved for {}", recipient),
+                        "message": format!("Plan approved for {}{mode_note}", recipient),
                         "request_id": request_id,
                     }))
                     .map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -573,7 +582,10 @@ impl SendMessageTool {
                 )?;
                 ToolResult::json(&json!({
                     "success": true,
-                    "message": format!("Mode set request sent to {}: {}", recipient, permission_mode),
+                    "message": format!(
+                        "Mode set request sent to {}: {} (recorded by the teammate; not yet enforced on its runs)",
+                        recipient, permission_mode
+                    ),
                 })).map_err(|e| ToolError::execution_failed(e.to_string()))
             }
             "team_permission_update" => {

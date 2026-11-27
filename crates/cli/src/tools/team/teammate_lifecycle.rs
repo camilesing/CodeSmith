@@ -66,7 +66,12 @@ pub struct TeammateRuntime {
     pub cancel_token: CancellationToken,
     pub task_v2_manager: SharedTaskV2Manager,
     pub initial_prompt: String,
-    /// Current permission mode, updated by ModeSetRequest and PlanApprovalResponse.
+    /// Permission mode recorded by ModeSetRequest and by an approved
+    /// PlanApprovalResponse.
+    ///
+    /// Known limitation: recorded, not enforced. Nothing reads it when the
+    /// teammate's prompts run, so the mode never reaches the sub-agent run;
+    /// the sending side says so in its result.
     pub permission_mode: String,
     /// Registry for pending permission requests awaiting leader approval.
     pub permission_registry: SharedPermissionRequestRegistry,
