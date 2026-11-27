@@ -5,7 +5,8 @@
 //! so both in-crate unit tests and cross-crate integration tests can
 //! mock at the `LlmClient` trait boundary.
 //!
-//! This client implements the [`LlmClient`](super::LlmClient) trait by replaying a
+//! This client implements the
+//! [`LlmClient`](codesmith_agent::llm_client::LlmClient) trait by replaying a
 //! pre-loaded queue of canned responses (one per turn). It captures every
 //! request the runtime sends so tests can assert on the outgoing payload —
 //! e.g. confirming that prior `reasoning_content` is replayed in DeepSeek V4
@@ -21,8 +22,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use crate::llm_client::mock::{MockLlmClient, canned};
-//! use crate::llm_client::LlmClient;
+//! use codesmith_agent::llm_client::LlmClient;
+//! use codesmith_agent_runtime::test_support::mock_llm::{MockLlmClient, canned};
 //!
 //! // One canned turn that emits "hello world" as two text deltas, then
 //! // finishes with stop_reason = "end_turn".

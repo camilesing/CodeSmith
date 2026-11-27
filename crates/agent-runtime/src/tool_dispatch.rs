@@ -1,14 +1,11 @@
 //! Tool dispatch trait and eager metadata struct.
 //!
-//! The engine core holds a `Box<dyn ToolDispatcher>` per turn and invokes
-//! tool execution, metadata queries, approval checks, and catalog generation
-//! through this trait — without depending on the CLI's concrete
-//! `ToolRegistry` or the fat `ToolContext` (which carries terminal-coupled
-//! services like `shell_manager` and `lsp_manager` that cannot live in the
-//! runtime crate).
-//!
-//! The CLI implements `ToolDispatcher` for `ToolRegistry`, delegating to its
-//! inherent methods and passing its internal `ToolContext` to tools.
+//! The engine holds an `Option<Arc<dyn ToolDispatcher>>` and invokes tool
+//! execution, metadata queries, approval checks, and catalog generation
+//! through this trait, without naming the concrete registry or the fat
+//! `ToolContext`. `ToolRegistry`, `ToolContext` and the `ToolSpec` trait all
+//! live in this crate (`tools::registry`, `tools::spec`), and
+//! `ToolRegistry` is the one production implementor (`tools::registry`).
 
 use std::sync::Arc;
 
@@ -21,8 +18,8 @@ use crate::hooks::HookHost;
 /// Eager, input-independent metadata for a registered tool.
 ///
 /// Captured once per tool (not per call) so the engine can make approval and
-/// scheduling decisions without holding a `dyn ToolSpec` (which lives in the
-/// tool-impls crate alongside the fat `ToolContext`).
+/// scheduling decisions without holding a `dyn ToolSpec` (which lives in
+/// `tools::spec` alongside the fat `ToolContext`).
 #[derive(Debug, Clone)]
 pub struct ToolMetadata {
     /// Canonical tool name.
@@ -60,10 +57,10 @@ impl ToolMetadata {
 
 /// Per-turn tool dispatch surface.
 ///
-/// Implemented by the CLI's `ToolRegistry`. The engine holds
-/// `Option<Box<dyn ToolDispatcher>>` and routes all tool calls, metadata
-/// queries, and catalog generation through this trait, keeping the
-/// `ToolContext` and `ToolSpec` trait on the host side.
+/// Implemented by `ToolRegistry` (`tools::registry`). The engine holds
+/// `Option<Arc<dyn ToolDispatcher>>` and routes all tool calls, metadata
+/// queries, and catalog generation through this trait, so the turn loop
+/// never names the `ToolContext` or the `ToolSpec` trait.
 #[async_trait::async_trait]
 pub trait ToolDispatcher: Send + Sync {
     /// Whether a tool with `name` is registered (canonical name). The default
