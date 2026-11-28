@@ -247,14 +247,16 @@ mod tests {
 
     #[test]
     fn missing_variable_fails_loud_naming_it_and_known_keys() {
+        // The known key is spelled to occur nowhere in the message's fixed
+        // wording: `known` alone would match "known variables:" itself.
         let template =
-            ChatPromptTemplate::from_messages(vec![(PromptRole::User, "{known} {missing}".into())]);
+            ChatPromptTemplate::from_messages(vec![(PromptRole::User, "{alpha} {missing}".into())]);
         let err = template
-            .format(&vars(&[("known", "x")]))
+            .format(&vars(&[("alpha", "x")]))
             .expect_err("missing var must fail");
         let msg = format!("{err:#}");
         assert!(msg.contains("'missing'"), "{msg}");
-        assert!(msg.contains("known"), "{msg}");
+        assert!(msg.contains("[alpha]"), "{msg}");
     }
 
     #[test]
