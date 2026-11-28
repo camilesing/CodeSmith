@@ -2857,14 +2857,21 @@ mod tests {
         let mut server = server_over(FileSessionStore::new(tmp.path().join("s")).unwrap());
         open_session(&mut server, "acp-gates", tmp.path());
         let mock = crate::core::engine::mock_engine_handle();
+        // The mock leaves no receiver on the engine's user-input channel; a
+        // live one is what makes the ask-user refusal observable.
+        let (tx_user_input, mut rx_user_input) = tokio::sync::mpsc::channel(32);
+        let handle = crate::core::engine::EngineHandle {
+            tx_user_input,
+            ..mock.handle.clone()
+        };
         {
             let mut sessions = lock_sessions(&server.shared.sessions);
-            sessions.get_mut("acp-gates").expect("session").engine = Some(mock.handle.clone());
+            sessions.get_mut("acp-gates").expect("session").engine = Some(handle.clone());
         }
         let shared = server.shared.clone();
 
         let pump = tokio::spawn(pump_events(
-            mock.handle.clone(),
+            handle,
             shared.clone(),
             "acp-gates".to_string(),
             sink(),
@@ -2902,10 +2909,10 @@ mod tests {
             })
             .await
             .expect("event");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        pump.abort();
 
-        // Both tool gates were denied through the engine's approval channel.
+        // Both tool gates were denied through the engine's approval channel,
+        // and the ask-user prompt was cancelled on the user-input channel:
+        // with no protocol shape to ask it, the turn must not wait on it.
         let mut mock = mock;
         let mut denials = 0;
         while let Ok(Some(event)) = tokio::time::timeout(
@@ -2919,6 +2926,16 @@ mod tests {
             }
         }
         assert_eq!(denials, 2, "path access and elevation must both be denied");
+        let decision =
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx_user_input.recv())
+                .await
+                .expect("the pump must refuse the ask-user prompt")
+                .expect("a user-input decision arrived");
+        let crate::core::engine::UserInputDecision::Cancelled { id } = decision else {
+            panic!("the ask-user prompt is refused by cancelling it, got {decision:?}");
+        };
+        assert_eq!(id, "u1", "the refusal names the prompt that was asked");
+        pump.abort();
     }
 
     /// A session "always" grant answers the approval without asking the
