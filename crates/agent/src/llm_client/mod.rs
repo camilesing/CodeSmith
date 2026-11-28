@@ -967,15 +967,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn infinite_total_timeout_means_no_total_timeout() {
+    #[tokio::test]
+    async fn infinite_total_timeout_means_no_total_timeout() {
         // `+inf` passes the `> 0.0` guard; constructing the Duration used
-        // to panic. The with_retry loop treats it as unbounded (None), so
-        // this test exercises the config boundary indirectly by asserting
-        // the guard expression's behavior.
+        // to panic. `with_retry` treats it as unbounded (None): the loop
+        // neither panics nor answers a timeout.
         let config = RetryConfig::new().with_total_timeout(f64::INFINITY);
-        assert!(config.total_timeout > 0.0);
-        assert!(!config.total_timeout.is_finite());
+        let result = with_retry::<_, _, ()>(&config, || async { Ok(()) }, None).await;
+        assert!(
+            result.is_ok(),
+            "a +inf budget must behave as 'no total timeout', got {result:?}"
+        );
     }
 
     #[tokio::test]
