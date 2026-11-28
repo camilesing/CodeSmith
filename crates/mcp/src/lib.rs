@@ -1960,14 +1960,22 @@ mod tests {
 
     #[test]
     fn dispatch_tools_call_unqualified_uses_server_param() {
-        let mut state = stdio_state();
-        let (result, _) = dispatch(
-            &mut state,
-            "tools/call",
-            json!({"name": "health", "server": "srv"}),
-        )
-        .unwrap();
-        assert_eq!(result["result"]["status"], "ok");
+        // Two servers, and both answer `health` with `status: ok`: only the
+        // name the responder echoes tells a call routed by the param from
+        // one routed to whichever server is registered.
+        let mut state = build_stdio_state(vec![
+            server_definition("aaa", true),
+            server_definition("srv", true),
+        ]);
+        for server in ["aaa", "srv"] {
+            let (result, _) = dispatch(
+                &mut state,
+                "tools/call",
+                json!({"name": "health", "server": server}),
+            )
+            .unwrap();
+            assert_eq!(result["result"]["server_name"], server);
+        }
     }
 
     #[test]
