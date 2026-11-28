@@ -3005,6 +3005,15 @@ mod tests {
         }
     }
 
+    /// The next op the mock engine receives. `release` sends its shutdown
+    /// from a detached task, so the op lands a moment after the call.
+    async fn next_op(mock: &mut crate::core::engine::MockEngineHandle) -> Op {
+        tokio::time::timeout(std::time::Duration::from_millis(500), mock.rx_op.recv())
+            .await
+            .expect("the engine must receive an op")
+            .expect("op channel open")
+    }
+
     /// Beyond `MAX_ACP_SESSIONS` the oldest tracked session is evicted
     /// (engine shut down, pump aborted) before a new one is inserted.
     #[tokio::test]
@@ -3013,11 +3022,14 @@ mod tests {
         for index in 0..MAX_ACP_SESSIONS {
             sessions.insert(format!("s{index}"), session_entry());
         }
-        // The oldest entry is identifiable by its creation stamp.
+        // The oldest entry is identifiable by its creation stamp, and owns
+        // a live engine so the release is observable.
+        let mut oldest_engine = crate::core::engine::mock_engine_handle();
         sessions.insert(
             "oldest".to_string(),
             AcpSession {
                 created_at: Instant::now() - std::time::Duration::from_secs(600),
+                engine: Some(oldest_engine.handle.clone()),
                 ..session_entry()
             },
         );
@@ -3025,6 +3037,8 @@ mod tests {
         evict_oldest_if_full(&mut sessions);
         assert_eq!(sessions.len(), MAX_ACP_SESSIONS);
         assert!(!sessions.contains_key("oldest"), "the oldest entry goes");
+        // ...and it was released, not just forgotten: its engine is shut down.
+        assert!(matches!(next_op(&mut oldest_engine).await, Op::Shutdown));
 
         // Below the cap nothing is evicted.
         let mut small = HashMap::new();
@@ -3038,7 +3052,8 @@ mod tests {
     #[tokio::test]
     async fn release_shuts_the_engine_down_and_aborts_the_pump() {
         let mut mock = crate::core::engine::mock_engine_handle();
-        let pump = tokio::spawn(async {});
+        // A pump that never ends on its own: only the abort can finish it.
+        let pump = tokio::spawn(std::future::pending::<()>());
         let session = AcpSession {
             pump_task: Some(pump.abort_handle()),
             engine: Some(mock.handle.clone()),
@@ -3047,17 +3062,15 @@ mod tests {
 
         release(session);
 
-        let shutdown = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-            loop {
-                if let Ok(op) = mock.rx_op.try_recv() {
-                    return op;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the engine must receive a shutdown op");
-        assert!(matches!(shutdown, Op::Shutdown));
+        let aborted = tokio::time::timeout(std::time::Duration::from_millis(500), pump)
+            .await
+            .expect("release must abort the pump: a pending task never ends by itself");
+        assert!(
+            aborted
+                .expect_err("an aborted pump does not complete")
+                .is_cancelled()
+        );
+        assert!(matches!(next_op(&mut mock).await, Op::Shutdown));
     }
 
     /// A store whose sessions directory is unusable surfaces as an internal
