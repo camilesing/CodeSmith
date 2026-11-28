@@ -654,6 +654,22 @@ impl ExtensionPlacer for Placer {
         std::fs::create_dir_all(&dir)
             .map_err(|e| ExtensionError::Install(format!("mkdir {}: {e}", dir.display())))?;
         let dest = dir.join(crate::discovery::default_dylib_filename(&self.id));
+        // Unlink the previous copy first. Rewriting the same inode replaces
+        // the backing file of a live executable mapping — the old dylib may
+        // be loaded in this or another session until `/extension reload`.
+        // After an unlink the running process keeps its old mapping and the
+        // next load maps the new file. On Windows a mapped DLL cannot be
+        // removed: the install errors there instead of corrupting.
+        match std::fs::remove_file(&dest) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(ExtensionError::Install(format!(
+                    "replace {}: {e}",
+                    dest.display()
+                )));
+            }
+        }
         std::fs::copy(artifact, &dest).map_err(|e| {
             ExtensionError::Install(format!("copy dylib to {}: {e}", dest.display()))
         })?;
@@ -1215,6 +1231,34 @@ mod placer_tests {
         let root = tempfile::tempdir().unwrap();
         let placer = Placer::new("ext2", root.path().to_path_buf());
         assert_eq!(placer.dir(), root.path().join("ext2"));
+    }
+
+    /// A reinstall must not rewrite the installed file in place: the
+    /// backing file of a loaded dylib would change under the process mapping
+    /// it. The old file is unlinked and the copy lands on a new inode.
+    #[cfg(unix)]
+    #[test]
+    fn placer_reinstall_lands_on_a_new_inode() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let placer = Placer::new("reinstall", root.path().to_path_buf());
+        let first_src = tempfile::tempdir().unwrap();
+        std::fs::write(first_src.path().join("a.bin"), b"version one").unwrap();
+        let first = placer.place(&first_src.path().join("a.bin")).unwrap();
+        let first_inode = std::fs::metadata(&first).unwrap().ino();
+
+        let second_src = tempfile::tempdir().unwrap();
+        std::fs::write(second_src.path().join("b.bin"), b"version two").unwrap();
+        let second = placer.place(&second_src.path().join("b.bin")).unwrap();
+
+        assert_eq!(second, first, "same installed path");
+        assert_ne!(
+            std::fs::metadata(&second).unwrap().ino(),
+            first_inode,
+            "rewritten in place"
+        );
+        assert_eq!(std::fs::read(&second).unwrap(), b"version two");
     }
 
     #[test]
