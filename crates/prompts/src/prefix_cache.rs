@@ -359,7 +359,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_tools_and_no_tools_produce_same_hash() {
+    fn empty_tool_list_yields_empty_catalog_digest() {
+        // The digest, not a hash equality: `freeze` always passes a
+        // `Vec<Tool>`, so an empty list is the only "no tools" there is.
         let empty = freeze("system", &[]);
         assert_eq!(empty.tool_catalog, "");
     }
