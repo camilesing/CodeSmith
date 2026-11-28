@@ -1920,8 +1920,18 @@ mod tests {
             "evil\\name",
             "two words",
         ] {
-            assert!(uninstall(bad, &skills_dir).is_err());
-            assert!(trust(bad, &skills_dir).is_err());
+            // The validator's own message: every target is missing here,
+            // so a "not installed" refusal means the name reached the join.
+            let err = uninstall(bad, &skills_dir).unwrap_err();
+            assert!(
+                err.to_string().contains("path-safe"),
+                "uninstall({bad:?}): {err:#}"
+            );
+            let err = trust(bad, &skills_dir).unwrap_err();
+            assert!(
+                err.to_string().contains("path-safe"),
+                "trust({bad:?}): {err:#}"
+            );
         }
     }
 
