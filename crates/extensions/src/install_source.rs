@@ -122,11 +122,20 @@ impl SourceSpec {
                 )));
             }
         };
-        // §F5e sub-choice B: kind-dependent @-split. git/crate split
-        // (ref / version on ref_); path/prebuilt take body whole.
+        // §F5e sub-choice B: kind-dependent @-split. crate splits on the
+        // last `@` (version); git only when what precedes it names a
+        // repository path — `git@host:owner/repo` and
+        // `https://user:token@host/owner/repo` carry the `@` inside the URL.
+        // path/prebuilt take body whole.
         let (body, ref_) = match kind {
-            SourceKind::Git | SourceKind::CratesIo => match rest.rsplit_once('@') {
+            SourceKind::CratesIo => match rest.rsplit_once('@') {
                 Some((b, r)) if !r.is_empty() => (b.to_string(), Some(r.to_string())),
+                _ => (rest.to_string(), None),
+            },
+            SourceKind::Git => match rest.rsplit_once('@') {
+                Some((b, r)) if !r.is_empty() && has_path_after_authority(b) => {
+                    (b.to_string(), Some(r.to_string()))
+                }
                 _ => (rest.to_string(), None),
             },
             SourceKind::Path | SourceKind::Prebuilt => (rest.to_string(), None),
@@ -259,6 +268,16 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), ExtensionError> {
         }
     }
     Ok(())
+}
+
+/// Whether a URL body names a repository path after its authority — the
+/// signal that a trailing `@…` is a ref and not userinfo or an scp-style
+/// user. `github.com/foo/bar`, `https://host/owner/repo.git`: yes;
+/// `git` (what `git@github.com:owner/repo` would be cut into),
+/// `https://user:token`: no.
+fn has_path_after_authority(body: &str) -> bool {
+    let after_scheme = body.split_once("://").map_or(body, |(_, rest)| rest);
+    after_scheme.contains('/')
 }
 
 /// Build a fetched source into a cdylib via `cargo build` (§F5c).
@@ -775,6 +794,28 @@ mod source_spec_tests {
         let s = SourceSpec::parse("git:github.com/foo/bar@v1.0.0").unwrap();
         assert_eq!(s.body, "github.com/foo/bar");
         assert_eq!(s.ref_.as_deref(), Some("v1.0.0"));
+    }
+
+    /// `git@github.com:owner/repo` (GitHub's own SSH form) and a URL with
+    /// userinfo carry the `@` inside the URL: nothing to split off. A ref
+    /// after a full URL still splits.
+    #[test]
+    fn parse_git_does_not_split_an_at_inside_the_url() {
+        for spec in [
+            "git:git@github.com:owner/repo",
+            "git:https://user:token@host/owner/repo.git",
+        ] {
+            let s = SourceSpec::parse(spec).expect(spec);
+            assert_eq!(
+                s.body,
+                spec.strip_prefix("git:").expect("git prefix"),
+                "{spec}"
+            );
+            assert_eq!(s.ref_, None, "{spec}");
+        }
+        let s = SourceSpec::parse("git:https://host/owner/repo.git@v1").unwrap();
+        assert_eq!(s.body, "https://host/owner/repo.git");
+        assert_eq!(s.ref_.as_deref(), Some("v1"));
     }
 
     #[test]
