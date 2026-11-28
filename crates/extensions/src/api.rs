@@ -1094,32 +1094,60 @@ mod tests {
         assert!(matches!(out, HandlerOutcome::Continue));
     }
 
-    /// The unimplemented default methods of `ExtensionApi` must all refuse
-    /// with a diagnosable error (a silent no-op would look like success).
-    /// Drive every one through the stub api's `&dyn` surface.
+    /// The default methods of `ExtensionApi` must refuse with a
+    /// diagnosable error (a silent no-op would look like success). This
+    /// covers the eight `bare_extension_api_refuses_every_optional_surface`
+    /// does not reach; the stub implements all of them itself.
     #[test]
     fn extension_api_default_methods_refuse_loudly() {
-        use codesmith_agent::extension::Scope;
-        let generation = Arc::new(AtomicU64::new(0));
-        let pending = Arc::new(Mutex::new(crate::runner::Pending::default()));
-        let stub = StubExtensionApi::new(
-            generation,
-            pending,
-            SharedProviderRegistry::new(),
-            crate::runner::RegistrationOrigin::CompiledIn,
-        );
-        // The stub implements disable_command; assert it records instead.
-        stub.disable_command("x".to_string())
-            .expect("stub records command disables");
-        // The stub implements both scoped registrations; they succeed.
-        stub.on_variant_scoped(
-            ExtensionEventKind::SessionStart,
-            Scope::Global,
-            std::sync::Arc::new(NopHandler),
-        )
-        .expect("stub registers scoped handlers");
-        stub.restrict_tools(Scope::AgentType("sub".to_string()), vec!["t".to_string()])
-            .expect("stub records tool restrictions");
+        let api: &dyn codesmith_agent::extension::ExtensionApi = &BareApi;
+        let calls = [
+            (
+                "replace_tool",
+                api.replace_tool(Box::new(NopReplacement)).is_err(),
+            ),
+            (
+                "register_around_tool",
+                api.register_around_tool(Arc::new(NopAroundTool)).is_err(),
+            ),
+            (
+                "register_around_turn",
+                api.register_around_turn(Arc::new(NopAroundTurn)).is_err(),
+            ),
+            (
+                "register_provider",
+                api.register_provider(Arc::new(NopFactory)).is_err(),
+            ),
+            (
+                "register_provider_alias",
+                api.register_provider_alias(nop_alias("bare")).is_err(),
+            ),
+            (
+                "register_turn_executor",
+                api.register_turn_executor(TurnExecutorContribution::new(Arc::new(())))
+                    .is_err(),
+            ),
+            (
+                "register_prompt_section",
+                api.register_prompt_section("guide".into(), "Be terse.".into())
+                    .is_err(),
+            ),
+            (
+                "register_policy",
+                api.register_policy(
+                    "m".into(),
+                    codesmith_agent::policy::PolicyKind::from_kebab_name("shell-output").unwrap(),
+                    serde_json::json!({}),
+                )
+                .is_err(),
+            ),
+        ];
+        let silent: Vec<&str> = calls
+            .iter()
+            .filter(|(_, refused)| !refused)
+            .map(|(method, _)| *method)
+            .collect();
+        assert!(silent.is_empty(), "silent no-op defaults: {silent:?}");
     }
 
     /// A bare `ExtensionApi` (only the required methods) must refuse every
