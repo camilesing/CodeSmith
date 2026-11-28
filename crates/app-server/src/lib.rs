@@ -1292,25 +1292,63 @@ mod tests {
 
     // ── cors_layer ─────────────────────────────────────────────────────
 
-    #[test]
-    fn cors_layer_includes_default_origins() {
-        let layer = cors_layer(&[]);
-        // Just verify it doesn't panic and creates successfully
-        let _ = layer;
+    /// Send a GET carrying `Origin` through a router with `layer` and return
+    /// the `Access-Control-Allow-Origin` header it is answered with, if any.
+    /// `CorsLayer` has no reader for the origins it was built with, so the
+    /// wire is the only honest place to look.
+    async fn allow_origin_for(layer: CorsLayer, origin: &str) -> Option<String> {
+        let app = Router::new().route("/healthz", get(healthz)).layer(layer);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/healthz")
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
     }
 
-    #[test]
-    fn cors_layer_adds_extra_origins() {
+    #[tokio::test]
+    async fn cors_layer_includes_default_origins() {
+        for origin in ["http://localhost:5173", "tauri://localhost"] {
+            assert_eq!(
+                allow_origin_for(cors_layer(&[]), origin).await.as_deref(),
+                Some(origin),
+                "a default origin must be allowed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cors_layer_adds_extra_origins() {
         let extras = vec!["https://example.com".to_string()];
-        let layer = cors_layer(&extras);
-        let _ = layer;
-    }
-
-    #[test]
-    fn cors_layer_skips_empty_origins() {
-        let extras = vec!["".to_string(), "  ".to_string()];
-        let layer = cors_layer(&extras);
-        let _ = layer;
+        // The grant comes from the extra entry: without it the same origin is
+        // refused, and the defaults keep their grants alongside it.
+        assert_eq!(
+            allow_origin_for(cors_layer(&extras), "https://example.com")
+                .await
+                .as_deref(),
+            Some("https://example.com")
+        );
+        assert!(
+            allow_origin_for(cors_layer(&[]), "https://example.com")
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            allow_origin_for(cors_layer(&extras), "http://localhost:5173")
+                .await
+                .as_deref(),
+            Some("http://localhost:5173")
+        );
     }
 
     // ── JsonRpc helpers ────────────────────────────────────────────────
@@ -2184,11 +2222,26 @@ mod tests {
         assert_eq!(body["data"]["value"], "sk-c***cret");
     }
 
-    #[test]
-    fn cors_layer_ignores_invalid_extra_origin() {
-        // A space makes the header value invalid; the branch warns and skips.
-        let extras = vec!["https://bad origin".to_string()];
-        let _ = cors_layer(&extras);
+    #[tokio::test]
+    async fn cors_layer_ignores_invalid_extra_origin() {
+        // A control character is what a header value cannot hold. (A space
+        // it accepts, and such an origin then simply never matches.) The
+        // entry is skipped (the branch warns) and the valid entry after it
+        // still lands.
+        let extras = vec![
+            "https://bad\norigin".to_string(),
+            "https://good.example".to_string(),
+        ];
+        assert!(
+            HeaderValue::from_str("https://bad\norigin").is_err(),
+            "the fixture must be no header value"
+        );
+        assert_eq!(
+            allow_origin_for(cors_layer(&extras), "https://good.example")
+                .await
+                .as_deref(),
+            Some("https://good.example")
+        );
     }
 
     // ── auth token resolution / generated token file ────────────────────
