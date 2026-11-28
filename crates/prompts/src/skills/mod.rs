@@ -906,7 +906,10 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
 /// deterministic without process-env locking; moving the `.codesmith`
 /// push out to the public entry instead was rejected because the
 /// `#[cfg(test)]` discovery helper would then have to re-derive it.
-fn skills_directories_with_home(
+/// Unfiltered — no filesystem access here — so the rule in
+/// [`skills_directories`] against the `/tmp` fallback is observable on
+/// any host; [`skills_directories_with_home`] applies the existence filter.
+fn skills_directory_candidates(
     workspace: &Path,
     home_dir: Option<&Path>,
     codesmith_home_dir: Option<&Path>,
@@ -926,7 +929,20 @@ fn skills_directories_with_home(
     if let Some(codesmith_home) = codesmith_home_dir {
         candidates.push(codesmith_home.join("skills"));
     }
-    existing_skill_dirs(candidates)
+    candidates
+}
+
+/// [`skills_directory_candidates`] reduced to the directories that exist.
+fn skills_directories_with_home(
+    workspace: &Path,
+    home_dir: Option<&Path>,
+    codesmith_home_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    existing_skill_dirs(skills_directory_candidates(
+        workspace,
+        home_dir,
+        codesmith_home_dir,
+    ))
 }
 
 fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
@@ -1305,12 +1321,20 @@ mod tests {
         // The candidate set feeds the system-prompt catalogue: with no home
         // directory at all (neither third-party nor CodeSmith root),
         // /tmp/codesmith/skills must NOT appear — any local user could
-        // plant a SKILL.md (and a .trusted marker) there.
+        // plant a SKILL.md (and a .trusted marker) there. Asserted before
+        // the existence filter: the filtered list is empty on every host
+        // without that directory, so it cannot see a fallback that is
+        // re-added.
         let workspace = std::path::Path::new("/nonexistent-workspace-for-test");
-        let dirs = super::skills_directories_with_home(workspace, None, None);
+        let candidates = super::skills_directory_candidates(workspace, None, None);
+        assert_eq!(
+            candidates.len(),
+            6,
+            "the workspace set only when no home resolves: {candidates:?}"
+        );
         assert!(
-            !dirs.iter().any(|d| d.starts_with("/tmp")),
-            "/tmp must never feed discovery, got {dirs:?}"
+            candidates.iter().all(|dir| dir.starts_with(workspace)),
+            "no host-rooted fallback: {candidates:?}"
         );
     }
 
