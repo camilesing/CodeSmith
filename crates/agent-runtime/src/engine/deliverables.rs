@@ -267,8 +267,23 @@ mod tests {
 
     #[tokio::test]
     async fn missing_deliverables_reports_only_absent_paths() {
-        let missing = missing_deliverables(&["/definitely/not/here/file.bin".to_string()]).await;
-        assert_eq!(missing, vec!["/definitely/not/here/file.bin".to_string()]);
+        // One of each: an absent-only input cannot tell "reports what is
+        // missing" from "reports everything".
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let present = tmp.path().join("present.txt");
+        tokio::fs::write(&present, "x")
+            .await
+            .expect("write the present deliverable");
+        let absent = tmp.path().join("absent.txt");
+        let paths = [
+            present.to_string_lossy().into_owned(),
+            absent.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(
+            missing_deliverables(&paths).await,
+            vec![absent.to_string_lossy().into_owned()],
+            "a present path is not reported"
+        );
     }
 
     #[test]
