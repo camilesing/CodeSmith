@@ -2207,15 +2207,20 @@ mod tests {
         });
 
         // Read the request the server wrote, answer it as the client would.
-        let request = loop {
-            let lines = take_lines(&writer).await;
-            if let Some(line) = lines.into_iter().find(|line| {
-                line.get("method").and_then(Value::as_str) == Some("session/request_permission")
-            }) {
-                break line;
+        // Bounded: a request that never reaches the wire must fail, not hang.
+        let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let lines = take_lines(&writer).await;
+                if let Some(line) = lines.into_iter().find(|line| {
+                    line.get("method").and_then(Value::as_str) == Some("session/request_permission")
+                }) {
+                    break line;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        };
+        })
+        .await
+        .expect("the permission request must reach the wire");
         assert_eq!(request["params"]["sessionId"], "sess-1");
         assert_eq!(request["params"]["toolCall"], tool_call);
         assert!(
