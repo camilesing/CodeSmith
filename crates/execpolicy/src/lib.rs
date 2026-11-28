@@ -1028,11 +1028,15 @@ mod tests {
             .check(ctx("git status; rm -rf /", AskForApproval::Never))
             .unwrap();
         assert!(!piped.allow);
+        // `Never` forbids an unmatched command too — only the matched rule
+        // shows a deny match.
+        assert_eq!(piped.matched_rule.as_deref(), Some("rm"));
 
         let substituted = engine
             .check(ctx("echo $(rm -rf /)", AskForApproval::Never))
             .unwrap();
         assert!(!substituted.allow);
+        assert_eq!(substituted.matched_rule.as_deref(), Some("rm"));
     }
 
     #[test]
@@ -1045,6 +1049,13 @@ mod tests {
             let decision = engine.check(ctx(evasive, AskForApproval::Never)).unwrap();
             assert!(
                 !decision.allow,
+                "deny rule evaded by {evasive:?}: {decision:?}"
+            );
+            // `Never` forbids an unmatched command too — only the matched
+            // rule shows a deny match.
+            assert_eq!(
+                decision.matched_rule.as_deref(),
+                Some("rm"),
                 "deny rule evaded by {evasive:?}: {decision:?}"
             );
         }
@@ -1060,12 +1071,16 @@ mod tests {
             .check(ctx("git  status", AskForApproval::Never))
             .unwrap();
         assert!(!evasive.allow);
+        // `Never` forbids an unmatched command too — only the matched rule
+        // shows a deny match.
+        assert_eq!(evasive.matched_rule.as_deref(), Some("git status"));
 
         // A denied `cat` blocks `cat file` but not the unrelated `catalog`.
         let blocked = engine
             .check(ctx("cat README.md", AskForApproval::Never))
             .unwrap();
         assert!(!blocked.allow);
+        assert_eq!(blocked.matched_rule.as_deref(), Some("cat"));
         let unrelated = engine
             .check(ctx("catalog .", AskForApproval::UnlessTrusted))
             .unwrap();
