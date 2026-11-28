@@ -331,13 +331,12 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_savers_do_not_lose_each_others_grants() {
-        // Session B holds a snapshot taken before A saved (the stale
-        // in-memory half of the read-merge-write). B's save must still
-        // keep A's on-disk grant — the load-merge-write runs as one locked
-        // critical section, so B's merge reads a state that already
-        // includes A's write.
-        let path = temp_path("concurrent.toml");
+    fn a_store_that_never_loaded_the_file_preserves_on_disk_grants() {
+        // B never read the file: its save merges only its own delta onto
+        // whatever is on disk at that moment, so A's earlier grant survives.
+        // Sequential on purpose; the lock that keeps a concurrent saver out
+        // of the merge is `a_save_waits_for_the_lock_another_writer_holds`.
+        let path = temp_path("unloaded-store.toml");
         let mut a = ApprovalGrants::default();
         a.grant("/w/a", "shell:cargo build");
         a.save(&path).expect("A saves");
@@ -346,6 +345,61 @@ mod tests {
         stale.grant("/w/b", "shell:npm test");
         stale.save(&path).expect("B saves with a pre-A snapshot");
 
+        let reloaded = ApprovalGrants::load(&path);
+        assert!(reloaded.is_granted("/w/a", "shell:cargo build"));
+        assert!(reloaded.is_granted("/w/b", "shell:npm test"));
+    }
+
+    /// The load-merge-write in `save` is one critical section: while another
+    /// writer holds the grants file's lock, a save waits for it. Without the
+    /// lock the waiter merged onto the pre-holder state and its rename then
+    /// dropped whatever the holder wrote.
+    #[test]
+    fn a_save_waits_for_the_lock_another_writer_holds() {
+        let path = temp_path("held-lock.toml");
+        let mut a = ApprovalGrants::default();
+        a.grant("/w/a", "shell:cargo build");
+        a.save(&path).expect("A saves");
+
+        // Another writer holds the lock until this test lets go.
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let lock_path = path.clone();
+        let holder = std::thread::spawn(move || {
+            codesmith_agent_runtime::settings_file::with_settings_lock(&lock_path, || {
+                held_tx.send(()).expect("the test is listening");
+                release_rx.recv().expect("the test releases the holder");
+                Ok(())
+            })
+            .expect("the holder takes the lock");
+        });
+        held_rx.recv().expect("the holder reports the lock is held");
+
+        let mut b = ApprovalGrants::default();
+        b.grant("/w/b", "shell:npm test");
+        let saving = {
+            let path = path.clone();
+            std::thread::spawn(move || b.save(&path))
+        };
+
+        // The waiter polls the lock every 50 ms: several polls on, none of
+        // B's grant has reached the file.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !saving.is_finished(),
+            "a save must wait while another writer holds the lock"
+        );
+        assert!(
+            !ApprovalGrants::load(&path).is_granted("/w/b", "shell:npm test"),
+            "B's save wrote past the lock"
+        );
+
+        release_tx.send(()).expect("the holder is listening");
+        holder.join().expect("the holder thread ends");
+        saving
+            .join()
+            .expect("the saving thread ends")
+            .expect("B's save completes once the lock is free");
         let reloaded = ApprovalGrants::load(&path);
         assert!(reloaded.is_granted("/w/a", "shell:cargo build"));
         assert!(reloaded.is_granted("/w/b", "shell:npm test"));
