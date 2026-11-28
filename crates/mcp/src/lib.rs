@@ -1763,7 +1763,10 @@ mod tests {
         let err = manager
             .call_qualified_tool("mcp__s1__nope", json!({}))
             .unwrap_err();
-        assert!(err.to_string().contains("not found"), "{err:#}");
+        // The direct path's own message: the fallback scan's bail
+        // ("qualified MCP tool 'mcp__s1__nope' not found") contains
+        // "not found" too, so a swallowed error used to pass as propagated.
+        assert_eq!(err.to_string(), "tool 'nope' not found", "{err:#}");
     }
 
     #[test]
