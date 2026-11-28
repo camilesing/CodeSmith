@@ -1034,13 +1034,16 @@ mod tests {
         assert!(status.contains("enter plan mode"), "{status}");
     }
 
+    /// One assertion per guard of `mode_gate_refusal`: each negative below
+    /// differs from the gate's own refusal in exactly one respect.
+    ///
+    /// Name gate: an ungated tool, refused with the gate's own wording — only
+    /// the name match can withhold the line.
     #[tokio::test]
-    async fn refused_ungated_tool_logs_no_mode_switch_attempt() {
+    async fn ungated_tool_is_no_mode_switch_attempt_whatever_the_message() {
         let (tx, mut rx) = mpsc::channel(256);
         let bridge = CallbackBridge::new(Some(tx), None, test_template());
 
-        // Approval-shaped refusal from an ordinary tool: the mode-switch line
-        // is about a mode gate, not about denied approvals.
         bridge
             .on_tool_start("wire-1", "exec_shell", &serde_json::json!({}))
             .await;
@@ -1048,7 +1051,7 @@ mod tests {
             .on_tool_end(
                 "exec_shell",
                 &Err(ToolError::PermissionDenied {
-                    message: "user denied the command".to_string(),
+                    message: "exec_shell is not available in plan mode".to_string(),
                 }),
             )
             .await;
@@ -1057,51 +1060,26 @@ mod tests {
             !drain(&mut rx)
                 .iter()
                 .any(|event| matches!(event, Event::Status { .. })),
-            "an approval denial must not be logged as a mode switch attempt"
+            "an ungated tool is never a mode switch attempt"
         );
     }
 
+    /// Message check: a gated name and a `PermissionDenied`, in the user's
+    /// wording — an approval-shaped refusal must not read as the gate's.
     #[tokio::test]
-    async fn failed_validation_on_a_gated_tool_is_not_a_mode_switch_attempt() {
+    async fn gated_tool_denied_without_naming_plan_mode_is_no_mode_switch_attempt() {
         let (tx, mut rx) = mpsc::channel(256);
         let bridge = CallbackBridge::new(Some(tx), None, test_template());
 
-        // A stream severed mid-argument leaves the call with no parseable
-        // input, so it fails validation without ever reaching the mode gate.
-        // Reporting the gate here sends a reader hunting a mode bug that is
-        // not there — the transcript's own failing line already said what
-        // went wrong.
-        bridge
-            .on_tool_start("wire-1", "write_plan_file", &serde_json::json!({}))
-            .await;
-        bridge
-            .on_tool_end("write_plan_file", &Err(ToolError::missing_field("content")))
-            .await;
-
-        assert!(
-            !drain(&mut rx)
-                .iter()
-                .any(|event| matches!(event, Event::Status { .. })),
-            "a validation failure must not be logged as the gate's refusal"
-        );
-    }
-
-    #[tokio::test]
-    async fn user_denial_of_a_gated_tool_is_not_a_mode_switch_attempt() {
-        let (tx, mut rx) = mpsc::channel(256);
-        let bridge = CallbackBridge::new(Some(tx), None, test_template());
-
-        // `exit_plan_mode` is approval-gated, so the user saying no fails the
-        // call — with the user's refusal, not the gate's.
         bridge
             .on_tool_start("wire-1", "exit_plan_mode", &serde_json::json!({}))
             .await;
         bridge
             .on_tool_end(
                 "exit_plan_mode",
-                &Err(ToolError::execution_failed(
-                    "Tool 'exit_plan_mode' denied by user".to_string(),
-                )),
+                &Err(ToolError::PermissionDenied {
+                    message: "Tool 'exit_plan_mode' denied by user".to_string(),
+                }),
             )
             .await;
 
@@ -1109,8 +1087,36 @@ mod tests {
             !drain(&mut rx)
                 .iter()
                 .any(|event| matches!(event, Event::Status { .. })),
-            "a user denial must not be logged as the gate's refusal"
+            "the refusal must name plan mode"
         );
+    }
+
+    /// Variant: a gated tool failing with anything but `PermissionDenied`.
+    #[tokio::test]
+    async fn non_permission_failure_on_a_gated_tool_is_no_mode_switch_attempt() {
+        // A stream severed mid-argument leaves `write_plan_file` with no
+        // parseable input (validation), and `exit_plan_mode` fails with the
+        // user's execution-level refusal.
+        for (name, err) in [
+            ("write_plan_file", ToolError::missing_field("content")),
+            (
+                "exit_plan_mode",
+                ToolError::execution_failed("Tool 'exit_plan_mode' denied by user".to_string()),
+            ),
+        ] {
+            let (tx, mut rx) = mpsc::channel(256);
+            let bridge = CallbackBridge::new(Some(tx), None, test_template());
+            bridge
+                .on_tool_start("wire-1", name, &serde_json::json!({}))
+                .await;
+            bridge.on_tool_end(name, &Err(err)).await;
+            assert!(
+                !drain(&mut rx)
+                    .iter()
+                    .any(|event| matches!(event, Event::Status { .. })),
+                "{name}: only the gate's own PermissionDenied is reported"
+            );
+        }
     }
 
     #[tokio::test]
