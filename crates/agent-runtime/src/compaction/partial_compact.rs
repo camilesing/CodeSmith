@@ -545,7 +545,11 @@ mod tests {
         ];
         let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::UpTo, 500);
         // The 2000-token message must be on the removed side.
-        assert!(pivot > 1, "pivot {pivot} must exclude the huge message");
+        assert_eq!(
+            pivot, 2,
+            "smallest pivot whose retained tail fits the budget: {pivot}"
+        );
+        assert!(pivot < messages.len(), "remove everything is not a pivot");
     }
 
     #[test]
@@ -560,7 +564,11 @@ mod tests {
         // Target: remove messages until we're under 500 tokens.
         let pivot = find_pivot_for_budget(&messages, PartialCompactDirection::UpTo, 500);
         // Pivot should be early — removing prefix until budget fits.
-        assert!(pivot >= 1, "UpTo pivot should remove some prefix");
+        assert_eq!(
+            pivot, 2,
+            "smallest pivot whose retained tail fits the budget: {pivot}"
+        );
+        assert!(pivot < messages.len(), "remove everything is not a pivot");
     }
 
     #[test]
