@@ -2086,11 +2086,19 @@ mod tests {
         jm.enqueue("first");
         jm.enqueue("second");
         jm.enqueue("third");
-        let jobs = jm.list();
-        assert_eq!(jobs.len(), 3);
-        for window in jobs.windows(2) {
-            assert!(window[0].updated_at >= window[1].updated_at);
+        // `now_ts()` has whole-second resolution: three back-to-back
+        // enqueues share one timestamp, which any order satisfies. Stamp
+        // them by name instead — HashMap order is unspecified.
+        for job in jm.jobs.values_mut() {
+            job.updated_at = match job.name.as_str() {
+                "first" => 1000,
+                "second" => 1001,
+                _ => 1002,
+            };
         }
+        let jobs = jm.list();
+        let order: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(order, ["third", "second", "first"]);
     }
 
     #[test]
