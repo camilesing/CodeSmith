@@ -390,6 +390,13 @@ fn commit_staged(
             discard_staging(staged);
             return Err(InstallError::AlreadyInstalled(staged.skill_name.clone()).into());
         }
+        // Only a directory this install put here is replaced. The staged tree
+        // is named after the tarball's frontmatter, so an upstream rename
+        // onto a bundled or user-authored skill's name must not win.
+        if !final_path.join(INSTALLED_FROM_MARKER).is_file() {
+            discard_staging(staged);
+            return Err(InstallError::NotInstalledHere(staged.skill_name.clone()).into());
+        }
         // Best-effort backup-then-replace; on failure we restore the original.
         // Hidden name so discovery never surfaces a leftover `.bak/`.
         let backup = skills_dir.join(format!(".{}.bak", staged.skill_name));
@@ -2030,6 +2037,44 @@ mod tests {
         };
         assert!(commit_staged(&staged, tmp.path(), false, "{}").is_err());
         assert!(!staged_path.exists(), "the staging directory stayed behind");
+    }
+
+    /// An update installs under the tarball's frontmatter name. When that
+    /// names a directory this install did not put here — a bundled or a
+    /// user-authored skill — it is never replaced.
+    #[test]
+    fn update_never_replaces_a_skill_it_did_not_install() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skills_dir = tmp.path();
+        let victim = skills_dir.join("victim");
+        std::fs::create_dir_all(&victim).expect("victim dir");
+        std::fs::write(victim.join("SKILL.md"), b"user-authored").expect("victim file");
+
+        let bytes = gz_tarball("SKILL.md", "victim");
+        let staged = stage_tarball(&bytes, skills_dir, 1024 * 1024).expect("stage");
+        let err = commit_staged(&staged, skills_dir, true, "{}")
+            .expect_err("a directory without our marker is not replaced");
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::NotInstalledHere(name)) if name == "victim"
+            ),
+            "{err:#}"
+        );
+        assert_eq!(
+            std::fs::read(victim.join("SKILL.md")).unwrap(),
+            b"user-authored"
+        );
+        assert!(
+            !staged.staged_path.exists(),
+            "the staging directory is removed too"
+        );
+
+        // A directory carrying our marker is replaced.
+        std::fs::write(victim.join(INSTALLED_FROM_MARKER), "{}").expect("marker");
+        let staged = stage_tarball(&bytes, skills_dir, 1024 * 1024).expect("stage again");
+        commit_staged(&staged, skills_dir, true, "{}").expect("ours is replaced");
+        assert!(victim.join(INSTALLED_FROM_MARKER).is_file());
     }
 
     #[test]
