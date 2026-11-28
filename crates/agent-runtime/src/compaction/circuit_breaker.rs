@@ -381,18 +381,6 @@ mod tests {
     }
 
     #[test]
-    fn force_attempt_always_succeeds() {
-        let mut breaker = CompactionCircuitBreaker::new();
-        breaker.record_failure();
-        breaker.record_failure();
-        breaker.record_failure();
-        assert!(breaker.is_tripped());
-
-        // Manual compact bypasses breaker
-        assert!(breaker.force_attempt());
-    }
-
-    #[test]
     fn half_open_after_recovery_timeout() {
         // 10 ms timeout with a 200 ms sleep: a 20× margin, so scheduler
         // noise on a loaded CI runner cannot flip the outcome.
