@@ -1489,7 +1489,17 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
             continue;
         }
 
-        let target = dest.join(stripped_path);
+        // Discovery looks for exactly `SKILL.md`: a repo naming its file
+        // `skill.md` would install invisibly on a case-sensitive disk.
+        let target = if stripped_path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("SKILL.md"))
+        {
+            dest.join(stripped_path.parent().unwrap_or_else(|| Path::new("")))
+                .join("SKILL.md")
+        } else {
+            dest.join(stripped_path)
+        };
         // Final paranoia check: ensure the resolved target stays under dest.
         // We can't canonicalize (target doesn't exist yet), so we walk
         // components one more time after composing.
@@ -1920,6 +1930,44 @@ mod tests {
         assert!(is_redirect_hop(reqwest::StatusCode::FOUND));
         assert!(is_redirect_hop(reqwest::StatusCode::TEMPORARY_REDIRECT));
         assert!(!is_redirect_hop(reqwest::StatusCode::OK));
+    }
+
+    /// A gzipped tarball holding one `file` whose frontmatter names `name`.
+    fn gz_tarball(file: &str, name: &str) -> Vec<u8> {
+        let skill_md = format!("---\nname: {name}\ndescription: d\n---\nbody\n");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(&mut encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(skill_md.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, file, std::io::Cursor::new(skill_md))
+            .expect("append SKILL.md");
+        builder.into_inner().expect("finalize tar");
+        encoder.finish().expect("finalize gz")
+    }
+
+    /// A tarball naming its file `skill.md` installs as `SKILL.md`: discovery
+    /// looks the exact name up, so the original casing was invisible on a
+    /// case-sensitive filesystem.
+    #[test]
+    fn lowercase_skill_md_is_extracted_as_skill_md() {
+        let bytes = gz_tarball("skill.md", "lower");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let staged = stage_tarball(&bytes, tmp.path(), 1024 * 1024).expect("stage");
+        let names: Vec<String> = std::fs::read_dir(&staged.staged_path)
+            .expect("read staged dir")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(names.iter().any(|name| name == "SKILL.md"), "{names:?}");
+        assert!(names.iter().all(|name| name != "skill.md"), "{names:?}");
     }
 
     #[test]
