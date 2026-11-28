@@ -2355,13 +2355,17 @@ mod tool_pairing_balance_tests {
         ];
 
         let mut pinned: BTreeSet<usize> = BTreeSet::new();
-        // Pin a set that initially severs c2 (result pinned, call not) and
-        // includes the dangling c3 call — the shapes enforce_tool_call_pairs
-        // exists to fix.
-        pinned.insert(3);
+        // Pin c2's RESULT without its call (index 4), plus the dangling
+        // c3 call — the shapes enforce_tool_call_pairs exists to fix. The
+        // call (3) is deliberately not pinned: the enforcer must add it.
         pinned.insert(4);
         pinned.insert(6);
         enforce_tool_call_pairs(&messages, &mut pinned);
+        assert_eq!(
+            pinned,
+            BTreeSet::from([3, 4]),
+            "the enforcer pins the call for a pinned result and drops the source-dangling call"
+        );
 
         let kept: Vec<&Message> = pinned.iter().map(|idx| &messages[*idx]).collect();
         let kept_owned: Vec<Message> = kept.into_iter().cloned().collect();
@@ -2409,11 +2413,18 @@ mod tool_pairing_balance_tests {
             user_result("c3"),
         ];
 
+        // `keep_recent = 1`: the recent window is c3's result alone — the
+        // planner has to pull the call in for the slice to stay balanced.
         let plan = plan_compaction(
             &messages, None, // workspace
-            3,    // keep_recent
+            1,    // keep_recent
             None, // external_pins
             None, // external_working_set_paths
+        );
+        assert!(
+            plan.pinned_indices.contains(&6) && plan.pinned_indices.contains(&7),
+            "the c3 pair must be pinned together: {:?}",
+            plan.pinned_indices
         );
         let kept: Vec<Message> = plan
             .pinned_indices
