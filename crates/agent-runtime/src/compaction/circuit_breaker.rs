@@ -458,13 +458,16 @@ mod tests {
         // open (e.g. a manual /compact that bypassed the breaker) must not
         // restart the recovery timeout and lock auto-compaction out
         // indefinitely.
-        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(10));
+        // The window (300 ms) is longer than the second sleep but shorter
+        // than the two together, so at the check only a re-armed window can
+        // still be running: 400 ms since the trip (admitted), 200 ms since
+        // the second failure (refused). `sleep` only ever over-waits, so
+        // the admitted side cannot fail by timing.
+        let mut breaker = CompactionCircuitBreaker::with_config(1, Duration::from_millis(300));
         breaker.record_failure(); // trip
-        std::thread::sleep(Duration::from_millis(120));
-        breaker.record_failure(); // out-of-band, 120 ms into the window
-        std::thread::sleep(Duration::from_millis(120));
-        // 240 ms since the original trip (window was 10 ms) but only
-        // 120 ms since the second failure — a re-armed window would refuse.
+        std::thread::sleep(Duration::from_millis(200));
+        breaker.record_failure(); // out-of-band, 200 ms into the window
+        std::thread::sleep(Duration::from_millis(200));
         assert!(
             breaker.should_attempt(),
             "out-of-band failure must not re-arm the recovery window"
