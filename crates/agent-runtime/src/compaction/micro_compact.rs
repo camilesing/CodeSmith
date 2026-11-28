@@ -729,15 +729,24 @@ mod tests {
 
     #[test]
     fn should_trigger_returns_false_for_subagent() {
+        // A fixture that DOES trigger for a main agent (positive control):
+        // only then does the sub-agent refusal show the early return. A
+        // one-word message triggers nothing for anyone.
         let _guard = policy_test_lock();
-        let state = MicroCompactState::default();
-        let messages = vec![msg("user", "test")];
-        assert!(!should_trigger_micro_compact(
-            &messages,
-            &state,
-            true,
-            &SweepRules::compiled()
-        ));
+        let (sweep, state) = elision_sweep();
+        let messages = vec![
+            tool_use_msg("t1", "grep", serde_json::json!({})),
+            tool_result_msg("t1", &"hit ".repeat(200)),
+            msg("assistant", "done with that search"),
+        ];
+        let main_agent = should_trigger_micro_compact(&messages, &state, false, &sweep);
+        let sub_agent = should_trigger_micro_compact(&messages, &state, true, &sweep);
+        codesmith_agent::policy::clear_published_policies();
+        assert!(
+            main_agent,
+            "positive control: the transcript triggers for a main agent"
+        );
+        assert!(!sub_agent);
     }
 
     /// A sweep set resolved from the opt-in `elide-uneventful` mod's
