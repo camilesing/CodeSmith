@@ -1424,6 +1424,7 @@ mod tests {
         assert_eq!(drained_text(&replay, "main-model").await, "a1");
         assert_eq!(drained_text(&replay, "main-model").await, "a2");
         assert_eq!(replay.remaining(), 0);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
@@ -1440,6 +1441,7 @@ mod tests {
         // An empty model cannot discriminate buckets — head-of-queue wins.
         assert_eq!(drained_text(&replay, "").await, "a1");
         assert_eq!(drained_text(&replay, "util-model").await, "b1");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
@@ -1475,5 +1477,6 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("other-model"), "names the wanted model: {msg}");
         assert!(msg.contains("main-model"), "names alternatives: {msg}");
+        let _ = std::fs::remove_file(&path);
     }
 }
