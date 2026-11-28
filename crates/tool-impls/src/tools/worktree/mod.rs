@@ -324,10 +324,8 @@ mod tests {
     use super::*;
 
     // ── real-git fixtures ──────────────────────────────────────────────
-
-    fn git_available() -> bool {
-        codesmith_agent_runtime::dependencies::Git::available()
-    }
+    // No availability guard: without a `git` on PATH these tests fail
+    // naming it (`run_git` refuses to spawn) — they never pass unexercised.
 
     fn git_ok(root: &Path, args: &[&str]) {
         let output = run_git(root, args).expect("git should spawn");
@@ -366,9 +364,6 @@ mod tests {
     /// — not under the main repository's `.git` directory.
     #[test]
     fn a_session_in_a_linked_worktree_keeps_its_worktrees_inside_it() {
-        if !git_available() {
-            return;
-        }
         let tmp = tempfile::tempdir().expect("tempdir");
         let main = tmp.path().join("main");
         std::fs::create_dir_all(&main).expect("mkdir");
@@ -403,9 +398,6 @@ mod tests {
     /// HEAD instead of failing to create it a second time.
     #[test]
     fn entering_an_existing_worktree_resumes_it() {
-        if !git_available() {
-            return;
-        }
         let tmp = tempfile::tempdir().expect("tempdir");
         init_git_repo(tmp.path());
         commit(tmp.path(), "init");
@@ -444,9 +436,6 @@ mod tests {
     /// baseline, and every commit origin had ahead read as new work.
     #[test]
     fn a_new_worktree_is_baselined_where_it_starts() {
-        if !git_available() {
-            return;
-        }
         let tmp = tempfile::tempdir().expect("tempdir");
         init_git_repo(tmp.path());
         commit(tmp.path(), "first");
