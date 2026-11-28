@@ -513,6 +513,14 @@ enum GatedGet {
     NeedsApproval(String),
 }
 
+/// Whether a status is a redirect [`policy_gated_get`] must follow. `304
+/// Not Modified` sits in the 3xx range but is an answer, not a hop: treated
+/// as one, every unchanged skill of an ETag-capable host came back a failed
+/// sync ("redirect without a Location").
+fn is_redirect_hop(status: reqwest::StatusCode) -> bool {
+    status.is_redirection() && status != reqwest::StatusCode::NOT_MODIFIED
+}
+
 /// Maximum redirect hops followed by [`policy_gated_get`].
 const MAX_REDIRECT_HOPS: usize = 5;
 
@@ -549,7 +557,7 @@ async fn policy_gated_get(
             .send()
             .await
             .with_context(|| format!("failed to GET {current}"))?;
-        if resp.status().is_redirection() {
+        if is_redirect_hop(resp.status()) {
             let Some(location) = resp
                 .headers()
                 .get(reqwest::header::LOCATION)
@@ -1904,6 +1912,14 @@ mod tests {
             ),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn not_modified_is_an_answer_not_a_redirect_hop() {
+        assert!(!is_redirect_hop(reqwest::StatusCode::NOT_MODIFIED));
+        assert!(is_redirect_hop(reqwest::StatusCode::FOUND));
+        assert!(is_redirect_hop(reqwest::StatusCode::TEMPORARY_REDIRECT));
+        assert!(!is_redirect_hop(reqwest::StatusCode::OK));
     }
 
     #[test]
