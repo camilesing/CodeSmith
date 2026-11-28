@@ -623,14 +623,15 @@ pub async fn fetch_registry(
     network: &NetworkPolicy,
     registry_url: &str,
 ) -> Result<RegistryFetchResult> {
-    let host = match host_from_url(registry_url) {
-        Some(host) => host,
-        None => bail!("invalid registry url: {registry_url}"),
-    };
+    if host_from_url(registry_url).is_none() {
+        bail!("invalid registry url: {registry_url}");
+    }
     let resp = match policy_gated_get(registry_url, network, None).await? {
         GatedGet::Response(resp) => resp,
-        GatedGet::Denied(_) => return Ok(RegistryFetchResult::Denied(host)),
-        GatedGet::NeedsApproval(_) => return Ok(RegistryFetchResult::NeedsApproval(host)),
+        // The host that was gated is the one the caller must act on: a
+        // redirect hop, not the registry's own (already allowed) host.
+        GatedGet::Denied(hop) => return Ok(RegistryFetchResult::Denied(hop)),
+        GatedGet::NeedsApproval(hop) => return Ok(RegistryFetchResult::NeedsApproval(hop)),
     }
     .error_for_status()
     .with_context(|| format!("registry {registry_url} returned an error status"))?;
