@@ -281,10 +281,9 @@ fn has_path_after_authority(body: &str) -> bool {
 }
 
 /// Build a fetched source into a cdylib via `cargo build` (§F5c).
-/// `cargo build --release --locked --target-dir <temp>`, then scan
-/// `target/release/` for the platform cdylib (`.<DLL_EXTENSION>`). No JSON
-/// parse (R2: avoids a `serde_json` dep). Robust for single-cdylib crates;
-/// errors on 0 or >1 cdylib (ambiguous).
+/// `cargo build --release --locked --target-dir <dir>` with JSON messages,
+/// then [`pick_built_cdylib`] over what cargo says it produced. Robust for
+/// single-cdylib crates; errors on 0 or >1 cdylib (ambiguous).
 pub struct CargoBuilder {
     target_dir: PathBuf,
 }
@@ -303,6 +302,7 @@ impl ExtensionBuilder for CargoBuilder {
             .arg("build")
             .arg("--release")
             .arg("--locked")
+            .arg("--message-format=json-render-diagnostics")
             .arg("--target-dir")
             .arg(&self.target_dir)
             .current_dir(src_dir)
@@ -315,30 +315,53 @@ impl ExtensionBuilder for CargoBuilder {
             )));
         }
         let release_dir = self.target_dir.join("release");
-        let entries = std::fs::read_dir(&release_dir).map_err(|e| {
-            ExtensionError::Install(format!("read release dir {}: {e}", release_dir.display()))
-        })?;
-        let mut found: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_file()
-                    && p.extension().and_then(|e| e.to_str())
-                        == Some(std::env::consts::DLL_EXTENSION)
-            })
-            .collect();
-        match found.len() {
-            1 => Ok(found.pop().expect("len==1")),
-            0 => Err(ExtensionError::Install(format!(
-                "no cdylib (.{}) produced in {}",
-                std::env::consts::DLL_EXTENSION,
-                release_dir.display()
-            ))),
-            n => Err(ExtensionError::Install(format!(
-                "{n} cdylibs in {} (ambiguous); §F5c supports single-cdylib crates only",
-                release_dir.display()
-            ))),
+        pick_built_cdylib(&String::from_utf8_lossy(&out.stdout), &release_dir)
+    }
+}
+
+/// The cdylib THIS build produced, read from cargo's own
+/// `compiler-artifact` messages. The `release/` directory keeps every dylib
+/// earlier builds left there (the only production caller passes one
+/// permanent target directory), so counting its files blamed the crate for
+/// the leftovers — the second install failed as "ambiguous" — and handed
+/// back a stale dylib when a non-cdylib crate produced none. Zero cdylibs
+/// is an error, more than one is ambiguous.
+fn pick_built_cdylib(cargo_stdout: &str, release_dir: &Path) -> Result<PathBuf, ExtensionError> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    for line in cargo_stdout.lines() {
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if message["reason"].as_str() != Some("compiler-artifact") {
+            continue;
         }
+        let is_cdylib = message["target"]["kind"]
+            .as_array()
+            .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("cdylib")));
+        if !is_cdylib {
+            continue;
+        }
+        found.extend(
+            message["filenames"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(PathBuf::from),
+        );
+    }
+    let dll_extension = std::env::consts::DLL_EXTENSION;
+    found.retain(|path| path.extension().and_then(|ext| ext.to_str()) == Some(dll_extension));
+    match found.len() {
+        1 => Ok(found.pop().expect("len==1")),
+        0 => Err(ExtensionError::Install(format!(
+            "no cdylib (.{dll_extension}) produced in {}",
+            release_dir.display()
+        ))),
+        n => Err(ExtensionError::Install(format!(
+            "{n} cdylibs in {} (ambiguous); §F5c supports single-cdylib crates only",
+            release_dir.display()
+        ))),
     }
 }
 
@@ -1062,6 +1085,96 @@ mod cargo_builder_tests {
             "cdylib extension: {cdylib:?}"
         );
         assert!(cdylib.is_file(), "cdylib exists: {cdylib:?}");
+    }
+
+    /// The artifact comes from cargo's own messages, never from counting
+    /// the `release/` directory.
+    #[test]
+    fn pick_built_cdylib_reads_cargo_artifact_messages() {
+        let release = Path::new("/t/release");
+        let dll = std::env::consts::DLL_EXTENSION;
+        let cdylib = format!(
+            r#"{{"reason":"compiler-artifact","target":{{"kind":["cdylib"]}},"filenames":["/t/release/libmine.{dll}"]}}"#
+        );
+        let rlib = r#"{"reason":"compiler-artifact","target":{"kind":["lib"]},"filenames":["/t/release/libmine.rlib"]}"#;
+        let other = r#"{"reason":"build-finished","success":true}"#;
+
+        let picked = pick_built_cdylib(&format!("{rlib}\n{cdylib}\n{other}\nnot json\n"), release)
+            .expect("the one cdylib artifact");
+        assert_eq!(picked, Path::new(&format!("/t/release/libmine.{dll}")));
+
+        let none = format!("{rlib}\n{other}\n");
+        assert!(
+            matches!(pick_built_cdylib(&none, release), Err(ExtensionError::Install(msg)) if msg.contains("no cdylib")),
+            "an rlib-only build reports no cdylib"
+        );
+        let two = format!("{cdylib}\n{}\n", cdylib.replace("libmine", "libother"));
+        assert!(
+            matches!(pick_built_cdylib(&two, release), Err(ExtensionError::Install(msg)) if msg.contains("ambiguous")),
+            "two cdylibs are ambiguous"
+        );
+    }
+
+    fn write_tiny_crate(dir: &Path, name: &str, crate_type: &str) {
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"{crate_type}\"]\n"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/lib.rs"),
+            "#![allow(unused)]\npub fn exported() {}\n",
+        )
+        .unwrap();
+        // --locked needs a Cargo.lock; generate one (no-dep crate → offline-safe).
+        let _ = std::process::Command::new("cargo")
+            .arg("generate-lockfile")
+            .current_dir(dir)
+            .output();
+    }
+
+    /// Two different cdylib crates built into ONE target directory, then a
+    /// crate that produces no cdylib: each build reports its own artifact.
+    /// Counting the directory's dylibs failed the second build as
+    /// "ambiguous" and returned the first crate's stale dylib for the third.
+    /// Skips if `cargo` is not on PATH.
+    #[test]
+    fn cargo_builder_reports_this_builds_artifact_not_the_directories() {
+        if std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("cargo not on PATH; skipping cargo_builder test");
+            return;
+        }
+        let a = tempfile::tempdir().expect("a src tempdir");
+        write_tiny_crate(a.path(), "ext_a", "cdylib");
+        let b = tempfile::tempdir().expect("b src tempdir");
+        write_tiny_crate(b.path(), "ext_b", "cdylib");
+        let rlib_only = tempfile::tempdir().expect("rlib src tempdir");
+        write_tiny_crate(rlib_only.path(), "ext_rlib", "rlib");
+
+        // One permanent target directory, as the REPL's install passes.
+        let target = tempfile::tempdir().expect("target tempdir");
+        let builder = CargoBuilder::new(target.path().to_path_buf());
+
+        let first = builder.build(a.path()).expect("build ext_a");
+        assert!(first.to_string_lossy().contains("ext_a"), "{first:?}");
+        let second = builder
+            .build(b.path())
+            .expect("build ext_b: ext_a's dylib left in release/ must not count");
+        assert!(second.to_string_lossy().contains("ext_b"), "{second:?}");
+        let third = builder.build(rlib_only.path());
+        assert!(
+            matches!(&third, Err(ExtensionError::Install(msg)) if msg.contains("no cdylib")),
+            "{}",
+            third
+                .as_ref()
+                .map(|p| format!("returned {}", p.display()))
+                .unwrap_or_default()
+        );
     }
 
     #[test]
