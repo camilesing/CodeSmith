@@ -3091,23 +3091,44 @@ mod tests {
     /// second drain on an empty `libraries` + a second drop on an empty
     /// `pending_drop` are no-ops (must not panic).
     ///
-    /// `libraries` is `Mutex<Vec<Library>>` with no pub count accessor by
-    /// design (exposing `Library` would leak `libloading` internals), so the
-    /// semantics are proven behaviourally: idempotent + no panic across the
-    /// drain→drain→drop→drop sequence.
+    /// Observed through `has_pending_drop` and the retirement threshold
+    /// (and, in-module, `libraries` itself — it has no pub accessor by
+    /// design: exposing `Library` would leak `libloading` internals).
     #[cfg(not(windows))]
     #[test]
     fn drain_libraries_to_pending_moves_then_drop_pending_empties() {
         let runner = runner_with_fixture_dylib();
+        assert!(
+            !runner.has_pending_drop(),
+            "nothing is retired before the drain"
+        );
 
         // Drain moves the live `libraries` into `pending_drop` (Library stays
         // alive). A second drain is a no-op (drains an empty Vec).
         runner.drain_libraries_to_pending();
+        assert!(
+            runner.libraries.lock().unwrap().is_empty(),
+            "drain empties `libraries`"
+        );
+        assert!(
+            runner.has_pending_drop(),
+            "drain moves the libraries to pending — it never drops them"
+        );
+        assert!(
+            runner.retired_executor_sweep_threshold().is_some(),
+            "a retirement records the sweep threshold"
+        );
         runner.drain_libraries_to_pending();
+        assert!(runner.has_pending_drop(), "a second drain is a no-op");
 
         // Drop frees the pending Libraries (dylibs unloaded). A second drop
         // on an empty pending is a no-op (must not panic).
         runner.drop_pending();
+        assert!(!runner.has_pending_drop(), "drop empties pending");
+        assert!(
+            runner.retired_executor_sweep_threshold().is_none(),
+            "the completed retirement takes its sweep threshold with it"
+        );
         runner.drop_pending();
     }
 
