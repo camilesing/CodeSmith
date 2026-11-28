@@ -2490,10 +2490,12 @@ mod tests {
             "api_key = \"sk-codesmith-test-secret\"\n\n[hook_sinks]\nunix_socket_path = \"/tmp/cw-hook-test.sock\"\n",
         )
         .expect("write config");
-        // Construction succeeds; the sink connects lazily per emit and
-        // skips silently when no listener owns the socket.
-        let _state =
+        // The sink connects lazily per emit and skips silently when no
+        // listener owns the socket, but it is registered: HTTP carries the
+        // stdout mirror and the jsonl log, plus the configured socket sink.
+        let state =
             build_state(Some(config_path), None, AppTransport::Http).expect("state with hook sink");
+        assert_eq!(state.runtime.hooks.sink_count(), 3);
     }
 
     // ── tool endpoint cwd fallback ──────────────────────────────────────
