@@ -1617,7 +1617,14 @@ mod prebuilt_source_tests {
         let source = LocalPathSource::new(src.path().to_path_buf());
         let dest = tempfile::tempdir().expect("tempdir");
         let artifact = source.fetch(dest.path()).expect("local fetch");
-        assert!(artifact.provenance.starts_with("path:"), "{artifact:?}");
+        // The real path, not the spelling tempdir returned (on macOS the
+        // temp dir sits behind the `/var` -> `/private/var` symlink).
+        let canon = src.path().canonicalize().expect("canonical src");
+        assert_eq!(artifact.provenance, format!("path:{}", canon.display()));
+        assert!(
+            dest.path().join("nested").join("dep.rs").is_file(),
+            "fetch copies the tree into dest"
+        );
         // copy_dir_recursive ran during the fetch chain of the installer;
         // exercise it directly for the recursive case.
         let copied = tempfile::tempdir().expect("tempdir");
