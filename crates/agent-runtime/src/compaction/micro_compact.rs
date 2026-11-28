@@ -696,9 +696,13 @@ mod tests {
         assert_eq!(state.bytes_cleared, first);
 
         // Simulate placeholder drift: rewrite the cleared content to an
-        // old-style placeholder text that no longer equals the current one.
+        // old-style placeholder that no longer equals the current one — and
+        // is LONGER, so a pass that went by text equality alone would
+        // "save" bytes and clear it again.
         if let ContentBlock::ToolResult { content, .. } = &mut messages[1].content[0] {
-            *content = "[cleared]".to_string();
+            *content =
+                "[result cleared by an earlier CodeSmith version; re-run the tool to see it again]"
+                    .to_string();
         }
         let second = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         assert_eq!(second, 0, "already-cleared id must not re-clear on drift");
@@ -1017,7 +1021,8 @@ mod tests {
         let _guard = policy_test_lock();
         let mut messages = vec![
             tool_use_msg("call-1", "agent_open", json!({"prompt": "test"})),
-            tool_result_msg("call-1", "agent response content"),
+            // Longer than the placeholder: only the tool-name rule keeps it.
+            tool_result_msg("call-1", &"agent response content ".repeat(20)),
             msg("user", "question"),
         ];
         let mut state = MicroCompactState::default();
@@ -1028,7 +1033,11 @@ mod tests {
         let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
             panic!("expected tool result");
         };
-        assert_eq!(content, "agent response content");
+        assert_eq!(
+            content.as_str(),
+            "agent response content ".repeat(20).as_str()
+        );
+        assert!(state.cleared_tool_ids.is_empty());
     }
 
     #[test]
@@ -1043,20 +1052,31 @@ mod tests {
 
         let cleared = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         assert_eq!(cleared, 0);
+        // Byte-for-byte intact: a clobbered "ok" would save nothing and so
+        // would still report 0 cleared.
+        let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, "ok", "a small result must be left intact");
+        assert!(state.cleared_tool_ids.is_empty());
     }
 
     #[test]
     fn micro_compact_skips_already_cleared() {
+        // A claiming rule whose placeholder is SHORTER than the cleared
+        // text: only the placeholder-equality check keeps the result. With
+        // the builtin rule alone the size guard would refuse it anyway.
         let _guard = policy_test_lock();
+        let (sweep, mut state) = elision_sweep();
         let mut messages = vec![
-            tool_use_msg("call-1", "file_read", json!({"path": "a.rs"})),
+            tool_use_msg("call-1", "grep", json!({})),
             tool_result_msg("call-1", DEFAULT_CLEARED_PLACEHOLDER),
-            msg("user", "question"),
+            msg("assistant", "done"),
         ];
-        let mut state = MicroCompactState::default();
 
-        let cleared = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
-        assert_eq!(cleared, 0);
+        let cleared = micro_compact_messages(&mut messages, &mut state, &sweep);
+        codesmith_agent::policy::clear_published_policies();
+        assert_eq!(cleared, 0, "a cleared result must not be cleared again");
     }
 
     #[test]
