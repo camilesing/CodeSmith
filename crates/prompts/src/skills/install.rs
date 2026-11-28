@@ -1649,7 +1649,10 @@ fn parse_frontmatter_name(bytes: &[u8]) -> Result<String> {
         }
         if let Some((key, value)) = line.split_once(':') {
             let key = key.trim().to_ascii_lowercase();
-            let value = value.trim().to_string();
+            // Discovery strips one pair of quotes around the value; the
+            // install directory must be the name discovery reports, or
+            // uninstall/update/trust cannot find it by that name.
+            let value = super::strip_yaml_quotes(value).to_string();
             match key.as_str() {
                 "name" if !value.is_empty() => name = Some(value),
                 "description" if !value.is_empty() => has_description = true,
@@ -1968,6 +1971,20 @@ mod tests {
             .collect();
         assert!(names.iter().any(|name| name == "SKILL.md"), "{names:?}");
         assert!(names.iter().all(|name| name != "skill.md"), "{names:?}");
+    }
+
+    /// `name: "quoted"` is legal YAML: the skill installs under `quoted`,
+    /// the name discovery reports — not a directory with the quotes.
+    #[test]
+    fn quoted_frontmatter_name_installs_unquoted() {
+        assert_eq!(
+            parse_frontmatter_name(b"---\nname: \"quoted\"\ndescription: d\n---\n").unwrap(),
+            "quoted"
+        );
+        assert_eq!(
+            parse_frontmatter_name(b"---\nname: 'single'\ndescription: d\n---\n").unwrap(),
+            "single"
+        );
     }
 
     #[test]

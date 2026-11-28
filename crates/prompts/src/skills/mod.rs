@@ -619,7 +619,10 @@ impl SkillRegistry {
     }
 }
 
-fn strip_yaml_quotes(value: &str) -> &str {
+/// One matching pair of `'` / `"` around a frontmatter value, if present.
+/// Shared with the installer, so a skill installs under the name discovery
+/// reports.
+pub(super) fn strip_yaml_quotes(value: &str) -> &str {
     let trimmed = value.trim();
     if ((trimmed.starts_with('"') && trimmed.ends_with('"'))
         || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
