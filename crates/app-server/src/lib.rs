@@ -1231,7 +1231,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_transport_keeps_raw_config_get_for_legacy_clients() {
-        let state = build_state(None, None, AppTransport::Http).expect("state");
+        let (state, _tmp) = state_with_config();
         {
             let mut cfg = state.config.write().await;
             cfg.api_key = Some("sk-codesmith-test-secret".to_string());
@@ -1415,7 +1415,7 @@ mod tests {
     /// handler serialized behind the single global runtime mutex.
     #[tokio::test]
     async fn read_handlers_are_not_blocked_by_a_slow_write_handler() {
-        let mut state = build_state(None, None, AppTransport::Http).expect("state");
+        let (mut state, _tmp) = state_with_config();
         {
             let mut hooks = codesmith_hooks::HookDispatcher::default();
             hooks.add_sink(Arc::new(StallingSink(std::time::Duration::from_millis(
