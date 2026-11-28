@@ -766,11 +766,17 @@ mod tests {
     #[test]
     fn shared_build_unknown_names_registered_ids() {
         let shared = SharedProviderRegistry::new();
+        // One factory registered: the miss now has an id to name.
+        let _guard = shared.register(Arc::new(EchoFactory {
+            id: ProviderId::from("openai"),
+        }));
         let err = shared
             .build(&cfg_for(ProviderId::from("nope")))
             .err()
             .expect("expected an error for an unregistered provider");
-        assert!(err.to_string().contains("no provider factory registered"));
+        let msg = err.to_string();
+        assert!(msg.contains("no provider factory registered"), "{msg}");
+        assert!(msg.contains("[openai]"), "names the registered ids: {msg}");
     }
 
     #[test]
