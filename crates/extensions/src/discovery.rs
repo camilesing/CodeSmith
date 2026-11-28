@@ -424,11 +424,12 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use codesmith_agent::extension::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static LOAD_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-    struct NoopExt;
+    // Not a ZST: two `Box`es of a zero-sized type share one dangling
+    // address, which would make the freshness check below meaningless.
+    struct NoopExt {
+        _stamp: u8,
+    }
     #[async_trait]
     impl Extension for NoopExt {
         fn metadata(&self) -> &ExtensionMetadata {
@@ -436,14 +437,13 @@ mod tests {
             &M
         }
         async fn configure(&self, _api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
-            LOAD_COUNT.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
 
     inventory::submit! {
         ExtensionRegistration {
-            factory: || Box::new(NoopExt),
+            factory: || Box::new(NoopExt { _stamp: 0 }),
             metadata: ExtensionMetadata::new("test-noop"),
         }
     }
@@ -468,11 +468,14 @@ mod tests {
             .iter()
             .find(|r| r.metadata.id == "test-noop")
             .expect("test-noop registered");
-        let before = LOAD_COUNT.load(Ordering::Relaxed);
-        let ext = (reg.factory)();
-        // Drop ext without configuring — factory just proves constructible.
-        drop(ext);
-        let after = LOAD_COUNT.load(Ordering::Relaxed);
-        assert_eq!(before, after); // configure not called — count unchanged
+        // Both alive at once, so the two data pointers can only differ
+        // because two extensions were built.
+        let first = (reg.factory)();
+        let second = (reg.factory)();
+        assert_ne!(
+            &*first as *const dyn Extension as *const u8,
+            &*second as *const dyn Extension as *const u8,
+            "factory must build a fresh extension per call"
+        );
     }
 }
