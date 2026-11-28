@@ -3951,8 +3951,10 @@ mod tests {
     /// A handler reading the whole `ExtensionContext` surface through the
     /// runner's `ScopedContext` wrapper: the sync observations delegate to
     /// the bound host context, and the async control methods (abort /
-    /// shutdown / compact / get_context_usage) round-trip too. Covers both
-    /// the wrapper's delegations and the test `Ctx` mock's methods.
+    /// shutdown / compact / get_context_usage) round-trip too. The bound
+    /// context records every control call: a wrapper that dropped a
+    /// delegation would fall back to the trait's `Unimplemented` default,
+    /// which is indistinguishable from an unimplemented mock.
     #[tokio::test]
     async fn handler_context_surface_round_trips() {
         struct ProbingHandler {
@@ -3985,10 +3987,9 @@ mod tests {
                     ctx.shutdown().await.is_ok(),
                     ctx.compact().await.is_ok(),
                 );
-                let usage = ctx.get_context_usage().await;
+                let usage = ctx.get_context_usage().await.map(|u| u.input_tokens);
                 self.seen.lock().unwrap().push(format!(
-                    "abort={abort:?} shutdown={shutdown:?} compact={compact:?} usage_ok={}",
-                    usage.is_ok()
+                    "abort={abort:?} shutdown={shutdown:?} compact={compact:?} usage={usage:?}"
                 ));
                 Ok(HandlerOutcome::Continue)
             }
@@ -4009,13 +4010,62 @@ mod tests {
                 api.on(self.handler.clone())
             }
         }
+        // The bound context: the mock's observations plus a control surface
+        // that answers `Ok` and records each call by name.
+        struct ControlCtx {
+            calls: Arc<Mutex<Vec<&'static str>>>,
+        }
+        #[async_trait]
+        impl ExtensionContext for ControlCtx {
+            fn cwd(&self) -> &Path {
+                Path::new(".")
+            }
+            fn mode(&self) -> ExtensionMode {
+                ExtensionMode::Interactive
+            }
+            fn is_idle(&self) -> bool {
+                true
+            }
+            fn signal(&self) -> CancellationToken {
+                CancellationToken::new()
+            }
+            fn generation(&self) -> u64 {
+                5
+            }
+            async fn abort(&self) -> Result<(), ExtensionError> {
+                self.calls.lock().unwrap().push("abort");
+                Ok(())
+            }
+            async fn shutdown(&self) -> Result<(), ExtensionError> {
+                self.calls.lock().unwrap().push("shutdown");
+                Ok(())
+            }
+            async fn compact(&self) -> Result<(), ExtensionError> {
+                self.calls.lock().unwrap().push("compact");
+                Ok(())
+            }
+            async fn get_context_usage(&self) -> Result<ContextUsage, ExtensionError> {
+                self.calls.lock().unwrap().push("get_context_usage");
+                Ok(ContextUsage {
+                    input_tokens: 11,
+                    output_tokens: 22,
+                    context_window: 99,
+                })
+            }
+        }
+        // `bind_core` holds `Arc<dyn ExtensionCommandContext>`.
+        impl ExtensionCommandContext for ControlCtx {}
+
         runner
             .load(&ProbeExt {
                 handler: Arc::new(ProbingHandler { seen: seen.clone() }),
             })
             .await
             .unwrap();
-        runner.bind_core(Arc::new(Ctx { generation: 5 }));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        runner.bind_core(Arc::new(ControlCtx {
+            calls: calls.clone(),
+        }));
 
         let _ = runner
             .emit(ExtensionEvent::TurnStart {
@@ -4024,15 +4074,16 @@ mod tests {
             .await;
         let s = seen.lock().unwrap().clone();
         assert_eq!(s.len(), 3, "handler recorded every context read");
-        assert!(s[0].contains("gen=5"), "generation delegated: {}", s[0]);
-        assert_eq!(s[1], "cancelled=false");
-        // The slice-1 `Ctx` mock does not implement the async control
-        // surface, so the trait defaults answer `Unimplemented` — the
-        // wrapper still forwarded the call (that is the contract under
-        // test; the values themselves are the mock's).
         assert_eq!(
-            s[2],
-            "abort=false shutdown=false compact=false usage_ok=false"
+            s[0],
+            r#"cwd="." mode=Interactive idle=true gen=5 main=true"#
+        );
+        assert_eq!(s[1], "cancelled=false");
+        assert_eq!(s[2], "abort=true shutdown=true compact=true usage=Ok(11)");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            ["abort", "shutdown", "compact", "get_context_usage"],
+            "every control call reaches the bound context, in call order"
         );
     }
 
