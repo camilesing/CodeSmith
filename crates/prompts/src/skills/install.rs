@@ -1259,15 +1259,17 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
             return Err(InstallError::PathTraversal(path_str).into());
         }
 
-        // Track total size against `max_size` (uncompressed). We honor `header
-        // .size` rather than streaming-read every file; tar archives are
-        // self-describing so this is reliable for non-malicious inputs and
-        // catches the gzip-bomb case.
-        if let Ok(size) = header.size() {
-            total_size = total_size.saturating_add(size);
-            if total_size > max_size {
-                return Err(InstallError::OversizedTarball { limit: max_size }.into());
-            }
+        // Track total size against `max_size` (uncompressed). We honor the
+        // entry's declared size rather than streaming-read every file: tar
+        // archives are self-describing, which catches the gzip-bomb case.
+        // The entry's size, not the raw header field: a PAX `size` record
+        // overrides it, and the header alone let a tiny field account for a
+        // many-MiB payload. (`Entry::size` is the PAX-aware value and
+        // cannot fail.)
+        let size = entry.size();
+        total_size = total_size.saturating_add(size);
+        if total_size > max_size {
+            return Err(InstallError::OversizedTarball { limit: max_size }.into());
         }
 
         // Detect prefix from the first entry. GitHub archives wrap everything
@@ -1304,10 +1306,16 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
         if entry_type.is_file() {
             let stripped = strip_prefix(&path_str, prefix.as_deref().unwrap_or(""));
             if let Some(candidate) = skill_md_candidate(&stripped) {
+                // Bounded as well as accounted: never buffer more than the
+                // cap, whatever a header says.
                 let mut buf = Vec::new();
-                entry
+                (&mut entry)
+                    .take(max_size.saturating_add(1))
                     .read_to_end(&mut buf)
                     .context("failed to read SKILL.md from archive")?;
+                if buf.len() as u64 > max_size {
+                    return Err(InstallError::OversizedTarball { limit: max_size }.into());
+                }
                 // Prefer the most explicit match: repo-root SKILL.md first,
                 // then known skill-directory layouts, then a single nested
                 // `<name>/SKILL.md` repository.
@@ -1496,7 +1504,10 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
             // Read into a buffer so we can enforce `max_size`. Files inside
             // a SKILL bundle are small; copying through a buffer is fine.
             let mut buf = Vec::new();
-            entry
+            // Bounded: the cap is enforced on the bytes read, not only once
+            // the whole entry is in memory.
+            (&mut entry)
+                .take(max_size.saturating_add(1))
                 .read_to_end(&mut buf)
                 .with_context(|| format!("failed to read {}", path.display()))?;
             total_size = total_size.saturating_add(buf.len() as u64);
@@ -1832,6 +1843,67 @@ mod tests {
             assert!(uninstall(bad, &skills_dir).is_err());
             assert!(trust(bad, &skills_dir).is_err());
         }
+    }
+
+    /// A raw 512-byte tar header block for `name` — hand-built so the
+    /// declared size can disagree with a PAX record, which no
+    /// `tar::Builder` would produce.
+    fn raw_tar_header(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
+        let mut header = [0u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..108].copy_from_slice(b"0000644\0");
+        header[108..116].copy_from_slice(b"0000000\0");
+        header[116..124].copy_from_slice(b"0000000\0");
+        header[124..136].copy_from_slice(format!("{size:011o}\0").as_bytes());
+        header[136..148].copy_from_slice(b"00000000000\0");
+        header[148..156].copy_from_slice(b"        ");
+        header[156] = typeflag;
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+        let sum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        header
+    }
+
+    /// A PAX `size` record overrides the header's size field. Accounting the
+    /// raw field let a tiny one cover a multi-MiB payload that was then
+    /// buffered whole; the cap holds on the entry's real size.
+    #[test]
+    fn pax_size_record_cannot_bypass_the_size_cap() {
+        const PAYLOAD: usize = 4 * 1024 * 1024;
+        let record = "16 size=4194304\n";
+        let mut tar = Vec::new();
+        tar.extend_from_slice(&raw_tar_header(
+            "PaxHeaders/SKILL.md",
+            record.len() as u64,
+            b'x',
+        ));
+        tar.extend_from_slice(record.as_bytes());
+        tar.resize(tar.len() + (512 - tar.len() % 512) % 512, 0);
+        tar.extend_from_slice(&raw_tar_header("SKILL.md", 10, b'0'));
+        tar.resize(tar.len() + PAYLOAD, 0);
+        tar.extend_from_slice(&[0u8; 1024]);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &tar).expect("gzip");
+        let bytes = encoder.finish().expect("finish gz");
+        assert!(
+            bytes.len() < 64 * 1024,
+            "the bomb compresses small: {}",
+            bytes.len()
+        );
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = match stage_tarball(&bytes, tmp.path(), 64 * 1024) {
+            Err(err) => err,
+            Ok(_) => panic!("a payload over the cap must be refused"),
+        };
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::OversizedTarball { limit }) if *limit == 64 * 1024
+            ),
+            "{err:#}"
+        );
     }
 
     #[test]
