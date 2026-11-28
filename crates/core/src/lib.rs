@@ -2170,14 +2170,26 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_backoff_saturates_at_high_exponent() {
+    fn deterministic_backoff_caps_exponent_and_saturates() {
+        // attempt 63 is far past what a shift can hold: the exponent stops
+        // at 20, so the delay is bounded, never wrapped.
         let retry = JobRetryMetadata {
             attempt: 63,
             backoff_base_ms: 1000,
             ..Default::default()
         };
-        // Should not panic; result saturates
-        let _ = JobManager::deterministic_backoff_ms(&retry);
+        assert_eq!(
+            JobManager::deterministic_backoff_ms(&retry),
+            1000 << 20,
+            "exponent capped at 20 for attempt 63"
+        );
+        // Saturation proper: a product u64 cannot hold is u64::MAX.
+        let retry = JobRetryMetadata {
+            attempt: 63,
+            backoff_base_ms: u64::MAX,
+            ..Default::default()
+        };
+        assert_eq!(JobManager::deterministic_backoff_ms(&retry), u64::MAX);
     }
 
     // ── JobManager: history truncation ─────────────────────────────────
