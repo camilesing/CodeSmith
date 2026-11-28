@@ -830,6 +830,15 @@ mod tests {
         assert!(!dict().allow_rule_matches("ssh", "ssh -oProxyCommand=touch$IFS/tmp/pwned host"));
         assert!(!dict().allow_rule_matches("ssh", "ssh -o ProxyCommand=cmd host"));
         assert!(!dict().allow_rule_matches("git push", "git -c core.sshCommand=/bin/sh push"));
+        // `allow_rule_matches` denies that one by the arity window too (the
+        // `-c` value is a positional), so the flag guard is asserted at its
+        // own boundary.
+        assert!(contains_exec_capable_flag(&[
+            "git",
+            "-c",
+            "core.sshCommand=/bin/sh",
+            "push"
+        ]));
         assert!(!dict().allow_rule_matches("find", "find . -exec rm {} ;"));
     }
 
@@ -917,6 +926,15 @@ mod tests {
             "git config --global \"core.sshCommand\" /bin/sh",
             "ssh -oProxyCommand=/tmp/evil host",
         ] {
+            // The flag guard itself: for the attached `-c <key>=<cmd>` rows
+            // that is the only place it shows — the value token is
+            // positional, so the arity window denies the allow-rule match
+            // regardless.
+            let tokens: Vec<&str> = command.split_whitespace().collect();
+            assert!(
+                contains_exec_capable_flag(&tokens),
+                "exec-capable `{command}` must trip the flag guard"
+            );
             assert!(
                 !dict().allow_rule_matches("git", command)
                     && !dict().allow_rule_matches("git push", command)
