@@ -251,16 +251,13 @@ mod tests {
             .similarity_search("rust borrowing", 2, &HashEmbeddings)
             .await
             .expect("search");
-        assert_eq!(hits.len(), 2);
-        assert!(
-            hits[0].page_content.contains("rust"),
-            "the rust doc ranks first: {}",
-            hits[0].page_content
-        );
-        assert!(
-            hits.iter().all(|d| !d.page_content.contains("pasta")),
-            "the unrelated doc must not rank: {:?}",
-            hits.iter().map(|d| &d.page_content).collect::<Vec<_>>()
+        // The order, not membership: insertion order is the reverse, so a
+        // store that returns its hits unranked fails here.
+        let texts: Vec<&str> = hits.iter().map(|d| d.page_content.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["rust ownership and borrowing", "rust language guide"],
+            "the two-shared-word doc outranks the one-shared-word doc"
         );
     }
 
