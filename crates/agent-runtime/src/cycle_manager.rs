@@ -647,13 +647,9 @@ pub fn build_seed_messages(
 
 #[cfg(test)]
 mod tests {
-    //! `unsafe` rationale: `archive_cycle_writes_jsonl_*` redirects `HOME` /
-    //! `USERPROFILE` via `std::env::set_var` (unsafe since the 2024 edition) so
-    //! `dirs::home_dir()` lands inside a tempdir. cargo runs each test binary
-    //! single-threaded by default; we do not await across the env mutation
-    //! window, matching the upstream `child_env` pattern.
-    #![allow(unsafe_code)]
-
+    //! `archive_cycle_writes_jsonl_*` redirects the state directory through
+    //! `CODESMITH_HOME` under `crate::test_support::lock_test_env`, with an
+    //! RAII guard. No `unsafe` in this module.
     use super::*;
     use crate::models::{ContentBlock, Message};
     use tempfile::tempdir;
@@ -1040,17 +1036,13 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
 
-        // Redirect dirs::home_dir() into our tempdir. On Unix that reads
-        // HOME; on Windows it reads USERPROFILE — set both so the test is
-        // platform-portable. SAFETY: cargo runs each test binary
-        // single-threaded by default; we do not await across the env
-        // mutation window.
-        let original_home = std::env::var("HOME").ok();
-        let original_userprofile = std::env::var("USERPROFILE").ok();
-        unsafe {
-            std::env::set_var("HOME", dir.path());
-            std::env::set_var("USERPROFILE", dir.path());
-        }
+        // The archive directory resolves through `CODESMITH_HOME` first
+        // (`codesmith_config::codesmith_home`) — not through `HOME`, which
+        // an exported `CODESMITH_HOME` used to override, sending every run
+        // into the real store. Under the crate's env lock, with an RAII
+        // guard: a failing assertion cannot leave the redirect behind.
+        let _env_lock = crate::test_support::lock_test_env();
+        let _home = crate::test_support::EnvVarGuard::set("CODESMITH_HOME", dir.path());
 
         let messages = vec![
             user_msg("hello"),
@@ -1063,6 +1055,13 @@ mod tests {
             .expect("archive_cycle should succeed");
 
         assert!(path.exists(), "archive file should exist on disk");
+        // Inside OUR redirected store — the assertion the test lacked.
+        assert!(
+            path.starts_with(dir.path()),
+            "archive {} must land under CODESMITH_HOME {}",
+            path.display(),
+            dir.path().display()
+        );
         assert_eq!(path.file_name().and_then(|s| s.to_str()), Some("1.jsonl"));
 
         let contents = std::fs::read_to_string(&path).expect("read archive back");
@@ -1082,18 +1081,6 @@ mod tests {
             assert_eq!(&parsed, expected);
         }
         assert!(lines.next().is_none(), "no extra trailing lines");
-
-        // Restore env so subsequent tests aren't surprised.
-        unsafe {
-            match original_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match original_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-        }
     }
 
     #[test]
