@@ -410,14 +410,25 @@ pub fn should_trigger_micro_compact(
 }
 
 /// The builtin rule's own cadence — the time/byte lanes of
+/// Whether the time trigger fires: at least `gap_secs` since the last
+/// assistant message, and only when one was recorded. A pure function so
+/// the trigger is testable on a host whose monotonic clock is younger than
+/// the gap (every per-job CI runner). Known limitation: no production code
+/// records `last_assistant_message_at` yet, so the lane never fires there.
+fn time_gap_due(last_at: Option<Instant>, now: Instant, gap_secs: u64) -> bool {
+    last_at.is_some_and(|last_at| now.duration_since(last_at).as_secs() >= gap_secs)
+}
+
 /// [`should_trigger_micro_compact`], without the script-rule presence
 /// lane. A pass that fires while this is `false` was fired by a script
 /// rule alone and must dispatch [`SweepRules::without_builtin`].
 pub fn builtin_cadence_due(messages: &[Message], state: &MicroCompactState) -> bool {
     // Time trigger: large gap since last assistant message means cache is stale.
-    if let Some(last_at) = state.last_assistant_message_at
-        && last_at.elapsed().as_secs() >= policy_read().time_trigger_gap_secs
-    {
+    if time_gap_due(
+        state.last_assistant_message_at,
+        Instant::now(),
+        policy_read().time_trigger_gap_secs,
+    ) {
         return true;
     }
 
@@ -925,28 +936,51 @@ mod tests {
     }
 
     #[test]
-    fn should_trigger_time_based() {
+    fn time_trigger_fires_only_once_the_gap_has_elapsed() {
         let _guard = policy_test_lock();
-        let mut state = MicroCompactState::default();
-        // Simulate 61 minutes since last assistant message. Subtracting a
-        // large duration from `Instant::now()` panics when the monotonic
-        // clock is younger than that gap — freshly booted CI VMs (Windows
-        // runners boot per job) hit exactly this — so skip when
-        // unrepresentable instead of panicking.
-        let Some(stale_at) = Instant::now().checked_sub(std::time::Duration::from_secs(
-            DEFAULT_TIME_TRIGGER_GAP_SECS + 60,
-        )) else {
-            eprintln!("monotonic clock younger than simulated gap; skipping");
-            return;
-        };
-        state.last_assistant_message_at = Some(stale_at);
-        let messages = vec![msg("user", "test")];
-        assert!(should_trigger_micro_compact(
-            &messages,
-            &state,
-            false,
-            &SweepRules::compiled()
+        let gap = policy_read().time_trigger_gap_secs;
+        let last_at = Instant::now();
+        let over = last_at + std::time::Duration::from_secs(gap + 60);
+        // Not due one second before the gap, due past it, never without a
+        // recorded timestamp. `now` is passed in: nothing here needs a
+        // monotonic clock older than the gap.
+        assert!(!time_gap_due(
+            Some(last_at),
+            over - std::time::Duration::from_secs(61),
+            gap
         ));
+        assert!(time_gap_due(Some(last_at), over, gap));
+        assert!(!time_gap_due(None, over, gap));
+    }
+
+    /// The lane itself, with a zero gap so no clock arithmetic or sleeping
+    /// is involved: a recorded timestamp makes the cadence due at once.
+    #[test]
+    fn recorded_assistant_timestamp_switches_the_cadence_lane() {
+        use codesmith_agent::policy::{PolicyKind, publish_policies};
+        use std::collections::HashMap;
+        let _guard = policy_test_lock();
+        let mut set = HashMap::new();
+        set.insert(
+            PolicyKind::CompactPolicy,
+            serde_json::json!({
+                "cache_trigger_threshold": 999_999, // keep the byte lane quiet
+                "time_trigger_gap_secs": 0,
+                "micro_compactable_tools": [],
+            }),
+        );
+        let messages = vec![msg("user", "test")];
+        let fresh = MicroCompactState::default();
+        let recorded = MicroCompactState {
+            last_assistant_message_at: Some(Instant::now()),
+            ..MicroCompactState::default()
+        };
+        publish_policies(set);
+        let fresh_due = builtin_cadence_due(&messages, &fresh);
+        let recorded_due = builtin_cadence_due(&messages, &recorded);
+        codesmith_agent::policy::clear_published_policies();
+        assert!(!fresh_due, "no timestamp, no time trigger");
+        assert!(recorded_due, "a recorded timestamp makes the lane due");
     }
 
     #[test]
