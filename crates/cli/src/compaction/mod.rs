@@ -1455,22 +1455,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compaction_result_retries_used() {
-        // This test verifies the CompactionResult structure
-        let result = CompactionResult {
-            summary_folded_previous: false,
-            messages: vec![],
-            summary_prompt: None,
-            removed_messages: vec![],
-            retries_used: 2,
-        };
-
-        assert_eq!(result.retries_used, 2);
-        assert!(result.messages.is_empty());
-        assert!(result.removed_messages.is_empty());
-    }
-
-    #[test]
     fn test_should_compact_with_workspace_path_detection() {
         use std::env;
         let workspace = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
