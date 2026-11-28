@@ -2015,10 +2015,22 @@ mod tests {
         let mut jm = JobManager::default();
         let job = jm.enqueue("fragile");
         let id = job.id.clone();
-        for _ in 0..=DEFAULT_JOB_MAX_ATTEMPTS {
+        // Three failures leave the last permitted attempt still scheduled.
+        // `set_running` clears the schedule itself, so the extra `fail`
+        // below — with no `set_running` before it — must be what gives up.
+        for _ in 0..DEFAULT_JOB_MAX_ATTEMPTS {
             jm.set_running(&id);
             jm.fail(&id, "boom");
         }
+        let jobs = jm.list();
+        let scheduled = jobs.iter().find(|j| j.id == id).unwrap();
+        assert_eq!(scheduled.retry.attempt, DEFAULT_JOB_MAX_ATTEMPTS);
+        assert!(
+            scheduled.retry.next_backoff_ms > 0 && scheduled.retry.next_retry_at.is_some(),
+            "the last permitted attempt still schedules a retry"
+        );
+
+        jm.fail(&id, "boom");
         let jobs = jm.list();
         let updated = jobs.iter().find(|j| j.id == id).unwrap();
         assert_eq!(updated.retry.attempt, DEFAULT_JOB_MAX_ATTEMPTS);
@@ -2031,11 +2043,22 @@ mod tests {
         let mut jm = JobManager::default();
         let job = jm.enqueue("task");
         let id = job.id.clone();
+        // A fresh job carries no schedule: fail it once, so `cancel` has a
+        // live one to clear.
+        jm.set_running(&id);
+        jm.fail(&id, "crashed");
+        let jobs = jm.list();
+        let scheduled = jobs.iter().find(|j| j.id == id).unwrap();
+        assert!(
+            scheduled.retry.next_backoff_ms > 0 && scheduled.retry.next_retry_at.is_some(),
+            "a failed job carries a retry schedule"
+        );
         jm.cancel(&id);
         let jobs = jm.list();
         let updated = jobs.iter().find(|j| j.id == id).unwrap();
         assert_eq!(updated.status, JobStatus::Cancelled);
         assert_eq!(updated.retry.next_backoff_ms, 0);
+        assert!(updated.retry.next_retry_at.is_none());
     }
 
     #[test]
