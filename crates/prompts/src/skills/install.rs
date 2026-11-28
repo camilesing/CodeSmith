@@ -316,66 +316,20 @@ pub async fn install_with_registry(
         // rename. `extract_into` refuses tarball-supplied
         // `.installed-from`/`.trusted` markers, so this write is the only
         // way the marker can appear — unforgeable by the artifact — and the
-        // rename becomes the single atomic commit point. A marker-write
-        // failure here cleans up the staging dir and never touches the
-        // installed (or previous) version, instead of bricking a freshly
-        // renamed skill that update/uninstall/trust can no longer locate.
+        // rename becomes the single atomic commit point. A failure before it
+        // removes the staging directory and never touches the installed (or
+        // previous) version — see `commit_staged`.
         let marker_body = serde_json::json!({
             "spec": marker_spec,
             "url": source_url,
             "checksum": checksum,
         })
         .to_string();
-        fs::write(staged.staged_path.join(INSTALLED_FROM_MARKER), &marker_body).with_context(
-            || {
-                format!(
-                    "failed to write {} marker for skill {}",
-                    INSTALLED_FROM_MARKER, staged.skill_name
-                )
-            },
-        )?;
-
-        // Move the staged dir into its final location. If `update` is set and the
-        // destination exists, replace it; otherwise reject.
-        let final_path = skills_dir.join(&staged.skill_name);
-        if final_path.exists() {
-            if !update {
-                // Clean up the staging dir before returning the error.
-                let _ = fs::remove_dir_all(&staged.staged_path);
-                return Err(InstallError::AlreadyInstalled(staged.skill_name).into());
-            }
-            // Best-effort backup-then-replace; on failure we restore the original.
-            // Hidden name so discovery never surfaces a leftover `.bak/`.
-            let backup = skills_dir.join(format!(".{}.bak", staged.skill_name));
-            // If a previous failed update left a stale `.bak/`, drop it.
-            if backup.exists() {
-                fs::remove_dir_all(&backup).ok();
-            }
-            fs::rename(&final_path, &backup).with_context(|| {
-                format!(
-                    "failed to backup existing skill at {}",
-                    final_path.display()
-                )
-            })?;
-            if let Err(err) = fs::rename(&staged.staged_path, &final_path) {
-                // Roll back: restore the backup so the user isn't left with an
-                // empty skill directory.
-                fs::rename(&backup, &final_path).ok();
-                return Err(err).context("failed to install staged skill");
-            }
-            fs::remove_dir_all(&backup).ok();
-        } else {
-            if let Some(parent) = final_path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create skills directory {}", parent.display())
-                })?;
-            }
-            fs::rename(&staged.staged_path, &final_path)
-                .context("failed to install staged skill")?;
-        }
+        let name = staged.skill_name.clone();
+        let final_path = commit_staged(&staged, &skills_dir, update, &marker_body)?;
 
         Ok(InstallOutcome::Installed(InstalledSkill {
-            name: staged.skill_name,
+            name,
             path: final_path,
             source_checksum: checksum,
         }))
@@ -402,6 +356,79 @@ pub async fn update(
     network: &NetworkPolicy,
 ) -> Result<UpdateResult> {
     update_with_registry(name, skills_dir, max_size, network, DEFAULT_REGISTRY_URL).await
+}
+
+/// Put a staged tree in its final place: the provenance marker first, then
+/// one rename as the single commit point. Every failure before that point
+/// removes the staging directory — hidden, it was never pruned, and each
+/// retry left another — and leaves the installed (or previous) version
+/// untouched.
+fn commit_staged(
+    staged: &StagedSkill,
+    skills_dir: &Path,
+    update: bool,
+    marker_body: &str,
+) -> Result<PathBuf> {
+    let discard_staging = |staged: &StagedSkill| {
+        let _ = fs::remove_dir_all(&staged.staged_path);
+    };
+    if let Err(err) = fs::write(staged.staged_path.join(INSTALLED_FROM_MARKER), marker_body) {
+        discard_staging(staged);
+        return Err(err).with_context(|| {
+            format!(
+                "failed to write {INSTALLED_FROM_MARKER} marker for skill {}",
+                staged.skill_name
+            )
+        });
+    }
+
+    // If `update` is set and the destination exists, replace it; otherwise
+    // reject.
+    let final_path = skills_dir.join(&staged.skill_name);
+    if final_path.exists() {
+        if !update {
+            discard_staging(staged);
+            return Err(InstallError::AlreadyInstalled(staged.skill_name.clone()).into());
+        }
+        // Best-effort backup-then-replace; on failure we restore the original.
+        // Hidden name so discovery never surfaces a leftover `.bak/`.
+        let backup = skills_dir.join(format!(".{}.bak", staged.skill_name));
+        // If a previous failed update left a stale `.bak/`, drop it.
+        if backup.exists() {
+            fs::remove_dir_all(&backup).ok();
+        }
+        if let Err(err) = fs::rename(&final_path, &backup) {
+            discard_staging(staged);
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to backup existing skill at {}",
+                    final_path.display()
+                )
+            });
+        }
+        if let Err(err) = fs::rename(&staged.staged_path, &final_path) {
+            // Roll back: restore the backup so the user isn't left with an
+            // empty skill directory.
+            fs::rename(&backup, &final_path).ok();
+            discard_staging(staged);
+            return Err(err).context("failed to install staged skill");
+        }
+        fs::remove_dir_all(&backup).ok();
+    } else {
+        if let Some(parent) = final_path.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            discard_staging(staged);
+            return Err(err).with_context(|| {
+                format!("failed to create skills directory {}", parent.display())
+            });
+        }
+        if let Err(err) = fs::rename(&staged.staged_path, &final_path) {
+            discard_staging(staged);
+            return Err(err).context("failed to install staged skill");
+        }
+    }
+    Ok(final_path)
 }
 
 /// Same as [`update`] but lets the caller override the registry URL.
@@ -1985,6 +2012,24 @@ mod tests {
             parse_frontmatter_name(b"---\nname: 'single'\ndescription: d\n---\n").unwrap(),
             "single"
         );
+    }
+
+    /// A marker write that fails (a full disk, a read-only tree) removes
+    /// the staging directory: hidden, it was never pruned, and each retry
+    /// left another.
+    #[test]
+    fn failed_marker_write_removes_the_staging_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let staged_path = tmp.path().join(".staged");
+        // A directory where the marker must be written: the write fails.
+        std::fs::create_dir_all(staged_path.join(INSTALLED_FROM_MARKER))
+            .expect("marker-shaped directory");
+        let staged = StagedSkill {
+            skill_name: "s".to_string(),
+            staged_path: staged_path.clone(),
+        };
+        assert!(commit_staged(&staged, tmp.path(), false, "{}").is_err());
+        assert!(!staged_path.exists(), "the staging directory stayed behind");
     }
 
     #[test]
