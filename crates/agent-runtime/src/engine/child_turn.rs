@@ -1441,6 +1441,20 @@ mod tests {
         }
     }
 
+    /// How many variants `ExtensionEventKind` declares, counted from its
+    /// source (one per line): the enum is `#[non_exhaustive]` in another
+    /// crate, so no `match` here can list them.
+    fn declared_event_kind_count() -> usize {
+        let (_, body) = include_str!("../../../agent/src/extension.rs")
+            .split_once("pub enum ExtensionEventKind {")
+            .expect("`ExtensionEventKind` is declared in the agent crate");
+        let (body, _) = body.split_once('}').expect("the enum body closes");
+        body.lines()
+            .map(str::trim_start)
+            .filter(|line| line.starts_with(char::is_uppercase))
+            .count()
+    }
+
     /// The child-scope coverage table (general-agent plan iteration C): which event
     /// kinds a sub-agent turn dispatches at its agent-type scope, pinned
     /// over a representative run (a follow-up input, a tool call, a final
@@ -1492,7 +1506,11 @@ mod tests {
             (K::WorkflowAgentEnd, false),
             (K::WorkflowEnd, false),
         ];
-        assert_eq!(table.len(), 32, "every ExtensionEventKind has a row");
+        assert_eq!(
+            table.len(),
+            declared_event_kind_count(),
+            "every ExtensionEventKind has a row"
+        );
 
         let workspace = tempfile::tempdir().expect("workspace");
         let global = Arc::new(StdMutex::new(Vec::new()));
