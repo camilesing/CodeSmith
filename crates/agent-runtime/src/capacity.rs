@@ -804,8 +804,12 @@ mod tests {
     /// observations produce snapshots, decisions can fire interventions.
     #[test]
     fn opt_in_controller_observes_and_decides() {
+        // `min_turns_before_guardrail` 0: with the default (4) `decide` on
+        // turn 1 answers `min_turns_before_guardrail_not_reached` before any
+        // policy runs — the gate the old test never got past, or noticed.
         let cfg = CapacityControllerConfig {
             enabled: true,
+            min_turns_before_guardrail: 0,
             ..Default::default()
         };
 
@@ -823,6 +827,18 @@ mod tests {
         let snap = snapshot.unwrap();
         assert_eq!(snap.turn_index, 1);
         assert!(snap.p_fail > 0.0);
+
+        // The "decides" half: this observation is high-risk and low-slack,
+        // so the policy selects a replan and no cooldown stands in the way.
+        let decision = controller.decide(1, Some(&snap));
+        assert_eq!(
+            decision.action,
+            GuardrailAction::VerifyAndReplan,
+            "{}",
+            decision.reason
+        );
+        assert_eq!(decision.reason, "policy_selected_action");
+        assert!(!decision.cooldown_blocked);
     }
 
     #[test]
