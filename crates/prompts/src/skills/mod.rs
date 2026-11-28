@@ -828,9 +828,6 @@ fn segment_matches(pattern: &str, text: &str) -> bool {
     pi == p.len()
 }
 
-/// Render a compact model-visible skills block.
-///
-/// The full `SKILL.md` body is intentionally not included here. This mirrors
 /// Resolve the active skills directory given a workspace, mirroring the
 /// hierarchy `App::new` walks: `<workspace>/.agents/skills` →
 /// `<workspace>/skills` → [`agents_global_skills_dir`] (`~/.agents/skills`,
