@@ -730,19 +730,43 @@ mod tests {
 
     #[test]
     fn external_tool_output_respects_cwd() {
-        // Verify that `output()` runs in the requested directory.
+        // `output()` runs in the requested directory: a fresh repository
+        // answers `rev-parse --show-toplevel` with its own path, and a
+        // directory outside any repository does not answer at all. With
+        // the cwd dropped, both answer for the process's own directory.
         if !Git::available() {
             return;
         }
-        let tmp = std::env::temp_dir();
-        let out = Git::output(&["rev-parse", "--show-toplevel"], &tmp);
-        assert!(out.is_ok(), "git rev-parse must spawn");
-        let out = out.unwrap();
-        // rev-parse --show-toplevel in a non-git dir should fail
-        // because temp_dir is not a git repo. That's expected.
-        // The key assertion: the command executed without IO errors.
-        // We don't assert success because temp_dir might or might not
-        // be inside a git worktree.
-        let _ = out; // just checking it didn't panic/IO-error
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        assert!(
+            Git::output(&["init", "-q"], repo.path())
+                .expect("git init must spawn")
+                .status
+                .success(),
+            "git init must succeed in the temp repository"
+        );
+        let out = Git::output(&["rev-parse", "--show-toplevel"], repo.path())
+            .expect("git rev-parse must spawn");
+        assert!(
+            out.status.success(),
+            "inside the repository: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let toplevel = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        // Canonicalize both sides: macOS's temp dir is a symlink
+        // (`/var` -> `/private/var`) and git prints the real path.
+        assert_eq!(
+            std::fs::canonicalize(&toplevel).ok(),
+            std::fs::canonicalize(repo.path()).ok(),
+            "the command must run in the requested directory"
+        );
+
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let out = Git::output(&["rev-parse", "--show-toplevel"], outside.path())
+            .expect("git rev-parse must spawn");
+        assert!(
+            !out.status.success(),
+            "outside any repository there is no toplevel"
+        );
     }
 }
