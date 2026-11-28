@@ -31,6 +31,9 @@
 //!
 //! - Client instances are built per request (pre-seam behavior kept); there
 //!   is no connection pooling across calls.
+//! - The fetch redirect loop is tested through `follow_redirects` with a
+//!   scripted transport; the request itself (`send_hop`) needs a network and
+//!   has no offline test.
 //! - `web.run`'s `image_query` scrape is not routed through this service.
 //! - `provider_native` reads the provider's own search-result envelope and
 //!   ignores the assistant's prose summary; a gateway that renames or drops
@@ -172,65 +175,8 @@ impl HttpWebService {
     // === fetch ============================================================
 
     async fn do_fetch(&self, req: &FetchRequest) -> Result<FetchOutcome, WebError> {
-        let mut current_url = reqwest::Url::parse(req.url.trim())
-            .map_err(|e| WebError::new(WebErrorKind::InvalidUrl, format!("invalid URL: {e}")))?;
-        let mut redirects_followed = 0usize;
-
-        loop {
-            // Per-hop validation: network policy, then SSRF checks with DNS
-            // pinning (a denied host must not be reachable by redirect from
-            // an allowed one).
-            // The first hop's host is what the dispatch gate asked about;
-            // every later one is a redirect target it never saw.
-            let dns_pinning =
-                validate_fetch_target(&current_url, req, redirects_followed > 0).await?;
-
-            let mut client_builder = reqwest::Client::builder()
-                .timeout(req.timeout)
-                .user_agent(USER_AGENT)
-                .redirect(reqwest::redirect::Policy::none());
-            if let Some((hostname, validated_ip)) = dns_pinning {
-                client_builder =
-                    client_builder.resolve(&hostname, SocketAddr::new(validated_ip, 0));
-            }
-            let client = client_builder.build().map_err(|e| {
-                WebError::new(
-                    WebErrorKind::Transport,
-                    format!("failed to build HTTP client: {e}"),
-                )
-            })?;
-
-            let resp = client
-                .get(current_url.clone())
-                .header(
-                    "Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                )
-                .header("Accept-Language", "en-US,en;q=0.5")
-                .send()
-                .await
-                .map_err(|e| reqwest_web_error("request failed", &e))?;
-
-            if !resp.status().is_redirection() || redirects_followed >= req.max_redirects {
-                return fetch_outcome_from(resp, req.max_bytes).await;
-            }
-
-            let Some(location) = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok())
-            else {
-                return fetch_outcome_from(resp, req.max_bytes).await;
-            };
-
-            current_url = resp.url().join(location).map_err(|e| {
-                WebError::new(
-                    WebErrorKind::Transport,
-                    format!("invalid redirect location: {e}"),
-                )
-            })?;
-            redirects_followed += 1;
-        }
+        let resp = follow_redirects(req, |pin, url| send_hop(pin, url, req.timeout)).await?;
+        fetch_outcome_from(resp, req.max_bytes).await
     }
 
     // === API-backed search providers ======================================
@@ -1007,6 +953,110 @@ async fn fetch_outcome_from(
         body,
         truncated,
     })
+}
+
+/// What the redirect loop reads from one hop's answer, so a test can supply
+/// the answers without a network.
+trait HopAnswer {
+    fn status(&self) -> reqwest::StatusCode;
+    /// The `Location` header, when it carries a readable one.
+    fn location(&self) -> Option<&str>;
+    /// The URL that answered: a relative `Location` resolves against it.
+    fn url(&self) -> &reqwest::Url;
+}
+
+impl HopAnswer for reqwest::Response {
+    fn status(&self) -> reqwest::StatusCode {
+        reqwest::Response::status(self)
+    }
+
+    fn location(&self) -> Option<&str> {
+        self.headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+    }
+
+    fn url(&self) -> &reqwest::Url {
+        reqwest::Response::url(self)
+    }
+}
+
+/// The redirect loop behind `do_fetch`, with the request as a parameter so
+/// a test can drive it without a network. Every hop is validated — network
+/// policy, then the SSRF checks with DNS pinning — BEFORE `send` is offered
+/// it, and `send` receives the pin to connect to: a redirect to a denied or
+/// restricted target is refused without a connection. The first hop's host
+/// is what the dispatch gate asked about; every later one is a redirect
+/// target it never saw, so a `Prompt` there fails closed.
+async fn follow_redirects<A, F, Fut>(req: &FetchRequest, mut send: F) -> Result<A, WebError>
+where
+    A: HopAnswer,
+    F: FnMut(Option<(String, IpAddr)>, reqwest::Url) -> Fut,
+    Fut: std::future::Future<Output = Result<A, WebError>>,
+{
+    let mut current_url = reqwest::Url::parse(req.url.trim())
+        .map_err(|e| WebError::new(WebErrorKind::InvalidUrl, format!("invalid URL: {e}")))?;
+    let mut redirects_followed = 0usize;
+
+    loop {
+        // Per-hop validation: network policy, then SSRF checks with DNS
+        // pinning (a denied host must not be reachable by redirect from
+        // an allowed one).
+        // The first hop's host is what the dispatch gate asked about;
+        // every later one is a redirect target it never saw.
+        let dns_pinning = validate_fetch_target(&current_url, req, redirects_followed > 0).await?;
+
+        let resp = send(dns_pinning, current_url.clone()).await?;
+
+        if !resp.status().is_redirection() || redirects_followed >= req.max_redirects {
+            return Ok(resp);
+        }
+
+        let Some(location) = resp.location() else {
+            return Ok(resp);
+        };
+
+        current_url = resp.url().join(location).map_err(|e| {
+            WebError::new(
+                WebErrorKind::Transport,
+                format!("invalid redirect location: {e}"),
+            )
+        })?;
+        redirects_followed += 1;
+    }
+}
+
+/// One request of the redirect loop, on a hop it already validated. The
+/// client is built per request and pins DNS to `pin` when the validation
+/// resolved one; redirects are left to the loop.
+async fn send_hop(
+    pin: Option<(String, IpAddr)>,
+    url: reqwest::Url,
+    timeout: Duration,
+) -> Result<reqwest::Response, WebError> {
+    let mut client_builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some((hostname, validated_ip)) = pin {
+        client_builder = client_builder.resolve(&hostname, SocketAddr::new(validated_ip, 0));
+    }
+    let client = client_builder.build().map_err(|e| {
+        WebError::new(
+            WebErrorKind::Transport,
+            format!("failed to build HTTP client: {e}"),
+        )
+    })?;
+    client
+        .get(url)
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Language", "en-US,en;q=0.5")
+        .send()
+        .await
+        .map_err(|e| reqwest_web_error("request failed", &e))
 }
 
 // === Fetch target validation (SSRF + DNS pinning) ==========================
@@ -2363,22 +2413,134 @@ mod tests {
         assert!(body.contains("TrustedProxyFakeIp-Allow"));
     }
 
+    /// One scripted answer for the redirect loop: the status, the
+    /// `Location` it carries and the URL the loop offered it on.
+    #[derive(Debug)]
+    struct Answer {
+        status: reqwest::StatusCode,
+        location: Option<String>,
+        url: reqwest::Url,
+    }
+
+    impl HopAnswer for Answer {
+        fn status(&self) -> reqwest::StatusCode {
+            self.status
+        }
+
+        fn location(&self) -> Option<&str> {
+            self.location.as_deref()
+        }
+
+        fn url(&self) -> &reqwest::Url {
+            &self.url
+        }
+    }
+
+    /// `follow_redirects` over a script of `(status, Location)` answers, one
+    /// per hop and in order — no listener and no DNS. A hop with no answer
+    /// left gets a plain 200, so an unexpected hop shows in the returned
+    /// `offered` list and nowhere else.
+    async fn fetch_over(
+        req: &FetchRequest,
+        script: &[(u16, Option<&str>)],
+    ) -> (Result<Answer, WebError>, Vec<String>) {
+        let mut next = 0usize;
+        let mut offered = Vec::new();
+        let result = follow_redirects(req, |_, url| {
+            offered.push(url.to_string());
+            let answer = match script.get(next) {
+                Some(&(status, location)) => Answer {
+                    status: reqwest::StatusCode::from_u16(status).expect("a valid status"),
+                    location: location.map(str::to_string),
+                    url,
+                },
+                None => Answer {
+                    status: reqwest::StatusCode::OK,
+                    location: None,
+                    url,
+                },
+            };
+            next += 1;
+            std::future::ready(Ok(answer))
+        })
+        .await;
+        (result, offered)
+    }
+
+    /// The redirect loop re-validates every hop before any connection: a
+    /// redirect `Location` to a policy-denied host is refused with a
+    /// `PolicyDenied` naming it, and the transport is never offered it.
     #[tokio::test]
     async fn redirect_hop_policy_is_rechecked_before_connecting() {
-        // The redirect loop re-validates every hop before any connection:
-        // a redirect Location to a policy-denied host must produce a
-        // PolicyDenied error naming that host, without a DNS lookup or
-        // connection attempt (offline-safe: no listener is involved).
-        let url = reqwest::Url::parse("https://denied.example/landing").unwrap();
-        let req = FetchRequest::new(url.as_str())
-            .with_policy(Some(prompt_decider(&[], &["denied.example"])))
+        // A public IP literal passes the first hop with no DNS lookup, so
+        // the loop is driven without a network.
+        let req = FetchRequest::new("http://93.184.216.34/landing")
+            .with_policy(Some(prompt_decider(
+                &["93.184.216.34", "1.1.1.1"],
+                &["denied.example"],
+            )))
+            .with_max_redirects(3)
             .for_tool("web_run");
-        let err = HttpWebService::default()
-            .fetch(req)
-            .await
-            .expect_err("redirect target on the deny list must be blocked");
+
+        let (refused, offered) = fetch_over(&req, &[(302, Some("https://denied.example/x"))]).await;
+        let err = refused.expect_err("a redirect target on the deny list must be blocked");
         assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
-        assert!(err.to_string().contains("denied.example"));
+        assert!(err.to_string().contains("denied.example"), "{err}");
+        assert_eq!(
+            offered,
+            ["http://93.184.216.34/landing"],
+            "the denied target must never be offered to the transport"
+        );
+
+        // Positive control: the same first hop redirecting to allowed hosts
+        // is followed to the end — a relative `Location`, then another host.
+        let (followed, offered) = fetch_over(
+            &req,
+            &[
+                (302, Some("/next")),
+                (302, Some("http://1.1.1.1/page")),
+                (200, None),
+            ],
+        )
+        .await;
+        assert_eq!(
+            followed.expect("an allowed redirect is followed").status,
+            reqwest::StatusCode::OK
+        );
+        assert_eq!(
+            offered,
+            [
+                "http://93.184.216.34/landing",
+                "http://93.184.216.34/next",
+                "http://1.1.1.1/page",
+            ]
+        );
+    }
+
+    /// The SSRF block holds on a redirect hop too: an allowed page that
+    /// answers with a `Location` on a metadata or loopback address is
+    /// refused there, before the transport is offered it.
+    #[tokio::test]
+    async fn redirect_to_a_restricted_address_is_refused_before_connecting() {
+        let req = FetchRequest::new("http://93.184.216.34/landing").with_max_redirects(3);
+        for (target, restricted) in [
+            ("http://169.254.169.254/latest/meta-data", "169.254.169.254"),
+            ("http://127.0.0.1:8080/admin", "127.0.0.1"),
+        ] {
+            let (refused, offered) = fetch_over(&req, &[(302, Some(target))]).await;
+            let err = refused.expect_err("a redirect to a restricted address must be refused");
+            assert_eq!(err.kind(), WebErrorKind::PolicyDenied, "{target}");
+            assert!(
+                err.to_string()
+                    .contains(&format!("IP {restricted} is a restricted address")),
+                "{target}: {err}"
+            );
+            assert_eq!(
+                offered,
+                ["http://93.184.216.34/landing"],
+                "{target}: the restricted target was offered to the transport"
+            );
+        }
     }
 
     /// The dispatch gate only ever sees the URL in the tool input. A
@@ -2387,18 +2549,26 @@ mod tests {
     /// out unasked. The check runs before any DNS lookup or connection.
     #[tokio::test]
     async fn redirect_hop_with_a_prompt_decision_fails_closed() {
-        let url = reqwest::Url::parse("https://unlisted.example/landing").unwrap();
-        let req = FetchRequest::new(url.as_str())
-            .with_policy(Some(prompt_decider(&["first.example"], &[])))
+        // The first hop is allow-listed, so only the hop flag can refuse the
+        // second: on a first hop a `Prompt` passes — the approval gate owns
+        // the ask.
+        let req = FetchRequest::new("http://93.184.216.34/landing")
+            .with_policy(Some(prompt_decider(&["93.184.216.34"], &[])))
+            .with_max_redirects(3)
             .for_tool("fetch_url");
-        let err = validate_fetch_target(&url, &req, true)
-            .await
-            .expect_err("a redirect to an unapproved host is refused");
+        let (refused, offered) =
+            fetch_over(&req, &[(302, Some("https://unlisted.example/landing"))]).await;
+        let err = refused.expect_err("a redirect to an unapproved host is refused");
         assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
         let message = err.to_string();
         assert!(
             message.contains("unlisted.example") && message.contains("fetch that URL directly"),
             "{message}"
+        );
+        assert_eq!(
+            offered,
+            ["http://93.184.216.34/landing"],
+            "the unapproved target was offered to the transport"
         );
     }
 
