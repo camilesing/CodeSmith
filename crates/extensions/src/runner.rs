@@ -4265,7 +4265,9 @@ mod tests {
     /// sub-agent view drops dylib-origin replacements (§F5d).
     #[test]
     fn bound_replacements_views_filter_dylib_origin() {
-        struct ReplaceExt;
+        // Each origin replaces a different tool, so the views are read by
+        // target — not by count, which either filter direction satisfies.
+        struct ReplaceExt(&'static str);
         #[async_trait]
         impl Extension for ReplaceExt {
             fn metadata(&self) -> &ExtensionMetadata {
@@ -4273,15 +4275,15 @@ mod tests {
                 &M
             }
             async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
-                api.replace_tool(Box::new(NopReplace))?;
+                api.replace_tool(Box::new(NopReplace(self.0)))?;
                 Ok(())
             }
         }
-        struct NopReplace;
+        struct NopReplace(&'static str);
         #[async_trait]
         impl ToolReplacement for NopReplace {
             fn target(&self) -> &str {
-                "exec_shell"
+                self.0
             }
             async fn execute(
                 &self,
@@ -4296,18 +4298,30 @@ mod tests {
 
         let runner = ExtensionRunner::new();
         let rt = tokio::runtime::Runtime::new().expect("rt");
-        rt.block_on(runner.load(&ReplaceExt))
+        rt.block_on(runner.load(&ReplaceExt("exec_shell")))
             .expect("load compiled-in");
-        rt.block_on(runner.load_as(&ReplaceExt, RegistrationOrigin::Dylib))
+        rt.block_on(runner.load_as(&ReplaceExt("read_file"), RegistrationOrigin::Dylib))
             .expect("load dylib-stamped");
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
 
-        let all = runner.bound_replacements();
-        assert_eq!(all.len(), 2, "main-turn view carries both origins");
-        let subagent = runner.bound_replacements_for_subagents();
+        let all: Vec<String> = runner
+            .bound_replacements()
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect();
         assert_eq!(
-            subagent.len(),
-            1,
+            all,
+            ["exec_shell", "read_file"],
+            "main-turn view carries both origins"
+        );
+        let subagent: Vec<String> = runner
+            .bound_replacements_for_subagents()
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect();
+        assert_eq!(
+            subagent,
+            ["exec_shell"],
             "dylib-origin replacement never mounts in a sub-agent registry"
         );
         runner.clear_replacements();
