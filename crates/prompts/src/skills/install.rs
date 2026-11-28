@@ -581,8 +581,13 @@ async fn policy_gated_get(
     network: &NetworkPolicy,
     etag: Option<&str>,
 ) -> Result<GatedGet> {
+    // Bounded like its twins in `fetch_url.rs` / `web_run.rs`: a host that
+    // accepts and then stalls must not hold the command forever. Generous,
+    // because archive hosts take a while to prepare large tarballs.
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .context("failed to build HTTP client")?;
     let mut current = url.to_string();
