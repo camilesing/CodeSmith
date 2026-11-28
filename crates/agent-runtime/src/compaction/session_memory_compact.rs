@@ -397,24 +397,30 @@ mod tests {
         );
     }
 
+    /// ~50 000 tokens: over the default `max_retain_tokens` (40 000), so
+    /// the token condition never decides — only the gate under test does.
+    fn over_budget_history() -> Vec<Message> {
+        (0..200).map(|_| msg("user", &"x".repeat(1000))).collect()
+    }
+
     #[test]
-    fn should_use_returns_false_when_disabled() {
-        let config = SessionMemoryCompactConfig {
+    fn should_use_requires_enabled_memory_and_an_over_budget_history() {
+        let big = over_budget_history();
+        let config = SessionMemoryCompactConfig::default();
+        // Positive control: every condition met.
+        assert!(should_use_session_memory_compact("memory", &big, &config));
+        // Each gate alone turns it off.
+        let disabled = SessionMemoryCompactConfig {
             enabled: false,
             ..Default::default()
         };
         assert!(!should_use_session_memory_compact(
-            "memory",
-            &[msg("user", "test")],
-            &config
+            "memory", &big, &disabled
         ));
-    }
-
-    #[test]
-    fn should_use_returns_false_when_memory_empty() {
-        let config = SessionMemoryCompactConfig::default();
+        assert!(!should_use_session_memory_compact("  \n ", &big, &config));
+        // And the token condition on its own: a one-word history is small.
         assert!(!should_use_session_memory_compact(
-            "",
+            "memory",
             &[msg("user", "test")],
             &config
         ));
