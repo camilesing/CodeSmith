@@ -112,8 +112,8 @@ pub async fn run_skill(state: &mut ReplState, name: Option<&str>) {
     match first.to_ascii_lowercase().as_str() {
         "install" => return install_skill(state, rest.trim()).await,
         "update" => return update_skill(state, rest.trim()).await,
-        "uninstall" => return uninstall_skill(state, rest.trim()),
-        "trust" => return trust_skill(state, rest.trim()),
+        "uninstall" => return uninstall_skill(state, rest.trim()).await,
+        "trust" => return trust_skill(state, rest.trim()).await,
         _ => {}
     }
     let registry = discover(state);
@@ -597,26 +597,34 @@ async fn update_skill(state: &ReplState, name: &str) {
 
 /// `/skill uninstall <name>` — remove an installed skill (refuses skills
 /// without an install marker).
-fn uninstall_skill(state: &ReplState, name: &str) {
+async fn uninstall_skill(state: &ReplState, name: &str) {
     if name.is_empty() {
         println!("{} usage: /skill uninstall <name>", "✗".red());
         return;
     }
-    match install::uninstall(name, &state.skills_dir) {
-        Ok(()) => println!("uninstalled {name}"),
+    // A directory removal: on the blocking pool.
+    let dir = state.skills_dir.clone();
+    let name = name.to_string();
+    match tokio::task::spawn_blocking(move || (install::uninstall(&name, &dir), name)).await {
+        Ok((Ok(()), name)) => println!("uninstalled {name}"),
+        Ok((Err(err), _)) => println!("{} {err}", "✗".red()),
         Err(err) => println!("{} {err}", "✗".red()),
     }
 }
 
 /// `/skill trust <name>` — drop the `.trusted` marker, unlocking the
 /// skill's shell snippets.
-fn trust_skill(state: &ReplState, name: &str) {
+async fn trust_skill(state: &ReplState, name: &str) {
     if name.is_empty() {
         println!("{} usage: /skill trust <name>", "✗".red());
         return;
     }
-    match install::trust(name, &state.skills_dir) {
-        Ok(()) => println!("{name} is now trusted — its shell snippets can run"),
+    // A marker write and two path lookups: on the blocking pool.
+    let dir = state.skills_dir.clone();
+    let name = name.to_string();
+    match tokio::task::spawn_blocking(move || (install::trust(&name, &dir), name)).await {
+        Ok((Ok(()), name)) => println!("{name} is now trusted — its shell snippets can run"),
+        Ok((Err(err), _)) => println!("{} {err}", "✗".red()),
         Err(err) => println!("{} {err}", "✗".red()),
     }
 }

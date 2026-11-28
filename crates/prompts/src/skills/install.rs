@@ -340,6 +340,24 @@ pub async fn install_with_registry(
     Ok(outcome)
 }
 
+/// The provenance marker of an installed skill — `.installed-from` next
+/// to its `SKILL.md`. A skill without one was not installed here, and
+/// `update`, `uninstall` and `trust` all refuse it.
+fn read_install_marker(name: &str, skills_dir: &Path) -> Result<InstalledFromMarker> {
+    let target = skill_target_path(name, skills_dir)?;
+    if target.exists() {
+        ensure_target_within_skills_dir(&target, skills_dir)?;
+    }
+    let marker_path = target.join(INSTALLED_FROM_MARKER);
+    if !marker_path.exists() {
+        return Err(InstallError::NotInstalledHere(name.to_string()).into());
+    }
+    let marker_body = fs::read_to_string(&marker_path)
+        .with_context(|| format!("failed to read {}", marker_path.display()))?;
+    serde_json::from_str(&marker_body)
+        .with_context(|| format!("malformed {INSTALLED_FROM_MARKER} for {name}"))
+}
+
 /// Re-fetch a previously installed skill and replace it on disk if the
 /// upstream tarball changed.
 ///
@@ -446,18 +464,12 @@ pub async fn update_with_registry(
     network: &NetworkPolicy,
     registry_url: &str,
 ) -> Result<UpdateResult> {
-    let target = skill_target_path(name, skills_dir)?;
-    if target.exists() {
-        ensure_target_within_skills_dir(&target, skills_dir)?;
-    }
-    let marker_path = target.join(INSTALLED_FROM_MARKER);
-    if !marker_path.exists() {
-        return Err(InstallError::NotInstalledHere(name.to_string()).into());
-    }
-    let marker_body = fs::read_to_string(&marker_path)
-        .with_context(|| format!("failed to read {}", marker_path.display()))?;
-    let marker: InstalledFromMarker = serde_json::from_str(&marker_body)
-        .with_context(|| format!("malformed {INSTALLED_FROM_MARKER} for {name}"))?;
+    // Two file reads: on the blocking pool, like the install that follows.
+    let marker = {
+        let name = name.to_string();
+        let skills_dir = skills_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || read_install_marker(&name, &skills_dir)).await??
+    };
 
     // Re-resolve the URL, taking the existing checksum as a short-circuit hint:
     // we still hit the network so the user gets a useful "no upstream change"
@@ -797,14 +809,21 @@ async fn sync_one_skill(
         // Perform a HEAD request (or conditional GET) for freshness. We use a
         // simple GET with If-None-Match when we have an ETag, falling back to
         // an unconditional GET for servers that don't support ETags.
-        let existing_meta: Option<CacheMeta> = meta_path
-            .exists()
-            .then(|| {
+        // Once per registry entry, a file read: on the blocking pool.
+        let existing_meta: Option<CacheMeta> = {
+            let meta_path = meta_path.clone();
+            tokio::task::spawn_blocking(move || {
+                if !meta_path.exists() {
+                    return None;
+                }
                 fs::read_to_string(&meta_path)
                     .ok()
                     .and_then(|s| serde_json::from_str(&s).ok())
             })
-            .flatten();
+            .await
+            .ok()
+            .flatten()
+        };
 
         // Conditional GET with manual redirect handling: every hop is
         // re-checked against the network policy.
