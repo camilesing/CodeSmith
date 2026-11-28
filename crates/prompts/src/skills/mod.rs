@@ -2107,8 +2107,15 @@ mod tests {
         let link_path = skills_root.join("agent-browser");
 
         if let Err(err) = create_dir_symlink(&source_root.join("agent-browser"), &link_path) {
-            eprintln!("skipping symlink discovery assertion: {err}");
+            // Only Windows gates directory symlinks behind a privilege
+            // (SeCreateSymbolicLinkPrivilege); elsewhere a failure is real
+            // and must not pass as a skip.
+            #[cfg(not(unix))]
+            eprintln!("skipping symlink discovery assertion (symlink privilege not held): {err}");
+            #[cfg(not(unix))]
             return;
+            #[cfg(unix)]
+            panic!("symlink creation failed: {err}");
         }
 
         let registry = super::SkillRegistry::discover(&skills_root);
@@ -2129,8 +2136,14 @@ mod tests {
         std::fs::create_dir_all(&loop_parent).unwrap();
 
         if let Err(err) = create_dir_symlink(&root, &loop_parent.join("loop")) {
-            eprintln!("skipping symlink cycle assertion: {err}");
+            // A link that cannot be created is a real failure on unix;
+            // only Windows may skip.
+            #[cfg(not(unix))]
+            eprintln!("skipping symlink cycle assertion (symlink privilege not held): {err}");
+            #[cfg(not(unix))]
             return;
+            #[cfg(unix)]
+            panic!("symlink creation failed: {err}");
         }
 
         let registry = super::SkillRegistry::discover(&root);
