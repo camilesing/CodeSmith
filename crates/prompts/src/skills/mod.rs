@@ -390,7 +390,12 @@ impl SkillRegistry {
                                 i += 1;
                                 continue;
                             }
-                            let line_indent = raw_line.len() - raw_line.trim_start().len();
+                            // Counted in characters, like the strip below: a
+                            // byte offset taken on one line does not
+                            // necessarily fall on a boundary of another (a
+                            // full-width space is three bytes).
+                            let line_indent =
+                                raw_line.chars().take_while(|ch| ch.is_whitespace()).count();
                             if line_indent > base_indent {
                                 // Track content indent from the first non-empty
                                 // line so we strip only that one level of
@@ -414,9 +419,15 @@ impl SkillRegistry {
                                 if raw.is_empty() {
                                     ""
                                 } else {
-                                    let indent = raw.len() - raw.trim_start().len();
+                                    let indent =
+                                        raw.chars().take_while(|ch| ch.is_whitespace()).count();
                                     let strip = std::cmp::min(indent, content_indent);
-                                    &raw[strip..]
+                                    let cut = raw
+                                        .char_indices()
+                                        .map(|(index, _)| index)
+                                        .nth(strip)
+                                        .unwrap_or(raw.len());
+                                    &raw[cut..]
                                 }
                             })
                             .collect();
@@ -2552,5 +2563,18 @@ mod tests {
             skill.description,
             "See also:   the config file   the env var"
         );
+    }
+
+    /// Lines of one block may be indented with whitespace of different byte
+    /// widths (an ASCII space, then a full-width one): stripping by bytes cut
+    /// inside the character and panicked on every catalogue render.
+    #[test]
+    fn parse_skill_block_scalar_with_mixed_width_indentation() {
+        let skill = super::SkillRegistry::parse_skill(
+            std::path::Path::new(""),
+            "---\nname: s\ndescription: >\n  line one\n\u{3000}line two\n---\nbody",
+        )
+        .expect("mixed-width indentation must parse");
+        assert_eq!(skill.description, "line one line two");
     }
 }
