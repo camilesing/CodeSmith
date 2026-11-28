@@ -163,6 +163,9 @@ mod tests {
         fn description(&self) -> &str {
             "Echoes back the input text."
         }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
+        }
         fn run(
             &self,
             input: serde_json::Value,
@@ -204,7 +207,12 @@ mod tests {
         assert_eq!(wire.len(), 1);
         assert_eq!(wire[0].name, "echo");
         assert_eq!(wire[0].tool_type.as_deref(), Some("custom"));
-        assert_eq!(wire[0].input_schema, default_input_schema());
+        // EchoTool declares its own schema: the wire definition must carry
+        // it, not the trait's permissive default.
+        assert_eq!(
+            wire[0].input_schema,
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
+        );
     }
 
     #[tokio::test]
