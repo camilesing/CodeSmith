@@ -451,14 +451,6 @@ mod tests {
     }
 
     #[test]
-    fn probe_executable_handles_multi_word_specs() {
-        // `py -3` should split correctly. The probe will fail on
-        // most non-Windows machines (no `py` launcher), which is
-        // fine — we're checking that the *split* doesn't crash.
-        let _ = probe_executable("py -3");
-    }
-
-    #[test]
     fn split_interpreter_spec_strips_args() {
         assert_eq!(
             split_interpreter_spec("python3"),
@@ -484,25 +476,20 @@ mod tests {
     }
 
     #[test]
-    fn python_resolver_returns_some_on_developer_machines() {
-        // CI hosts have Python; developer machines have Python.
-        // The one environment where this returns None is bare-bones
-        // Windows / minimal CI containers — fine, those just don't
-        // get code_execution registered, which is the whole point.
-        // We don't assert Some() because we don't want this test
-        // to fail in those environments. Instead we just confirm
-        // the resolver doesn't panic and returns a stable value.
-        let resolved = resolve_python_interpreter();
-        if let Some(name) = resolved {
-            assert!(
-                !name.is_empty(),
-                "resolved interpreter name must be non-empty"
-            );
-            // The resolved name must be one of our candidates.
-            assert!(
+    fn python_resolver_matches_what_the_path_answers() {
+        // `Some` must be a candidate; `None` is only legitimate when no
+        // candidate answers `--version`. Either arm asserts something.
+        match resolve_python_interpreter() {
+            Some(name) => assert!(
                 PYTHON_CANDIDATES.contains(&name.as_str()),
                 "resolved {name:?} is not in PYTHON_CANDIDATES {PYTHON_CANDIDATES:?}"
-            );
+            ),
+            None => assert!(
+                !PYTHON_CANDIDATES
+                    .iter()
+                    .any(|candidate| probe_executable(candidate)),
+                "the resolver gave up while a candidate answers --version"
+            ),
         }
     }
 
@@ -612,8 +599,14 @@ mod tests {
 
     #[test]
     fn git_output_version_succeeds() {
-        // Only run when git is actually installed.
         if !Git::available() {
+            // The contract without the tool: a NotFound error, not a panic.
+            assert_eq!(
+                Git::output(&["--version"], &std::env::temp_dir())
+                    .expect_err("no git, no spawn")
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
             return;
         }
         let tmp = std::env::temp_dir();
@@ -635,6 +628,12 @@ mod tests {
     #[test]
     fn python_output_version_succeeds() {
         if !Python::available() {
+            assert_eq!(
+                Python::output(&["--version"], &std::env::temp_dir())
+                    .expect_err("no python, no spawn")
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
             return;
         }
         let tmp = std::env::temp_dir();
@@ -649,6 +648,12 @@ mod tests {
     #[test]
     fn node_output_version_succeeds() {
         if !Node::available() {
+            assert_eq!(
+                Node::output(&["--version"], &std::env::temp_dir())
+                    .expect_err("no node, no spawn")
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
             return;
         }
         let tmp = std::env::temp_dir();
@@ -660,9 +665,7 @@ mod tests {
 
     #[test]
     fn cargo_output_version_succeeds() {
-        if !Cargo::available() {
-            return;
-        }
+        // No availability guard: cargo is running these tests.
         let tmp = std::env::temp_dir();
         let out = Cargo::output(&["--version"], &tmp);
         assert!(out.is_ok(), "cargo --version must spawn");
