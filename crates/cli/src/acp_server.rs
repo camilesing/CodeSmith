@@ -2249,16 +2249,19 @@ mod tests {
     /// Drive the pump with hand-made events over a mock engine and report
     /// whether the reserved slot resolved (and with what status).
     async fn pump_scenario(events: Vec<Event>) -> Option<PromptOutcome> {
-        pump_scenario_with_slot_after(events, 0).await
+        pump_scenario_with_slot_after(events, 0).await.0
     }
 
     /// Same, but the prompt slot is reserved only after the pump has
     /// consumed the first `split` events (modeling a prompt arriving mid-
     /// turn: the running turn's `TurnStarted` precedes the reservation).
+    /// Also hands back the writer the pump streamed into: every
+    /// notification is written before the `TurnComplete` that resolves the
+    /// slot, so the writer is complete once the outcome is in.
     async fn pump_scenario_with_slot_after(
         events: Vec<Event>,
         split: usize,
-    ) -> Option<PromptOutcome> {
+    ) -> (Option<PromptOutcome>, SharedWriter<Vec<u8>>) {
         let (tmp, store) = temp_store();
         let mut server = server_over(store);
         let cwd = tmp.path().join("proj");
@@ -2281,11 +2284,12 @@ mod tests {
             install_slot(&mut slot_tx);
         }
 
+        let writer = sink();
         let pump = tokio::spawn(pump_events(
             mock.handle.clone(),
             server.shared.clone(),
             "acp-t74".to_string(),
-            sink(),
+            writer.clone(),
         ));
         for (index, event) in events.into_iter().enumerate() {
             if index == split && split != 0 {
@@ -2300,9 +2304,12 @@ mod tests {
         // Give the pump a beat to (wrongly) resolve the slot, if it would.
         let settled = tokio::time::timeout(std::time::Duration::from_millis(150), slot_rx).await;
         pump.abort();
-        settled
-            .map(|resolved| resolved.expect("slot channel open"))
-            .ok()
+        (
+            settled
+                .map(|resolved| resolved.expect("slot channel open"))
+                .ok(),
+            writer,
+        )
     }
 
     fn completed_turn() -> Event {
@@ -2371,7 +2378,7 @@ mod tests {
                 synthesized: false,
             },
         ];
-        let outcome = pump_scenario_with_slot_after(events, 1).await;
+        let outcome = pump_scenario_with_slot_after(events, 1).await.0;
         assert!(
             outcome.is_none(),
             "a turn that started before the prompt is not the prompt's turn"
@@ -2761,39 +2768,84 @@ mod tests {
     /// outcomes (ok, failed) reach the completion status.
     #[tokio::test]
     async fn pump_streams_tool_call_lifecycle_updates() {
-        let outcome = pump_scenario(vec![
-            Event::ToolCallStarted {
-                id: "c1".to_string(),
-                name: "read_file".to_string(),
-                input: json!({ "path": "a.rs" }),
-            },
-            Event::ToolCallProgress {
-                id: "c1".to_string(),
-                output: "halfway".to_string(),
-            },
-            Event::ToolCallComplete {
-                id: "c1".to_string(),
-                name: "read_file".to_string(),
-                result: Ok(codesmith_tools::ToolResult::success("body")),
-            },
-            Event::ToolCallComplete {
-                id: "c2".to_string(),
-                name: "exec_shell".to_string(),
-                result: Err(codesmith_tools::ToolError::execution_failed(
-                    "exit 1".to_string(),
-                )),
-            },
-            Event::TurnStarted {
-                turn_id: "t".to_string(),
-                synthesized: false,
-            },
-            completed_turn(),
-        ])
+        let (outcome, writer) = pump_scenario_with_slot_after(
+            vec![
+                Event::ToolCallStarted {
+                    id: "c1".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({ "path": "a.rs" }),
+                },
+                Event::ToolCallProgress {
+                    id: "c1".to_string(),
+                    output: "halfway".to_string(),
+                },
+                Event::ToolCallComplete {
+                    id: "c1".to_string(),
+                    name: "read_file".to_string(),
+                    result: Ok(codesmith_tools::ToolResult::success("body")),
+                },
+                Event::ToolCallComplete {
+                    id: "c2".to_string(),
+                    name: "exec_shell".to_string(),
+                    result: Err(codesmith_tools::ToolError::execution_failed(
+                        "exit 1".to_string(),
+                    )),
+                },
+                // A tool that ran and reported a failure: the third outcome.
+                Event::ToolCallComplete {
+                    id: "c3".to_string(),
+                    name: "read_file".to_string(),
+                    result: Ok(codesmith_tools::ToolResult::error("enoent")),
+                },
+                Event::TurnStarted {
+                    turn_id: "t".to_string(),
+                    synthesized: false,
+                },
+                completed_turn(),
+            ],
+            0,
+        )
         .await;
         assert_eq!(
             outcome.expect("the turn completes the prompt").status,
             TurnOutcomeStatus::Completed
         );
+
+        // What the client saw, in order: (update, call, status, text block).
+        // The writer is complete here: every notification precedes the
+        // `TurnComplete` that resolved the outcome above.
+        let lines = take_lines(&writer).await;
+        assert!(
+            lines.iter().all(|line| {
+                line["method"] == "session/update" && line["params"]["sessionId"] == "acp-t74"
+            }),
+            "tool calls go out as this session's updates: {lines:?}"
+        );
+        let mut shapes = Vec::new();
+        for line in &lines {
+            let update = &line["params"]["update"];
+            shapes.push((
+                update["sessionUpdate"].as_str().unwrap(),
+                update["toolCallId"].as_str().unwrap(),
+                update["status"].as_str().unwrap(),
+                update
+                    .pointer("/content/0/content/text")
+                    .and_then(Value::as_str),
+            ));
+        }
+        // The failed call's text is the error's own rendering, unchanged.
+        let failed = codesmith_tools::ToolError::execution_failed("exit 1").to_string();
+        assert_eq!(
+            shapes,
+            [
+                ("tool_call", "c1", "in_progress", None),
+                ("tool_call_update", "c1", "in_progress", Some("halfway")),
+                ("tool_call_update", "c1", "completed", Some("body")),
+                ("tool_call_update", "c2", "failed", Some(failed.as_str())),
+                ("tool_call_update", "c3", "failed", Some("enoent")),
+            ]
+        );
+        assert_eq!(lines[0]["params"]["update"]["kind"], "read");
     }
 
     /// Path access, sandbox elevation, and ask-user gates have no protocol
