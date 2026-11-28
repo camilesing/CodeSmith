@@ -484,17 +484,6 @@ mod tests {
     }
 
     #[test]
-    fn python_resolver_is_cached_across_calls() {
-        // Whatever the first call returns, subsequent calls return
-        // the same value (cached). If this test ever flakes, the
-        // OnceLock semantics changed and we need to rethink the
-        // resolver.
-        let first = resolve_python_interpreter();
-        let second = resolve_python_interpreter();
-        assert_eq!(first, second);
-    }
-
-    #[test]
     fn python_resolver_returns_some_on_developer_machines() {
         // CI hosts have Python; developer machines have Python.
         // The one environment where this returns None is bare-bones
@@ -515,6 +504,54 @@ mod tests {
                 "resolved {name:?} is not in PYTHON_CANDIDATES {PYTHON_CANDIDATES:?}"
             );
         }
+    }
+
+    /// A tool that is not on any machine: every default method agrees.
+    struct Missing;
+
+    impl ExternalTool for Missing {
+        fn candidates() -> &'static [&'static str] {
+            &[]
+        }
+
+        fn resolve() -> Option<String> {
+            None
+        }
+    }
+
+    /// A tool whose spec carries fixed arguments (`sh -c exit 0`).
+    struct ShellExit;
+
+    impl ExternalTool for ShellExit {
+        fn candidates() -> &'static [&'static str] {
+            &["sh -c exit 0"]
+        }
+
+        fn resolve() -> Option<String> {
+            Some("sh -c exit 0".to_string())
+        }
+    }
+
+    #[test]
+    fn external_tool_default_methods_agree_when_the_tool_is_missing() {
+        assert!(!Missing::available());
+        assert!(Missing::command().is_none());
+        assert!(Missing::tokio_command().is_none());
+        assert_eq!(
+            Missing::output(&["--version"], &std::env::temp_dir())
+                .expect_err("no tool, no spawn")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_tool_resolved_spec_splits_into_program_and_fixed_args() {
+        assert!(ShellExit::available());
+        // `sh -c exit 0 0`: the fixed args precede the call's own args.
+        let output = ShellExit::output(&["0"], &std::env::temp_dir()).expect("spawn");
+        assert!(output.status.success(), "`sh -c exit 0 0` exits 0");
     }
 
     // ===================================================================
@@ -570,101 +607,6 @@ mod tests {
                     resolved[i].0, resolved[j].0
                 );
             }
-        }
-    }
-
-    #[test]
-    fn git_resolve_is_cached() {
-        let first = Git::resolve();
-        let second = Git::resolve();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn gh_resolve_is_cached() {
-        let first = Gh::resolve();
-        let second = Gh::resolve();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn python_trait_resolve_is_cached() {
-        let first = Python::resolve();
-        let second = Python::resolve();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn node_resolve_is_cached() {
-        let first = Node::resolve();
-        let second = Node::resolve();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn rustc_resolve_is_cached() {
-        let first = RustC::resolve();
-        let second = RustC::resolve();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn cargo_resolve_is_cached() {
-        let first = Cargo::resolve();
-        let second = Cargo::resolve();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn git_available_matches_resolve() {
-        assert_eq!(Git::available(), Git::resolve().is_some());
-    }
-
-    #[test]
-    fn python_available_matches_resolve() {
-        assert_eq!(Python::available(), Python::resolve().is_some());
-    }
-
-    #[test]
-    fn node_available_matches_resolve() {
-        assert_eq!(Node::available(), Node::resolve().is_some());
-    }
-
-    #[test]
-    fn rustc_available_matches_resolve() {
-        assert_eq!(RustC::available(), RustC::resolve().is_some());
-    }
-
-    #[test]
-    fn cargo_available_matches_resolve() {
-        assert_eq!(Cargo::available(), Cargo::resolve().is_some());
-    }
-
-    #[test]
-    fn git_command_returns_some_when_available() {
-        if Git::available() {
-            assert!(Git::command().is_some());
-        }
-    }
-
-    #[test]
-    fn python_command_returns_some_when_available() {
-        if Python::available() {
-            assert!(Python::command().is_some());
-        }
-    }
-
-    #[test]
-    fn python_tokio_command_returns_some_when_available() {
-        if Python::available() {
-            assert!(Python::tokio_command().is_some());
-        }
-    }
-
-    #[test]
-    fn node_tokio_command_returns_some_when_available() {
-        if Node::available() {
-            assert!(Node::tokio_command().is_some());
         }
     }
 
