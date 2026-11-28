@@ -2179,7 +2179,7 @@ mod anchored_estimate_tests {
     }
 
     #[test]
-    fn anchor_at_history_end_yields_the_reading_itself() {
+    fn anchor_at_history_end_falls_back_to_the_conservative_estimate() {
         let messages: Vec<Message> = (0..4)
             .map(|i| text_message(&format!("message {i}")))
             .collect();
@@ -2188,15 +2188,18 @@ mod anchored_estimate_tests {
             input_tokens: 5_000,
             boundary_digest: TokenUsageAnchor::digest_boundary(&messages),
         };
-        // messages_len == len is the "anchor is at the tail" case: the
-        // anchor's own request covered exactly these messages, so the
-        // reading is the level — the conservative fallback triggers here
-        // (>= comparison), which must still be sane.
+        // An anchor whose length equals the history's takes the
+        // conservative fallback (the `>=` in the length check): the exact
+        // provider reading is NOT used at the tail. Pinned as what the code
+        // does — whether the reading should be used here is an open product
+        // question; if it is answered yes, this assertion changes with it.
         let anchored = estimate_input_tokens_anchored(&messages, None, Some(&anchor));
-        assert!(
-            anchored > 0,
-            "tail-anchored estimate must stay positive (fell back to conservative)"
+        assert_eq!(
+            anchored,
+            estimate_input_tokens_conservative(&messages, None),
+            "an anchor at the history end falls back to the conservative estimate"
         );
+        assert_ne!(anchored, anchor.input_tokens as usize);
     }
 
     #[test]
