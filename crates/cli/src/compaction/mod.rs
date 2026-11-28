@@ -748,21 +748,34 @@ mod tests {
         assert!(!plan.summarize_indices.contains(&1));
     }
 
+    /// An external working-set path pins an old message that mentions it:
+    /// one outside the recent window, and not the first-query pin.
     #[test]
     fn plan_compaction_uses_external_working_set_paths() {
-        let mut messages = vec![msg("user", "edit src/core/engine.rs now")];
-        messages.extend((1..20).map(|i| msg("assistant", &format!("noise {i}"))));
+        let mut messages = vec![
+            msg("user", "unrelated task"),
+            msg("assistant", "edit src/core/engine.rs now"),
+        ];
+        messages.extend((2..20).map(|i| msg("assistant", &format!("noise {i}"))));
 
         let working_set_paths = vec!["src/core/engine.rs".to_string()];
-        let plan = plan_compaction(
+        let with = plan_compaction(
             &messages,
             None,
             KEEP_RECENT_MESSAGES,
             None,
             Some(&working_set_paths),
         );
+        assert!(with.pinned_indices.contains(&1));
 
-        assert!(plan.pinned_indices.contains(&0));
+        // Nothing else pins this line: without the external path it is
+        // summarized.
+        let without = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+        assert!(
+            !without.pinned_indices.contains(&1),
+            "only the external path pins it: {:?}",
+            without.pinned_indices
+        );
     }
 
     #[test]
@@ -1062,37 +1075,27 @@ mod tests {
         assert_eq!(pinned.len(), messages.len());
     }
 
+    /// The guarantee on its own: the first query is too large to pin as the
+    /// task instruction and the tail is tool pairs only, so no pinned
+    /// message is a user text query until this rule adds the latest one.
     #[test]
     fn plan_compaction_keeps_at_least_one_user_text_query() {
-        let mut messages = vec![msg(
-            "user",
-            "This is the original query that started the chain.",
-        )];
-
-        for i in 0..10 {
-            messages.push(Message {
-                role: "assistant".to_string(),
-                content: vec![ContentBlock::ToolUse {
-                    id: format!("call-{i}"),
-                    name: "test_tool".to_string(),
-                    input: json!({}),
-                    caller: None,
-                }],
-            });
-            messages.push(Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: format!("call-{i}"),
-                    content: "tool output".to_string(),
-                    is_error: None,
-                    content_blocks: None,
-                }],
-            });
+        let mut messages = vec![
+            msg("user", &"y".repeat(80_000)),
+            msg("assistant", "ack"),
+            msg("user", "the question to keep"),
+            msg("assistant", "working"),
+        ];
+        for i in 0..5 {
+            messages.push(tool_use(&format!("call-{i}"), "test_tool", json!({})));
+            messages.push(tool_result(&format!("call-{i}"), "tool output"));
         }
 
         let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
 
-        assert!(plan.pinned_indices.contains(&0));
+        assert!(plan.pinned_indices.contains(&2));
+        // The oversized first query stayed out: it is still summarized.
+        assert!(plan.summarize_indices.contains(&0));
     }
 
     // ========================================================================
@@ -1452,40 +1455,6 @@ mod tests {
             }
             _ => panic!("Expected Blocks"),
         }
-    }
-
-    #[test]
-    fn test_should_compact_with_workspace_path_detection() {
-        use std::env;
-        let workspace = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-        let _config = CompactionConfig {
-            enabled: true,
-            token_threshold: 1000,
-            ..Default::default()
-        };
-
-        // Create messages mentioning workspace paths
-        let messages = vec![
-            msg("user", "working on src/main.rs"),
-            msg("assistant", "noise 1"),
-            msg("user", "noise 2"),
-            msg("assistant", "noise 3"),
-            msg("user", "noise 4"),
-            msg("assistant", "noise 5"),
-            msg("user", "recent 1"),
-            msg("assistant", "recent 2"),
-        ];
-
-        // src/main.rs mention should pin message 0 in the plan.
-        let plan = plan_compaction(
-            &messages,
-            Some(&workspace),
-            KEEP_RECENT_MESSAGES,
-            None,
-            None,
-        );
-        assert!(plan.pinned_indices.contains(&0)); // src/main.rs mention
     }
 
     // === PreCompact hook + session-memory-first enhancements (#485) ===
