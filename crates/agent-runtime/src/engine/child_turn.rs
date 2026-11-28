@@ -22,7 +22,9 @@
 //! - the main turn's session services: compaction and the capacity gates,
 //!   LSP diagnostics, `<turn_meta>`, the plan-session gate, the result
 //!   claim verifier, prefix-stability observation and the session journal
-//!   (sub-agents keep no journal; the host stores the final transcript);
+//!   (a child records into its own `ChildSessionJournal` when the host
+//!   provides the seam, never into the parent's transcript; without it only
+//!   the in-memory transcript handle remains);
 //! - an approval prompt or `request_user_input`: a child never asks through
 //!   the loop (general agent: delegated approval is "never"). Its tool surface
 //!   carries the delegation policy and asks out-of-workspace path questions
